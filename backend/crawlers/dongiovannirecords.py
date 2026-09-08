@@ -86,8 +86,17 @@ _BUNDLE_RE = re.compile(r"\bbundles?\b", re.IGNORECASE)
 # gate reads as an inch marker perfectly well. Approximating one rule inside
 # another is what produced every quote bug on this crawler. Found in review on
 # PR #323.
+# `[a-z]` is ASCII-only even under IGNORECASE, so every lookbehind spelled
+# that way treated an accented letter as a separator: `É54" LP` read `54"` as
+# an inch marker, `éLP CD` matched `LP` and was admitted before the `CD` could
+# reject it, and `MúsicáCD` matched `CD` and was rejected though the word only
+# embeds it. These say what they mean instead -- "not preceded by a letter"
+# and "not preceded by a letter or digit" -- in any script. Found in review on
+# PR #323.
+_NOT_AFTER_LETTER = r'(?<![^\W\d_])'
+_NOT_AFTER_LETTER_OR_DIGIT = r'(?<![^\W_])'
 _INCH_MARKER = (
-    r'(?<![a-z0-9])(?:\d+\s*[x×]\s*)?\d{1,2}\s*'
+    _NOT_AFTER_LETTER_OR_DIGIT + r'(?:\d+\s*[x×]\s*)?\d{1,2}\s*'
     # The quote glyph needs a right-hand boundary of its own, which the
     # spelled-out `inch` alternative gets free from its `\b`: without one,
     # `12"CD` reads as a complete inch marker, the format gate admits it
@@ -105,7 +114,7 @@ _TERMINAL_BUNDLE_RE = re.compile(r"\bbundles?\s*$", re.IGNORECASE)
 # collection's own claim. Negative rather than enumerated so a format the
 # store adds later (10", a box set) stays in by default.
 _VINYL_WORD_RE = re.compile(
-    r'(?<![a-z])(?:\d+(?:\.\d+)?\s*[x×]\s*)?lps?\b|\bvinyls?\b'
+    _NOT_AFTER_LETTER + r'(?:\d+(?:\.\d+)?\s*[x×]\s*)?lps?\b|\bvinyls?\b'
     r'|\bpicture\s+discs?\b|\btest\s+pressings?\b'
     r'|' + _INCH_MARKER,
     re.IGNORECASE,
@@ -120,14 +129,26 @@ _VINYL_WORD_RE = re.compile(
 # perfectly and publish as a record, since the store titles these exactly
 # like the records (`Bad Moves "Logo" T-Shirt`).
 _OTHER_MEDIA_RE = re.compile(
-    r"(?<![a-z])(?:\d+\s*[x×]\s*)?(?:cds?|cassettes?|dvds?|blu-?\s?rays?)\b",
+    _NOT_AFTER_LETTER + r"(?:\d+\s*[x×]\s*)?(?:cds?|cassettes?|dvds?|blu-?\s?rays?)\b",
     re.IGNORECASE,
 )
-_MERCH_RE = re.compile(
+_MERCH_PATTERN = (
     r"\b(?:t-?\s?)?shirts?\b|\btees?\b|\btank\s+tops?\b|\blongsleeves?\b"
     r"|\bsweatshirts?\b|\bcrewnecks?\b|\bhoodies?\b"
     r"|\bbooks?\b|\bpaperbacks?\b|\bhardcovers?\b|\bzines?\b"
-    r"|\bpins?\b|\bstickers?\b|\bdecals?\b|\bbags?\b|\btotes?\b",
+    r"|\bpins?\b|\bstickers?\b|\bdecals?\b|\bbags?\b|\btotes?\b"
+)
+_MERCH_RE = re.compile(_MERCH_PATTERN, re.IGNORECASE)
+# A `+` that actually JOINS a merch item, not merely a title containing both
+# somewhere. Built from _MERCH_PATTERN so it cannot drift from the gate's idea
+# of merch. Every live combo puts the merch word directly against the `+`
+# (`LP + Shirt`, `Shirt + All Vinyl`, `Shirt + CD`), while a record title that
+# merely happens to carry both -- `Lee Bains + The Glory Fires Bag Album LP`,
+# where the artist supplies the `+` and the album supplies `Bag` -- does not,
+# and must stay drift rather than being waved through as a known bundle.
+# Found in review on PR #323.
+_COMBO_MERCH_RE = re.compile(
+    r"(?:" + _MERCH_PATTERN + r")\s*\+|\+\s*(?:" + _MERCH_PATTERN + r")",
     re.IGNORECASE,
 )
 # Shopify's placeholder for a product with exactly one variant. The live
@@ -271,8 +292,8 @@ class Crawler:
                 f"no product in the {_COLLECTION_SLUG} collection carries a vendor -- artist-source drift")
         if parsed_ok == 0:
             raise RuntimeError(
-                f'no product in the {_COLLECTION_SLUG} collection has a title of the form '
-                'Artist "Album" format -- album-source drift')
+                f'no product in the {_COLLECTION_SLUG} collection has a title carrying '
+                'a quoted album followed by a format -- album-source drift')
         if sources_ok == 0:
             # Reached only when both sources are alive somewhere but never on
             # the same product, which neither guard above can see.
@@ -305,7 +326,8 @@ class Crawler:
             # empty-outcome gate as the stock guard below applies.
             raise RuntimeError(
                 f"{_COLLECTION_SLUG} collection yielded no rows while "
-                f"{identity_missing} record(s) carry no title or handle -- identity-source drift")
+                f"{identity_missing} product(s) carry no title, or are records carrying no handle "
+                "-- identity-source drift")
         if not yielded and variant_identity_missing:
             raise RuntimeError(
                 f"{_COLLECTION_SLUG} collection yielded no rows while "
@@ -414,8 +436,7 @@ class Crawler:
         # known bundle. Found in review on PR #323.
         if any(q in title for q in _QUOTE_CHARS):
             return False
-        return bool(_TERMINAL_BUNDLE_RE.search(title)) or (
-            "+" in title and bool(_MERCH_RE.search(title)))
+        return bool(_TERMINAL_BUNDLE_RE.search(title)) or bool(_COMBO_MERCH_RE.search(title))
 
     @staticmethod
     def _artist(product: dict) -> str:

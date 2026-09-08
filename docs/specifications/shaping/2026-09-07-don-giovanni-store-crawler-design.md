@@ -307,6 +307,14 @@ Negative rather than enumerated so that a format the store adds later
 (`10"`, a box set) stays in by default; the shelf has already said the
 product is a record.
 
+**Every word boundary here is Unicode-aware.** `[a-z]` is ASCII-only even
+under `IGNORECASE`, so a lookbehind spelled that way treats an accented letter
+as a separator — `É54" LP` read `54"` as an inch marker, `éLP CD` matched `LP`
+and was admitted before the `CD` could reject it, and `MúsicáCD` matched `CD`
+and was rejected although the word only embeds it. The boundaries are now
+written as "not preceded by a letter" and "not preceded by a letter or digit"
+in any script, from two shared constants. Found in review on PR #323.
+
 The rejecting vocabulary is not invented — it is the store's own
 `product_type` values, read off the `all` collection: `CD`, `2xCD`,
 `Cassette`, `T-Shirt`, `Girls T-shirt`, `Tank Top`, `Longsleeve`,
@@ -430,9 +438,13 @@ skips one row; here a false exemption lets an unreadable product pass for a
 known shape and the whole snapshot be deleted. So the bundle word must *end*
 the title, or a real record that lost its album quotes
 (`Amy Klein Bundle of Joy 12"`) would be waved through; and the `+` shape
-needs **both** halves, or a record title that lost its quotes but kept a `+`
-in its artist credit (`Lee Bains + The Glory Fires Youth Detention 12"`)
-would be too. This is exemption-only and never rejects a row; the gate's own
+needs the merch word **adjacent to the `+`**, not merely present in the same
+title. Every live combo puts it there (`LP + Shirt`, `Shirt + All Vinyl`,
+`Shirt + CD`), while a record title that lost its quotes and merely happens to
+carry both — `Lee Bains + The Glory Fires Bag Album LP`, where the artist
+supplies the `+` and the album supplies `Bag` — does not, and stays drift.
+Requiring only that both appear somewhere was the third defect found in this
+one exemption. This is exemption-only and never rejects a row; the gate's own
 bundle rejection stays broad.
 
 The helper also *enforces* its own precondition rather than assuming it. It

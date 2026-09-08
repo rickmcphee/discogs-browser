@@ -360,6 +360,8 @@ def test_title_parse(title, expected):
     # follow a digit -- the digit lookbehind that stood in for the format
     # gate's own token accepted this. Found in review on PR #323.
     'Amy Klein "The " Studio54" LP',
+    # Same, with a non-ASCII letter: `\u00c954"` is not an inch marker either.
+    'Amy Klein "The " \u00c954" LP',
     'Amy Klein "The " 12x" LP',
     # A descriptor carries at most one inch marker. Two quotes are the tail of
     # a nested quotation, and the digit exemption alone cannot see it when the
@@ -547,6 +549,13 @@ async def test_an_unreadable_product_among_real_rows_does_not_raise(crawler):
     ('Artist "Pins + Needles"', False),
     ('Artist "Album Bundle"', False),
     ('Artist "Untenable" LP + Shirt', False),
+    # The merch word must be ADJACENT to the `+`, not merely present somewhere
+    # in the same title: here the artist supplies the `+` and the album
+    # supplies `Bag`, and this is a malformed record, not a bundle.
+    # Found in review on PR #323.
+    ("Lee Bains + The Glory Fires Bag Album LP", False),
+    ("Amy Klein + Friends Tote Bag Record LP", False),
+    ("Bad Moves Wearing Out The Refrain Shirt + CD", True),
 ])
 def test_the_unquoted_bundle_shapes_are_recognised(title, shaped):
     assert Crawler._bundle_shaped(title) is shaped
@@ -889,6 +898,12 @@ async def test_a_merch_word_in_the_album_does_not_reject_the_record(crawler):
 
 
 @pytest.mark.parametrize("descriptor,expected", [
+    # The word boundaries must hold in any script: `[a-z]` is ASCII-only even
+    # under IGNORECASE, so an accented letter used to count as a separator.
+    # Found in review on PR #323.
+    ("\u00e9LP CD", False),          # embedded LP must not admit ahead of the CD
+    ("Caf\u00ebCD Gatefold", True),  # embedded CD must not reject
+    ("M\u00fasic\u00e1CD Gatefold", True),
     # An embedded `lp` must not admit. Paired with a rejecting medium and no
     # disc size, so a false match is observable: if `\blps?\b` matched inside
     # "Helps" the descriptor would be admitted instead of rejected.
