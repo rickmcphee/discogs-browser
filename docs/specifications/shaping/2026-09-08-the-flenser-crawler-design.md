@@ -186,7 +186,19 @@ a legitimate marker:
   its inch sizes out anyway, so the cap costs nothing live. It is the same cap
   `dongiovannirecords.py` puts on its descriptor.
 
-Found in review on PR #331 over two rounds; no live title is shaped any of
+**Every one of these decisions reads mark-folded text.** `\w` excludes the
+combining MARK categories, so a decomposed accent opens a boundary its
+precomposed equivalent closes: in NFD, `Artist "The " É54" LP` let `54"` read
+as an inch marker and account for the stray quote, while the canonically
+equivalent NFC spelling was rejected — and on the variant gate, `éCD`
+classified as a record in NFC and as another medium in NFD. A string must not
+read two ways depending on how it was encoded. The fold replaces each mark
+with a letter (so it can only ever *close* a boundary, never open one), is
+length- and position-preserving so the quote check's offsets still line up,
+and is decision-time only — nothing emitted is ever folded.
+`dongiovannirecords.py` and `title_key._words` document the same trap.
+
+Found in review on PR #331 over three rounds; no live title is shaped any of
 these ways.
 
 ### Billing reduction: the slash only, never the ampersand
@@ -259,8 +271,12 @@ Two refinements sit on top of it:
 - **A bundle-shaped descriptor is rejected first.** The store's one
   vinyl-shelved bundle carries no quoted album, so the title parse already
   excludes it — but a bundle written to the store's usual convention
-  (`Mamaleek "Vinyl Bundle" LP`) would satisfy the format gate on its own
-  `Vinyl`. A bundle is not a Discogs release and its price is not any
+  (`Mamaleek "Everything Else" Vinyl Bundle`) would satisfy the format gate on
+  its own `Vinyl`. The shape matters: in `Mamaleek "Vinyl Bundle" LP` the
+  bundle word is in the *album* and the descriptor is `LP`, so this check
+  never sees it and the product is admitted — the deliberate outcome of
+  reading the descriptor rather than the whole title, but not what this rule
+  guards. A bundle is not a Discogs release and its price is not any
   record's. The check reads the **descriptor**, not the whole title, so an
   album that legitimately contains the word (`Artist "Bundle of Joy" LP`) is
   not silently dropped.

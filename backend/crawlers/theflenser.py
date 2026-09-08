@@ -1,5 +1,6 @@
 import math
 import re
+import unicodedata
 from typing import AsyncIterator, Optional, Tuple
 
 from shopify_catalog import iter_products, resolve_cover_image
@@ -92,9 +93,17 @@ _BILLING_SPLIT_RE = re.compile(r'(?:\s+/\s*|\s*/\s+)')
 # The store sells bundles, and the one it shelves as vinyl ("Mamaleek Vinyl
 # Bundle") carries no quoted album, so the title parse already excludes it.
 # This is for the bundle written to the store's usual convention
-# (`Mamaleek "Vinyl Bundle" LP`), whose descriptor would then satisfy the
-# format gate on its own `Vinyl`. A bundle is not a Discogs release and its
-# price is not any record's price.
+# (`Mamaleek "Everything Else" Vinyl Bundle`), whose descriptor would then
+# satisfy the format gate on its own `Vinyl`. A bundle is not a Discogs
+# release and its price is not any record's price.
+#
+# The example matters, and an earlier one here was wrong in a way that made
+# the comment describe a rule the code does not have: in
+# `Mamaleek "Vinyl Bundle" LP` the bundle word is in the ALBUM and the
+# descriptor is `LP`, so this check never sees it and the product is
+# admitted. That is the deliberate outcome -- see the paragraph below on
+# reading the descriptor rather than the whole title -- but it is not what
+# this constant guards. Found in review on PR #331.
 #
 # Read against the DESCRIPTOR rather than the whole title, so an album that
 # legitimately contains the word (`Artist "Bundle of Joy" LP`) is not
@@ -180,6 +189,41 @@ _NON_VINYL_MEDIA_RE = re.compile(
 )
 
 
+# `\w` excludes the combining MARK categories, so every boundary above reads a
+# decomposed accent as a word separator: in NFD text `é` is `e` + U+0301, and
+# the character before `54` in `É54" LP` is the accent, which opens `(?<!\w)`
+# and lets `54"` read as an inch marker -- accounting for a stray quote that
+# the canonically equivalent NFC spelling rejects. Same trap on the variant
+# gate, where `éCD` classified one way in NFC and the other in NFD. A string
+# must not read two ways depending on how it was encoded. `title_key._words`
+# and `dongiovannirecords.py` document this for the same reason. Found in
+# review on PR #331.
+_MARK_CATEGORIES = frozenset(("Mn", "Mc", "Me"))
+# A mark stands in as a LETTER, because a mark IS part of the word it follows
+# -- that is the property the boundaries are missing, and folding therefore
+# only ever closes a boundary, never opens one. Deliberately not an ASCII
+# letter: this character appears in no pattern in this module and matches none
+# of them under IGNORECASE, so folding can never spell a format or medium word
+# into existence.
+_MARK_STAND_IN = "\u00df"
+
+
+def _fold_marks(text: str) -> str:
+    r"""The text with every combining mark replaced by a letter, for MATCHING ONLY.
+
+    Never for anything emitted: it is a decision-time normalisation, so
+    `\w`-based boundaries see a mark as the word-interior it is. Length- and
+    position-preserving, which is what lets _descriptor_quotes_are_clean scan
+    the folded string and compare the offsets against the original.
+    """
+    if text.isascii():
+        return text
+    return "".join(
+        _MARK_STAND_IN if unicodedata.category(ch) in _MARK_CATEGORIES else ch
+        for ch in text
+    )
+
+
 def _descriptor_quotes_are_clean(descriptor: str) -> bool:
     """The descriptor carries at most one quote, inside one complete inch marker.
 
@@ -199,11 +243,12 @@ def _descriptor_quotes_are_clean(descriptor: str) -> bool:
     `7inch`), so the cap costs nothing live. Same cap dongiovannirecords.py
     puts on its descriptor. Found in review on PR #331.
     """
-    quotes = [i for i, ch in enumerate(descriptor) if ch in _QUOTE_CHARS]
+    folded = _fold_marks(descriptor)
+    quotes = [i for i, ch in enumerate(folded) if ch in _QUOTE_CHARS]
     if len(quotes) > 1:
         return False
     accounted = set()
-    for m in _INCH_RE.finditer(descriptor):
+    for m in _INCH_RE.finditer(folded):
         accounted.update(range(m.start(), m.end()))
     return all(i in accounted for i in quotes)
 
@@ -458,9 +503,10 @@ class Crawler:
 
     @staticmethod
     def _names_a_record(descriptor: str) -> bool:
-        if _BUNDLE_RE.search(descriptor):
+        folded = _fold_marks(descriptor)
+        if _BUNDLE_RE.search(folded):
             return False
-        return bool(_RECORD_FORMAT_RE.search(descriptor))
+        return bool(_RECORD_FORMAT_RE.search(folded))
 
     @classmethod
     def _record_variants(cls, product: dict) -> list:
@@ -526,9 +572,10 @@ class Crawler:
 
     @staticmethod
     def _is_record_variant(title: str) -> bool:
-        if _VINYL_MEDIUM_RE.search(title):
+        folded = _fold_marks(title)
+        if _VINYL_MEDIUM_RE.search(folded):
             return True
-        return not _NON_VINYL_MEDIA_RE.search(title)
+        return not _NON_VINYL_MEDIA_RE.search(folded)
 
     @staticmethod
     def _has_identity(product: dict) -> bool:

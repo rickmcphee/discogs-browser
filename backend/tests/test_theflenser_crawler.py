@@ -1,3 +1,5 @@
+import unicodedata
+
 import httpx
 import pytest
 import respx
@@ -902,3 +904,61 @@ async def test_a_title_less_product_still_raises_though_it_never_parses(crawler)
     ])
     with pytest.raises(RuntimeError, match="identity-source drift"):
         await _run(crawler)
+
+
+# --- Unicode normalization (PR #331, third review round) --------------------
+
+def _nfd(text):
+    return unicodedata.normalize("NFD", text)
+
+
+@respx.mock
+async def test_a_decomposed_accent_cannot_bypass_the_nested_quote_guard(crawler):
+    """`\\w` reads a combining mark as a word separator, so in NFD the accent
+    before `54` opened the inch marker's boundary, accounted for the stray
+    quote, and admitted a title its NFC spelling rejects."""
+    _mock_walk([_LP_PRODUCT, _with(_PLACEHOLDER_PRODUCT, title=_nfd('Artist "The " É54" LP'))])
+    items = await _run(crawler)
+    assert {i["artist"] for i in items} == {"Agriculture"}
+    assert not any(i["title"] == "The" for i in items)
+
+
+@pytest.mark.parametrize("title", [
+    'Artist "The " É54" LP',
+    'Artist "Álbum" LP',
+    'Artist "Album" 12"',
+    'Artist "Ünderdog" 10inch',
+])
+def test_a_title_reads_the_same_in_nfc_and_nfd(crawler, title):
+    """Compared under NFC, because the two spellings are canonically
+    equivalent rather than equal — what must not differ is the decision and
+    the content, not the encoding the store happened to send."""
+    def parsed(text):
+        return tuple(unicodedata.normalize("NFC", part)
+                     for part in crawler._parse_title({"title": text}))
+
+    assert parsed(title) == parsed(_nfd(title))
+
+
+@pytest.mark.parametrize("variant", ["éCD", "Café Cassette", "Ölive Green Vinyl", "Black Vinyl"])
+def test_a_variant_classifies_the_same_in_nfc_and_nfd(crawler, variant):
+    assert crawler._is_record_variant(variant) == crawler._is_record_variant(_nfd(variant))
+
+
+@respx.mock
+async def test_an_accented_album_is_emitted_unfolded(crawler):
+    """The fold is decision-time only — nothing emitted is ever folded."""
+    _mock_walk([_with(_PLACEHOLDER_PRODUCT, title=_nfd('Alan Sparhawk "Ámbar" LP'))])
+    item, = await _run(crawler)
+    assert item["title"] == _nfd("Ámbar")
+    assert "ß" not in item["title"]
+
+
+# --- bundle example (PR #331, third review round) ---------------------------
+
+@respx.mock
+async def test_a_bundle_word_in_the_album_is_admitted(crawler):
+    """The documented outcome of reading the descriptor rather than the whole
+    title, and the shape an earlier comment wrongly claimed this rule caught."""
+    _mock_walk([_with(_PLACEHOLDER_PRODUCT, title='Mamaleek "Vinyl Bundle" LP')])
+    assert [i["title"] for i in await _run(crawler)] == ["Vinyl Bundle"]
