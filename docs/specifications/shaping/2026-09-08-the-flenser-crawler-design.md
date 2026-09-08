@@ -195,17 +195,23 @@ the store never uses at the price of a hole three rounds could not close.
 Variant titles are unaffected: they are never split into album and descriptor,
 so a quote there is unambiguous and still reads as an inch marker.
 
-**Every one of these decisions reads mark-folded text.** `\w` excludes the
+**The format and variant gates read mark-folded text.** `\w` excludes the
 combining MARK categories, so a decomposed accent opens a boundary its
 precomposed equivalent closes: in NFD, `Artist "The " É54" LP` let `54"` read
-as an inch marker and account for the stray quote, while the canonically
-equivalent NFC spelling was rejected — and on the variant gate, `éCD`
-classified as a record in NFC and as another medium in NFD. A string must not
-read two ways depending on how it was encoded. The fold replaces each mark
-with a letter (so it can only ever *close* a boundary, never open one), is
-length- and position-preserving so the quote check's offsets still line up,
-and is decision-time only — nothing emitted is ever folded.
-`dongiovannirecords.py` and `title_key._words` document the same trap.
+as an inch marker while the canonically equivalent NFC spelling was rejected —
+and on the variant gate, `éCD` classified as a record in NFC and as another
+medium in NFD. A string must not read two ways depending on how it was
+encoded. The fold replaces each mark with a letter, so it can only ever
+*close* a boundary, never open one, and it is decision-time only — nothing
+emitted is ever folded. `dongiovannirecords.py` and `title_key._words`
+document the same trap.
+
+The quote rule above does **not** fold, and the difference is the point:
+folding exists to stop a mark opening a `\w` boundary, and "does this string
+contain a quote" has no boundary to open. It did fold while the rule was still
+marker-aware and compared offsets; keeping the call afterwards would have been
+a no-op dressed as a precaution, which is what a surviving mutation revealed
+it to be.
 
 The **emitted** identity is normalised too, and for a different reason that is
 easy to conflate with the fold: `compute_item_key` hashes the artist and title

@@ -131,36 +131,22 @@ _BUNDLE_RE = re.compile(r'\bbundles?\b', re.IGNORECASE)
 # _VINYL_MEDIUM_RE, which EP is deliberately not part of: a "CD EP" sibling
 # must not be admitted by the same word that admits a 12" EP here.
 #
-# The inch marker admits the quote glyph as well as the spelled-out word,
-# though this store spells every one of its own out (`10inch`, `7inch`) and
-# writes no quote glyph anywhere. The glyph is genuinely ambiguous in a
-# variant title, where the string can be a whole `Artist "Album" Format`
-# title rather than a pressing name: the album's closing quote after a digit
-# (`... Vol 1 & 2" Tape Set`) reads as a 2-inch record and admits a variant
-# the media gate would otherwise reject. That is tolerated rather than
-# machined around, on two grounds -- the only live title shaped that way is
-# inside the scratch-and-dent bin the descriptor gate already drops, and the
-# variant gate's default is to admit anyway, so the ambiguity can only
-# reach an outcome the gate was already willing to reach. Dropping the glyph
-# instead would trade that for a silent loss of any record the store one day
-# describes as a 12", which is the worse failure.
+# The inch marker admits the quote glyph as well as the spelled-out word, and
+# after _descriptor_carries_no_quote that only ever matters for a VARIANT
+# title: a descriptor carrying a glyph is refused before this pattern sees it.
+# A variant title is never split into album and descriptor, so a quote there
+# is unambiguous and `12" Black Vinyl` reads as the record it is.
 #
-# The unit needs a right-hand boundary of its own. Without one the fragment
-# matches the leading part of `12"CD`, `7"Cassette` and `12inchesPoster`,
-# which reads a compact disc as a record AND -- worse -- accounts for that
-# quote in _descriptor_quotes_are_clean, so `Artist "The " 12"CD` passed the
-# nested-quote check and was emitted under the truncated album `The`. Found in
-# review on PR #331.
+# The unit still needs a right-hand boundary of its own, for the format gates
+# rather than for any quote rule: without one the fragment matches the leading
+# part of `12"CD`, `7"Cassette` and `12inchesPoster`, reading a compact disc
+# as a record. It once mattered doubly, because a marker-aware quote check
+# counted that same partial match as accounting for the quote; that check is
+# gone and the boundary is not. Found in review on PR #331.
 _NOT_BEFORE_LETTER_OR_DIGIT = r'(?![^\W_])'
 _LP = r'(?:\d+\s*[x×]?\s*)?d?lps?'
 _INCH = (r'(?:\d+\s*[x×]\s*)?\d{1,2}\s*-?\s*(?:inch(?:es)?|['
          + re.escape(_CLOSING_QUOTES + '″') + r'])' + _NOT_BEFORE_LETTER_OR_DIGIT)
-# Compiled from the same fragment the two gates below embed, never
-# re-spelled: _descriptor_quotes_are_clean asks "is this quote part of an inch
-# marker" and the gates ask "does this name a format", and the two must agree
-# on what an inch marker is. Approximating one inside the other is what
-# produced every quote bug dongiovannirecords.py records.
-_INCH_RE = re.compile(r'(?<!\w)(?:%s)' % _INCH, re.IGNORECASE)
 _VINYL_MEDIUM_RE = re.compile(
     r'(?<!\w)(?:%s|vinyls?)(?!\w)|(?<!\w)(?:%s)' % (_LP, _INCH),
     re.IGNORECASE,
@@ -211,10 +197,16 @@ _MARK_STAND_IN = "\u00df"
 def _fold_marks(text: str) -> str:
     r"""The text with every combining mark replaced by a letter, for MATCHING ONLY.
 
-    Never for anything emitted: it is a decision-time normalisation, so
-    `\w`-based boundaries see a mark as the word-interior it is. Length- and
-    position-preserving, which is what lets _descriptor_quotes_are_clean scan
-    the folded string and compare the offsets against the original.
+    Never for anything emitted: it is a decision-time normalisation, and its
+    whole job is to make the `\w`-based boundaries in the format and variant
+    patterns stable across NFC and NFD, so a mark reads as the word-interior
+    it is.
+
+    Length- and position-preserving, though nothing relies on that any more:
+    it was what let a marker-aware quote check scan the folded string and
+    compare offsets against the original, and that check is gone. Kept because
+    a fold that changed length could only make the patterns harder to reason
+    about, not easier.
     """
     if text.isascii():
         return text
