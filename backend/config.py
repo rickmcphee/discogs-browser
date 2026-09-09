@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import socket
+import threading
 import time
 from pathlib import Path
 from urllib.parse import quote, urlsplit, urlunsplit
@@ -147,12 +148,24 @@ def ensure_dirs():
 # does not even wait that long because save_config() drops the cache outright.
 _CONFIG_CACHE_TTL_SECONDS = 2.0
 
-# (expires_at, config), replaced wholesale and never mutated in place. Read
-# without a lock deliberately: a lock held across the query below would
-# serialize every caller behind one connection, which is the stall this cache
-# exists to prevent, and the worst a race can do is have two callers read the
-# same row twice.
+# Guards the two globals below and nothing else -- deliberately never held
+# across the query. A lock around the read itself would turn the very failure
+# this cache exists to fix into a queue: callers would serialize behind
+# whichever one is stuck in psycopg's 30s checkout, each waiting out the one
+# before it, instead of all waiting on the pool's own fair queue at once.
+_cache_lock = threading.Lock()
+
+# (expires_at, config), replaced wholesale and never mutated in place.
 _config_cache = None
+
+# Bumped by every invalidation, and captured by a read before it queries. A
+# read that started before an invalidation publishes nothing, which is what
+# makes save_config()'s read-your-own-write a guarantee rather than a race:
+# the SELECT happens outside the lock, so without this a load that had already
+# fetched the old row could seed the cache with it a moment after the write
+# landed -- and POST /api/settings is followed straight away by the GET that
+# repopulates the form from exactly that cache.
+_config_generation = 0
 
 
 def invalidate_config_cache():
@@ -161,22 +174,32 @@ def invalidate_config_cache():
     Called by everything here that writes the row. A write from another
     Machine is deliberately not covered -- it becomes visible when the TTL
     expires, which is the freshness guarantee every caller now has."""
-    global _config_cache
-    _config_cache = None
+    global _config_cache, _config_generation
+    with _cache_lock:
+        _config_generation += 1
+        _config_cache = None
 
 
 def load_config() -> dict:
     import db
 
     global _config_cache
-    cached = _config_cache
+
+    with _cache_lock:
+        cached = _config_cache
+        generation = _config_generation
     if cached is not None and time.monotonic() < cached[0]:
         return copy.deepcopy(cached[1])
 
     with db.get_admin_pool().connection() as conn:
         row = conn.execute("SELECT data FROM app_config WHERE id = TRUE").fetchone()
     data = row["data"] if row else {}
-    _config_cache = (time.monotonic() + _CONFIG_CACHE_TTL_SECONDS, data)
+    with _cache_lock:
+        # Not stale: no write landed while this read was in flight. A read that
+        # loses this check still returns what it fetched -- it just keeps it to
+        # itself rather than serving it to everyone else for a whole TTL.
+        if generation == _config_generation:
+            _config_cache = (time.monotonic() + _CONFIG_CACHE_TTL_SECONDS, data)
     # A copy, because callers mutate what they get back -- POST /api/settings
     # reads, edits and re-saves the same dict -- and a mutation reaching the
     # cached object would poison every other reader until the TTL expired.
@@ -212,10 +235,10 @@ def save_config(data: dict):
         conn.commit()
     # So this Machine reads its own write back immediately rather than at the
     # end of the TTL -- POST /api/settings is followed straight away by the
-    # GET that repopulates the form. A reader already mid-SELECT can still
-    # seed the cache from the old row a moment after this, which is why the
-    # TTL is short: it is the bound on how stale any reader can be, here and
-    # on every other Machine.
+    # GET that repopulates the form. The generation bump inside this also
+    # cancels the publish of any read already mid-SELECT, so a load that
+    # fetched the pre-save row cannot hand it out after this returns. The TTL
+    # remains the bound for every *other* Machine, which sees no invalidation.
     invalidate_config_cache()
 
 

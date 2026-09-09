@@ -1,5 +1,6 @@
 import importlib
 import json
+from contextlib import contextmanager
 from unittest.mock import patch
 from urllib.parse import unquote, urlsplit
 
@@ -78,6 +79,40 @@ def test_load_config_hands_out_a_copy_the_caller_may_mutate(tmp_config_dir):
         first["ebay_app_id"] = "edited-in-place"
         first["nested"]["kept"] = False
         assert load_config() == {"ebay_app_id": "real-key", "nested": {"kept": True}}
+
+
+def test_a_save_landing_mid_read_is_not_undone_by_the_read(tmp_config_dir):
+    """A load already past its SELECT must not publish the pre-save row.
+
+    save_config() invalidates, but the read that raced it holds a row fetched
+    before the write. Publishing that would serve the old settings back to the
+    GET that repopulates the form right after POST /api/settings, for a whole
+    TTL, with the save itself having succeeded."""
+    save_config({"ebay_app_id": "old-key"})
+    real_pool = db.get_admin_pool()
+    saved = []
+
+    class _PoolThatSavesMidRead:
+        """The admin pool, but a competing save lands in the window between
+        this read's SELECT and its cache publish. One-shot: save_config()
+        borrows this same patched pool, and must not recurse."""
+
+        @contextmanager
+        def connection(self):
+            with real_pool.connection() as conn:
+                yield conn
+            if not saved:
+                saved.append(True)
+                save_config({"ebay_app_id": "new-key"})
+
+    with patch("config._CONFIG_CACHE_TTL_SECONDS", 60), \
+         patch.object(db, "get_admin_pool", _PoolThatSavesMidRead):
+        # What this read fetched, which is legitimately the pre-save row.
+        assert load_config() == {"ebay_app_id": "old-key"}
+    assert saved, "the competing save never ran, so this proves nothing"
+
+    # But it kept it to itself: the next reader sees the save, not the cache.
+    assert load_config() == {"ebay_app_id": "new-key"}
 
 
 def test_migrate_legacy_config_file_drops_the_cache(tmp_config_dir):
