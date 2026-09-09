@@ -62,6 +62,20 @@ _VINYL_RE = re.compile(
     r'|(?<![\d.])(?:5|7|10|12)\s*(?:"|”|″|\s*inch\b)',
     re.IGNORECASE,
 )
+# A pair of inch marks joined by an x is a physical measurement, never a
+# record. Restricting the marker above to record sizes is not enough on its
+# own, because merchandise is routinely sold at record size -- `12"x12"
+# Poster` names a size this crawler otherwise reads as proof of vinyl. Found
+# by Copilot in review on PR #337; the live listing that prompted the size
+# restriction (`18"x24" Poster`) happened to fall outside it and hid the hole.
+#
+# A record's own multiplier is not a pair and survives: `4x10" Vinyl Box Set`
+# carries no inch mark on the 4, because it counts discs rather than measuring
+# one. The optional letter covers the store's `15"W x 16"H` spelling.
+_MEASUREMENT_RE = re.compile(
+    r'\d+(?:\.\d+)?\s*["”″]\s*[whd]?\s*[x×]\s*\d+(?:\.\d+)?\s*["”″]',
+    re.IGNORECASE,
+)
 _NON_VINYL_MEDIA_RE = re.compile(
     # The disc counts take the same multiplier prefix as the vinyl pattern
     # above, and for the same reason: there is no word boundary inside `5xCD`,
@@ -115,24 +129,27 @@ class Crawler:
 
     async def crawl_catalog(self) -> AsyncIterator[dict]:
         products_seen = 0
-        vendor_present = 0
         format_named = 0
+        artist_missing = 0
         identity_missing = 0
         unreadable_stock = 0
         yielded = 0
         unpriced = 0
         async for product in iter_products(self.base_url, _COLLECTION_SLUG):
             products_seen += 1
-            if (product.get("vendor") or "").strip():
-                vendor_present += 1
             # Tallied before the availability filter, and only for products
             # this crawler reads as records, so a sold-out record still
             # vouches for the payload it was read out of.
             pressings = self._pressings(product)
             if pressings:
                 format_named += 1
+                # Same order _items() skips in, so each tally counts the
+                # products that reached it rather than the ones an earlier
+                # skip already accounted for.
                 if not self._has_identity(product):
                     identity_missing += 1
+                elif not all(self._credit(product)):
+                    artist_missing += 1
                 elif not self._has_readable_stock_flag(pressings):
                     unreadable_stock += 1
             unpriced += self._unpriced(product)
@@ -148,13 +165,6 @@ class Crawler:
             raise RuntimeError(
                 f"{_COLLECTION_SLUG} collection returned no products -- "
                 "renamed, removed, or payload drift")
-        if vendor_present == 0:
-            # `vendor` is the artist for all but the series-vendored records,
-            # and _CREDIT_RE only rescues those. A store-wide empty vendor
-            # would credit the whole catalog to nobody.
-            raise RuntimeError(
-                f"no product in the {_COLLECTION_SLUG} collection carries a vendor "
-                "-- artist-source drift")
         if format_named == 0:
             # Unlike a negative format gate, this one is positive: it needs a
             # vinyl word in the variant to admit anything. So the store moving
@@ -175,6 +185,21 @@ class Crawler:
                 f"{_COLLECTION_SLUG} collection yielded no rows while "
                 f"{unpriced} in-stock record(s) carry no usable price -- "
                 "price-source drift")
+        if not yielded and artist_missing:
+            # `vendor` is the artist for all but the series-vendored records,
+            # and _CREDIT_RE only rescues those, so a vendor lost store-wide
+            # skips every record in _items() and empties the walk.
+            #
+            # Counted only for products that ARE records, and only when the
+            # walk yielded nothing. A tally taken over every product instead
+            # would be satisfied by merch and CD-only products that can never
+            # yield a row: they would keep their vendor while the records lost
+            # theirs, and the guard would wave through a completed-but-empty
+            # walk that deletes the snapshot. Found by Copilot in review on
+            # PR #337.
+            raise RuntimeError(
+                f"{_COLLECTION_SLUG} collection yielded no rows while "
+                f"{artist_missing} record(s) carry no artist -- artist-source drift")
         if not yielded and identity_missing:
             # `title` and `handle` are identity, not display: item_key hashes
             # the row's artist, title and URL, so a product missing either is
@@ -308,10 +333,15 @@ class Crawler:
 
     @staticmethod
     def _is_vinyl(variant_title: str) -> bool:
-        head = variant_title.split("(")[0].strip()
+        # Measurements are dropped before anything looks for vinyl, so a
+        # record-sized one cannot stand in as the evidence. Dropping rather
+        # than rejecting outright keeps a record that merely states its
+        # dimensions: the strong words are still there to be found.
+        title = _MEASUREMENT_RE.sub(" ", variant_title)
+        head = title.split("(")[0].strip()
         if _NON_VINYL_MEDIA_RE.search(head) and not _VINYL_RE.search(head):
             return False
-        return bool(_VINYL_RE.search(variant_title))
+        return bool(_VINYL_RE.search(title))
 
     @staticmethod
     def _has_identity(product: dict) -> bool:

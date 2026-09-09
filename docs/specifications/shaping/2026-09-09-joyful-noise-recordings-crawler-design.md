@@ -96,6 +96,17 @@ Two details of the patterns are load-bearing:
 - **The inch marker is restricted to record sizes** (5, 7, 10, 12). An
   unrestricted one admits `18"x24" Poster` and a tote bag measured `15"W x
   16"H` — both live listings.
+- **A pair of inch marks joined by an `x` is a measurement, and is dropped
+  before anything looks for vinyl.** The size restriction above is not
+  sufficient on its own, because merchandise is routinely sold *at* record
+  size: `12"x12" Poster` names a size the crawler would otherwise read as
+  proof of vinyl. The live listing that prompted the size restriction happened
+  to fall outside it, which hid the hole until Copilot found it in review on
+  PR #337. Dropping the measurement rather than rejecting the variant outright
+  keeps a record that merely states its dimensions, since the strong words are
+  still there to be found; and a disc count survives untouched, because
+  `4x10" Vinyl Box Set` carries no inch mark on the `4` — it counts discs
+  rather than measuring one.
 - **The disc counts take a multiplier prefix** (`\d*\s*[x×]?\s*cds?`), because
   there is no word boundary inside `5xCD` and a plain `\bcds?\b` reads straight
   past it. `5xCD Box Set (... an elaborate 12"x12", 27 page bound-book)` is a
@@ -198,7 +209,7 @@ names a distinct way the payload can stop carrying what this crawler reads.
 | Guard | Fires when |
 | --- | --- |
 | collection empty | the walk returned no products at all |
-| artist-source drift | no product carries a vendor |
+| artist-source drift | nothing yielded, while records carry no artist |
 | format-source drift | no product has a variant naming a vinyl format |
 | price-source drift | nothing yielded, while in-stock records were dropped for want of a usable price |
 | identity-source drift | nothing yielded, while records carry no title or handle |
@@ -210,7 +221,15 @@ positive, the store moving format out of the `Format` option — into
 `product_type`, tags, or a metafield — would empty the walk in silence rather
 than merely admitting too much. Nothing else notices that.
 
-The price, identity and stock guards are gated on having yielded nothing, so an isolated unreadable
+The artist guard counts only products that **are** records, and only fires on
+an empty walk. A tally taken over every product instead would be satisfied by
+the merch and CD-only products that can never yield a row: they would keep
+their vendor while the records lost theirs, and the guard would wave through a
+completed-but-empty walk that deletes the snapshot. Copilot found that in
+review on PR #337, along with the case where one credited but sold-out record
+vouches for a vendorless available one.
+
+The artist, price, identity and stock guards are gated on having yielded nothing, so an isolated unreadable
 product among real rows stays an ordinary skipped row, and a store that has
 simply sold out still records an honest empty snapshot. The stock guard counts
 *unreadable* products rather than readable ones, so one genuinely sold-out
@@ -222,5 +241,9 @@ Replayed over the live catalog captured on 2026-09-09: 462 rows, every one
 priced, every one carrying a cover image, and all 462 identities distinct. No
 row names a poster, tote, cassette, CD or download; no row is credited to
 `hidden`, `White Label Series` or the label itself.
+
+Both review findings above were confirmed against the code before being fixed,
+and neither fix changes the live result: the replay still produces the same 462
+rows. Each has a regression test.
 
 Unit tests mock the products endpoint with `respx` and never reach the store.

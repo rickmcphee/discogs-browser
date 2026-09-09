@@ -275,6 +275,31 @@ def test_an_inch_marker_that_is_not_a_record_size_does_not_admit(variant_title):
     assert not Crawler._is_vinyl(variant_title)
 
 
+@pytest.mark.parametrize("variant_title", [
+    # Merchandise is routinely sold AT record size, so restricting the marker
+    # to record sizes does not by itself keep it out — a pair of inch marks is
+    # a measurement whatever the numbers are.
+    '12"x12" Poster',
+    '12"x12" Print',
+    '10"x10" Art Print',
+    '7"x7" Sticker Sheet',
+])
+def test_a_record_sized_measurement_is_not_evidence_of_vinyl(variant_title):
+    assert not Crawler._is_vinyl(variant_title)
+
+
+@pytest.mark.parametrize("variant_title", [
+    # A disc count is not a measurement: the multiplier carries no inch mark.
+    '4x10" Vinyl Box Set',
+    # A record may state its own dimensions; the strong word still decides.
+    '12"x12" Screen-printed Vinyl',
+    # The medium beside it does not veto a head that names vinyl outright.
+    'Hardbound Book + 7"',
+])
+def test_a_measurement_does_not_reject_a_record_that_names_itself(variant_title):
+    assert Crawler._is_vinyl(variant_title)
+
+
 def test_the_head_decides_the_medium_so_a_download_is_not_admitted_by_its_blurb():
     # The digital edition of a box set. Its blurb names the LPs the download
     # covers; reading the whole string would sell it as vinyl.
@@ -514,10 +539,42 @@ async def test_an_empty_collection_raises(crawler):
 
 
 @respx.mock
-async def test_a_catalog_with_no_vendor_anywhere_raises(crawler):
+async def test_a_catalog_whose_records_lost_their_artist_raises(crawler):
     _mock_pages(_product(vendor=""), _product(vendor=None, handle="b"))
     with pytest.raises(RuntimeError, match="artist-source drift"):
         await _crawl(crawler)
+
+
+@respx.mock
+async def test_merch_keeping_its_vendor_does_not_vouch_for_vendorless_records(crawler):
+    # The guard counts only products that ARE records. Tallied over every
+    # product instead, a CD-only product that can never yield a row would
+    # satisfy it while every record was skipped for want of an artist — and
+    # the completed-but-empty walk would delete the snapshot.
+    _mock_pages(
+        _product(vendor="", handle="record"),
+        _product(vendor="Some Label", handle="cd",
+                 variants=[_variant("CD + Digital")]),
+    )
+    with pytest.raises(RuntimeError, match="artist-source drift"):
+        await _crawl(crawler)
+
+
+@respx.mock
+async def test_a_credited_sold_out_record_does_not_vouch_for_a_vendorless_one(crawler):
+    _mock_pages(
+        _product(vendor="", handle="vendorless"),
+        _product(vendor="Some Artist", handle="soldout",
+                 variants=[_variant("Black Vinyl + Digital", available=False)]),
+    )
+    with pytest.raises(RuntimeError, match="artist-source drift"):
+        await _crawl(crawler)
+
+
+@respx.mock
+async def test_one_vendorless_record_among_real_rows_is_only_a_skipped_row(crawler):
+    _mock_pages(_TRAUMANAUT_PRODUCT, _product(vendor="", handle="vendorless"))
+    assert len(await _crawl(crawler)) == 1
 
 
 @respx.mock
