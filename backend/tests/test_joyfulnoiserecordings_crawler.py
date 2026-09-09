@@ -314,6 +314,66 @@ def test_the_blurb_still_supplies_the_signal_when_the_head_names_no_medium():
         'Can\'t Let Go Juno (Hand-made lathe-cut 7" limited to 100 copies)')
 
 
+# CAPTURED: the exact live variant title, from the store's "Reissues &
+# Remnants" box set. Sold out at capture, which is why the format gate could
+# drop it without changing a single row — a latent loss, not a visible one.
+_LIVE_BOX_SET_VARIANT = (
+    "Limited Edition Box Set + Digital (3xLP on deluxe colored vinyl, packaged "
+    "in matte-laminated box set with spot-gloss, limited to 500 hand-numbered "
+    "copies. Includes WAV & MP3 download of all audio, plus 23 bonus digital "
+    "track.)"
+)
+
+
+def test_a_companion_download_does_not_convict_the_record_it_ships_with():
+    # The head names a container and the download that comes with it, and no
+    # vinyl; the pressing is stated only in the blurb. Vetoing on the `+
+    # Digital` dropped an in-scope pressing.
+    assert Crawler._is_vinyl(_LIVE_BOX_SET_VARIANT)
+
+
+@pytest.mark.parametrize("variant_title", [
+    _LIVE_BOX_SET_VARIANT,
+    "Limited Edition Box Set + Digital (5xLPs on galaxy swirl colored vinyl "
+    '+ bonus 7", packaged in a custom-built, screen-printed wooden box.)',
+])
+def test_a_box_set_states_its_pressing_in_the_blurb_and_is_admitted(variant_title):
+    assert Crawler._is_vinyl(variant_title)
+
+
+@pytest.mark.parametrize("variant_title", [
+    # A variant that IS the download keeps its head whole: there is no joining
+    # `+` to cut on, so the veto still reaches it.
+    "Digital (Includes MP3 and WAV downloads of all 5 LPs plus digital bonus "
+    "content.)",
+    "MP3 Download (Flexi Discs are SOLD OUT this is the download only)",
+    "CD [3xCD] + Digital (Includes instant download of all 3 LPs in MP3, WAV, "
+    "and AIFF.)",
+])
+def test_cutting_the_companion_does_not_admit_the_download_itself(variant_title):
+    assert not Crawler._is_vinyl(variant_title)
+
+
+def test_a_container_of_another_medium_is_not_rescued_by_a_novelty_pressing():
+    # A box of cassettes whose lid doubles as a playable lathe-cut single. The
+    # head names only the container, so the blurb decides — and a competing
+    # physical medium there vetoes, where the download words never could.
+    assert not Crawler._is_vinyl(
+        "Box Set + Digital (Limited to 100 hand-numbered copies, featuring 10 "
+        "full-length cassettes packaged inside a custom wooden box set, with "
+        "lid that doubles as a lathe-cut vinyl single. Includes instant "
+        "download.)")
+
+
+def test_a_box_of_other_albums_stays_out_once_the_companion_is_cut():
+    # Cutting `+ Digital` lets the Triptych blurb be read; the other physical
+    # goods it names are what keep it out.
+    assert not Crawler._is_vinyl(
+        'Triptych Box Set + Digital (Three 2xLPs "Grand Opening and Closing", '
+        '"Of Natural History", "In Glorious Times" plus booklets and signed '
+        "poster in tri-fold wooden box w/ etched and die-cut art.)")
+
+
 def test_a_vinyl_word_in_the_head_survives_another_medium_beside_it():
     assert Crawler._is_vinyl('Red Vinyl + 7" (includes bonus 7" record & MP3 download)')
     assert Crawler._is_vinyl('Book + 7" (175 page hardcover book w/ 7" on Gold Vinyl)')

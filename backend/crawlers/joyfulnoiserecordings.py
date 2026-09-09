@@ -76,6 +76,22 @@ _MEASUREMENT_RE = re.compile(
     r'\d+(?:\.\d+)?\s*["”″]\s*[whd]?\s*[x×]\s*\d+(?:\.\d+)?\s*["”″]',
     re.IGNORECASE,
 )
+# A trailing `+ Digital` (or `+ MP3`, `& WAV`, ...) is the download that comes
+# WITH the physical item, not the item itself, so it is cut from the head
+# before the head is asked what medium this is. Without that cut the download
+# convicts its own record: `Limited Edition Box Set + Digital (3xLP on deluxe
+# colored vinyl ...)` is a live pressing whose head names no vinyl, so the
+# medium veto rejected it and the blurb never got to answer. Found by Copilot
+# in review on PR #337, against the very example the design doc had cited as a
+# shape the head alone cannot judge.
+#
+# Anchored on the joining `+`/`&`, so a variant that IS the download is
+# untouched: `Digital (...)` and `MP3 Download (...)` keep their heads whole
+# and stay vetoed.
+_COMPANION_RE = re.compile(
+    r'\s*[+&]\s*(?:instant\s+)?(?:digital|mp3s?|wavs?|aiffs?|downloads?)\b.*$',
+    re.IGNORECASE,
+)
 _NON_VINYL_MEDIA_RE = re.compile(
     # The disc counts take the same multiplier prefix as the vinyl pattern
     # above, and for the same reason: there is no word boundary inside `5xCD`,
@@ -86,6 +102,16 @@ _NON_VINYL_MEDIA_RE = re.compile(
     r'(?<![a-z])\d*\s*[x×]?\s*cds?\b|\bcompact\s+discs?\b'
     r'|(?<![a-z])\d*\s*[x×]?\s*cassettes?\b|(?<![a-z])\d*\s*[x×]?\s*tapes?\b'
     r'|\bdigital\b|\bmp3s?\b|\bwavs?\b|\bdownloads?\b'
+    r'|\bbooks?\b|\bzines?\b|\bposters?\b|\btotes?\b|\bshirts?\b'
+    r'|(?<![a-z])\d*\s*[x×]?\s*dvds?\b|\bblu-?\s?rays?\b',
+    re.IGNORECASE,
+)
+# The media that are physical goods rather than the download every record here
+# ships with. Only these veto a bare container's blurb: the download words
+# cannot, because every legitimate record's blurb names one.
+_PHYSICAL_MEDIA_RE = re.compile(
+    r'(?<![a-z])\d*\s*[x×]?\s*cds?\b|\bcompact\s+discs?\b'
+    r'|(?<![a-z])\d*\s*[x×]?\s*cassettes?\b|(?<![a-z])\d*\s*[x×]?\s*tapes?\b'
     r'|\bbooks?\b|\bzines?\b|\bposters?\b|\btotes?\b|\bshirts?\b'
     r'|(?<![a-z])\d*\s*[x×]?\s*dvds?\b|\bblu-?\s?rays?\b',
     re.IGNORECASE,
@@ -333,13 +359,23 @@ class Crawler:
 
     @staticmethod
     def _is_vinyl(variant_title: str) -> bool:
+        """Whether a variant is a record, from its title alone."""
         # Measurements are dropped before anything looks for vinyl, so a
         # record-sized one cannot stand in as the evidence. Dropping rather
         # than rejecting outright keeps a record that merely states its
         # dimensions: the strong words are still there to be found.
         title = _MEASUREMENT_RE.sub(" ", variant_title)
-        head = title.split("(")[0].strip()
-        if _NON_VINYL_MEDIA_RE.search(head) and not _VINYL_RE.search(head):
+        head = _COMPANION_RE.sub("", title.split("(")[0]).strip()
+        if _VINYL_RE.search(head):
+            return True
+        if _NON_VINYL_MEDIA_RE.search(head):
+            return False
+        # The head names no medium at all: a bare container ("Box Set"), or
+        # the song, which is how the store titles its lathe-cut singles. The
+        # blurb answers instead -- but a competing PHYSICAL medium there still
+        # vetoes, which is what keeps out a box of cassettes whose lid happens
+        # to be a playable lathe-cut single.
+        if _PHYSICAL_MEDIA_RE.search(title):
             return False
         return bool(_VINYL_RE.search(title))
 

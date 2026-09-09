@@ -91,6 +91,24 @@ So: **the head decides whether some other medium owns the product; the full
 string then has to show vinyl.** A head that names vinyl outright is not vetoed
 by a medium sitting beside it (`Hardbound Book + 7"`, `Red Vinyl + 7"`).
 
+Two refinements to that, both found by Copilot in review on PR #337:
+
+- **A trailing `+ Digital` is cut from the head before the head is judged.**
+  It is the download that ships *with* the physical item, not the item, and
+  leaving it in makes the download convict its own record: `Limited Edition
+  Box Set + Digital (3xLP on deluxe colored vinyl ...)` is a live pressing
+  whose head names no vinyl, so the veto fired and the blurb never got to
+  answer — the exact shape this section cites as one the head alone cannot
+  judge. The cut is anchored on the joining `+`/`&`, so a variant that *is*
+  the download keeps its head whole and stays vetoed (`Digital (...)`,
+  `MP3 Download (...)`).
+- **When the head names no medium at all** — a bare container like `Box Set`,
+  or the song, which is how the lathe-cut singles are titled — the blurb
+  answers, but a competing *physical* medium there vetoes. Only physical ones
+  can: every legitimate record's blurb names a download, so the download words
+  would veto everything. This is what keeps out a box of ten cassettes whose
+  lid doubles as a playable lathe-cut single.
+
 Two details of the patterns are load-bearing:
 
 - **The inch marker is restricted to record sizes** (5, 7, 10, 12). An
@@ -138,9 +156,13 @@ because the store sometimes puts the lot in the product name and a plain format
 in the variant (`Danielson Artist Enabler Club One-Time Payment` /
 `15 lathe-cuts + Wooden Box + Digital`).
 
-Note that the Triptych box needs none of this: its head names Digital and no
-vinyl, so the medium layer rejects it before the "Three 2xLPs" in its blurb can
-admit it. The bundle list catches what the format gate cannot.
+The Triptych box is caught by the format gate rather than by that list, though
+not as directly as it was before the companion cut above: with `+ Digital` gone
+from its head, the blurb *is* read, and what keeps it out is the other physical
+goods the box is described as holding (booklets, a signed poster). That is a
+weaker guarantee than the bundle wording, and worth stating as the limit it is:
+a lot whose blurb named nothing but records, and which the store did not call a
+bundle, would not be caught. None exists in the catalog today.
 
 ### The credit: `vendor`, unless it names a series
 
@@ -242,8 +264,13 @@ priced, every one carrying a cover image, and all 462 identities distinct. No
 row names a poster, tote, cassette, CD or download; no row is credited to
 `hidden`, `White Label Series` or the label itself.
 
-Both review findings above were confirmed against the code before being fixed,
-and neither fix changes the live result: the replay still produces the same 462
-rows. Each has a regression test.
+All three review findings on this branch were confirmed against the code before
+being fixed, and none of the fixes changes the live result: the replay still
+produces the same 462 rows. Each has a regression test.
+
+The third is worth separating from the other two, because it was a *latent*
+loss rather than a visible one. Every variant of the dropped shape was sold out
+at capture, so the gate could reject a documented in-scope pressing without
+moving a single row — the replay could not have caught it, and did not.
 
 Unit tests mock the products endpoint with `respx` and never reach the store.
