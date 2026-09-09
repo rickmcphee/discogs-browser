@@ -155,6 +155,7 @@ class Crawler:
 
     async def crawl_catalog(self) -> AsyncIterator[dict]:
         products_seen = 0
+        variants_unreadable = 0
         format_named = 0
         artist_missing = 0
         identity_missing = 0
@@ -163,6 +164,12 @@ class Crawler:
         unpriced = 0
         async for product in iter_products(self.base_url, _COLLECTION_SLUG):
             products_seen += 1
+            # Counted outside the `pressings` branch below, which is the whole
+            # point: a product whose variants cannot be read yields no
+            # pressings, so every tally nested in that branch skips it and it
+            # reaches no guard at all.
+            if not self._has_readable_variants(product):
+                variants_unreadable += 1
             # Tallied before the availability filter, and only for products
             # this crawler reads as records, so a sold-out record still
             # vouches for the payload it was read out of.
@@ -191,6 +198,23 @@ class Crawler:
             raise RuntimeError(
                 f"{_COLLECTION_SLUG} collection returned no products -- "
                 "renamed, removed, or payload drift")
+        if not yielded and variants_unreadable:
+            # An unreadable `variants` collection -- absent, retyped, empty,
+            # or holding no mapping -- is invisible to every other guard here.
+            # `_pressings` reads it through `or []` and drops non-mappings, so
+            # such a product looks exactly like one that simply stocks no
+            # records, and a single readable sold-out record elsewhere is
+            # enough to keep `format_named` non-zero and wave the empty walk
+            # through. Found by Copilot in review on PR #337, the same shape
+            # of hole as the artist tally below.
+            #
+            # Checked before the format guard so it names the upstream cause:
+            # when the collection breaks store-wide both conditions hold, and
+            # "no variant names a vinyl format" would be true but misleading.
+            raise RuntimeError(
+                f"{_COLLECTION_SLUG} collection yielded no rows while "
+                f"{variants_unreadable} product(s) carry no readable variants "
+                "-- variant-source drift")
         if format_named == 0:
             # Unlike a negative format gate, this one is positive: it needs a
             # vinyl word in the variant to admit anything. So the store moving
@@ -378,6 +402,20 @@ class Crawler:
         if _PHYSICAL_MEDIA_RE.search(title):
             return False
         return bool(_VINYL_RE.search(title))
+
+    @staticmethod
+    def _has_readable_variants(product: dict) -> bool:
+        """Whether a product's `variants` is a non-empty list of mappings.
+
+        Every published product on this store carries one, so anything else is
+        drift rather than a product without pressings. Non-mappings still get
+        dropped silently in `_pressings`, leaving an isolated malformed product
+        an ordinary skipped row -- this only decides whether it is COUNTED.
+        """
+        variants = product.get("variants")
+        if not isinstance(variants, list) or not variants:
+            return False
+        return all(isinstance(v, dict) for v in variants)
 
     @staticmethod
     def _has_identity(product: dict) -> bool:

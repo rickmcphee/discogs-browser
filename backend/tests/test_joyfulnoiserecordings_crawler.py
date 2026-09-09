@@ -671,6 +671,49 @@ async def test_a_catalog_whose_stock_flags_went_unreadable_raises(crawler):
 
 
 @respx.mock
+@pytest.mark.parametrize("variants", [None, {}, "junk", ["not a dict", 42], []])
+async def test_a_catalog_whose_variants_went_unreadable_raises(crawler, variants):
+    # A product whose variants cannot be read yields no pressings, so it looks
+    # exactly like one that stocks no records and every tally nested in the
+    # pressings branch skips it. One readable sold-out record beside it is
+    # enough to keep the format guard satisfied — and then the empty walk
+    # would delete the snapshot.
+    _mock_pages(
+        _product(handle="soldout",
+                 variants=[_variant("Black Vinyl + Digital", available=False)]),
+        _product(handle="unreadable", variants=variants),
+    )
+    with pytest.raises(RuntimeError, match="variant-source drift"):
+        await _crawl(crawler)
+
+
+@respx.mock
+async def test_unreadable_variants_are_named_before_the_format_guard(crawler):
+    # Broken store-wide, both guards' conditions hold; the message must name
+    # the upstream cause rather than the format gate it starved.
+    _mock_pages(_product(handle="a", variants=None),
+                _product(handle="b", variants="junk"))
+    with pytest.raises(RuntimeError, match="variant-source drift"):
+        await _crawl(crawler)
+
+
+@respx.mock
+async def test_one_malformed_product_among_real_rows_is_only_a_skipped_row(crawler):
+    _mock_pages(_TRAUMANAUT_PRODUCT, _product(handle="broken", variants=None))
+    assert len(await _crawl(crawler)) == 1
+
+
+@pytest.mark.parametrize("variants,readable", [
+    ([{"title": "Black Vinyl", "price": "20.00", "available": True}], True),
+    (None, False), ({}, False), ("junk", False), ([], False),
+    (["not a dict"], False),
+    ([{"title": "Black Vinyl"}, "not a dict"], False),
+])
+def test_readable_variants_requires_a_non_empty_list_of_mappings(variants, readable):
+    assert Crawler._has_readable_variants({"variants": variants}) is readable
+
+
+@respx.mock
 async def test_a_catalog_that_merely_sold_out_does_not_raise(crawler):
     _mock_pages(_product(variants=[_variant("Black Vinyl", available=False)]))
     assert await _crawl(crawler) == []

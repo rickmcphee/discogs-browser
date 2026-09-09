@@ -231,6 +231,7 @@ names a distinct way the payload can stop carrying what this crawler reads.
 | Guard | Fires when |
 | --- | --- |
 | collection empty | the walk returned no products at all |
+| variant-source drift | nothing yielded, while products carry no readable `variants` |
 | artist-source drift | nothing yielded, while records carry no artist |
 | format-source drift | no product has a variant naming a vinyl format |
 | price-source drift | nothing yielded, while in-stock records were dropped for want of a usable price |
@@ -242,6 +243,18 @@ gate is negative, and it is the one this design most needs. Because the gate is
 positive, the store moving format out of the `Format` option — into
 `product_type`, tags, or a metafield — would empty the walk in silence rather
 than merely admitting too much. Nothing else notices that.
+
+The variant guard is the one that cannot be nested inside the record branch,
+and that is precisely why it is needed. `_pressings` reads `variants` through
+`or []` and drops non-mappings, so a product whose collection is absent,
+retyped, empty or holds no mapping yields no pressings — indistinguishable, to
+every tally inside that branch, from a product that simply stocks no records.
+A single readable sold-out record elsewhere then keeps `format_named` non-zero,
+and the empty walk is waved through to delete the snapshot. Counted per product
+before the branch, and checked *before* the format guard so that a
+store-wide break names the upstream cause rather than the format gate it
+starved. Copilot found this in review on PR #337 — the same shape of hole as
+the artist tally, one guard later.
 
 The artist guard counts only products that **are** records, and only fires on
 an empty walk. A tally taken over every product instead would be satisfied by
@@ -264,13 +277,19 @@ priced, every one carrying a cover image, and all 462 identities distinct. No
 row names a poster, tote, cassette, CD or download; no row is credited to
 `hidden`, `White Label Series` or the label itself.
 
-All three review findings on this branch were confirmed against the code before
-being fixed, and none of the fixes changes the live result: the replay still
-produces the same 462 rows. Each has a regression test.
+Every review finding on this branch was confirmed against the code before being
+fixed, and none of the fixes changes the live result: the replay still produces
+the same 462 rows. Each has a regression test.
 
-The third is worth separating from the other two, because it was a *latent*
-loss rather than a visible one. Every variant of the dropped shape was sold out
-at capture, so the gate could reject a documented in-scope pressing without
-moving a single row — the replay could not have caught it, and did not.
+Two of them are worth separating from the rest, because the replay could not
+have caught either and did not. The companion-download rejection was a *latent*
+loss: every variant of the dropped shape was sold out at capture, so the gate
+could reject a documented in-scope pressing without moving a single row. The
+unreadable-`variants` hole was a guard that has never fired and, on today's
+payload, never will — every live product carries a clean list. Both were found
+only by reading the code. Replaying against a captured catalog demonstrates
+what the crawler does with the payload it has; it says nothing about what the
+guards do when that payload changes, which is the only thing the guards are
+for.
 
 Unit tests mock the products endpoint with `respx` and never reach the store.
