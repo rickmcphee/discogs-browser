@@ -1,0 +1,226 @@
+# Joyful Noise Recordings crawler design
+
+**Status:** shipped
+**Branch:** `claude/joyful-noise-crawler-x5bmiq`
+**Date:** 2026-09-09
+
+## Problem
+
+Joyful Noise Recordings (`joyfulnoiserecordings.com`) is an Indianapolis label
+and store whose catalog does not reach the Store tab at all. It carries
+Deerhoof, Kishi Bashi, Joan of Arc, Tropical Fuck Storm, Swamp Dogg, Sebadoh
+and Lou Barlow, alongside a body of records that exists nowhere else: the White
+Label Series of one-off artist pressings, hand-made lathe-cut singles, the
+flexi-disc series, and a deep run of test pressings.
+
+The request named the store's front page, not a shelf.
+
+## Scope
+
+In: a `catalog`-type Shopify crawler over the store's whole published catalog,
+scoped to vinyl, emitting one row per in-stock pressing.
+
+Out: the store's CDs, cassettes, downloads, apparel, art objects and
+memberships; its subscription products; and any lot that bundles more than one
+release.
+
+## Technical grounding
+
+Every figure below was taken live on 2026-09-09.
+
+### Collection choice: `all`, not the `vinyl` shelf
+
+`meta.json` reports a `published_products_count` of 1044.
+`/collections/all/products.json` returns exactly 1044 products, and exactly the
+handle set of the store-wide `/products.json` — neither more nor less. So the
+built-in all-products collection is the whole published catalog and
+`iter_products()` can walk it directly.
+
+That check was necessary rather than ceremonial, because the store **also**
+publishes a hand-made collection titled "All". `collections.json` reports that
+one at a `products_count` of 920, below the store's published total, so reading
+that number alone would have argued that `all` was a curated subset and pushed
+the walk onto a shelf. It is not: the built-in collection wins the handle, and
+the walk's own result is the evidence.
+
+The `vinyl` shelf was rejected on stronger grounds than that. It is exactly the
+set of products tagged `Vinyl` — 256 published products, matching the tagged set
+handle for handle — and that tag is not how this store decides what a record is.
+272 in-stock products **outside** the shelf still carry a vinyl variant. They
+are not edge cases: Surfer Blood's "1000 Palms" (Sky Blue and Black Vinyl),
+Joan of Arc's "1984" (Yellow Vinyl) and Tall Tall Trees' "A Wave of Golden
+Things" (Gold Vinyl) are ordinary catalog LPs tagged only `InPress`, and the
+7" singles, flexi-discs and test pressings sit outside it almost entirely.
+Walking the shelf would drop the larger part of the store's vinyl.
+
+The cost is the extra paced pages a full walk fetches.
+
+### Format lives in the variant, and nowhere else trustworthy
+
+`product_type` names the *release kind*, not the medium: "Albums", "Singles",
+"Test Pressing", "Box Sets", "Art Object", "Subscription". A single "Albums"
+product carries the vinyl, the CD and the download side by side. Tags are worse
+— many products carry none at all.
+
+The medium is in the variant, under a `Format` option the store uses on the
+bulk of its catalog. So the gate reads variant titles.
+
+`product_type` is also actively misleading in the other direction, and this is
+why it is not used even as a coarse exclusion: every White Label Series record
+is typed `Subscription`, because that is how it was originally sold. Excluding
+that type would drop a body of real records.
+
+### The format gate is two layers, and neither works alone
+
+The variant title is a **head** — the format's name — followed by the store's
+blurb in parentheses.
+
+Reading the **whole string** convicts every record of being a download, since
+nearly every vinyl variant here says "+ Digital" or "Includes MP3 download".
+Worse, it admits things that are not records: the digital edition of a box set
+is titled `Digital (Includes MP3 and WAV downloads of all 5 LPs ...)`, and its
+only vinyl word is in that blurb.
+
+Reading the **head alone** loses real records. The store titles its hand-made
+lathe-cut singles with the song — `Can't Let Go Juno (Hand-made lathe-cut 7"
+limited to 100 copies)` — so for that whole series the head names no format and
+the evidence is entirely inside the parenthesis. `Limited Edition Box Set +
+Digital (3xLP on deluxe colored vinyl ...)` is the same shape.
+
+So: **the head decides whether some other medium owns the product; the full
+string then has to show vinyl.** A head that names vinyl outright is not vetoed
+by a medium sitting beside it (`Hardbound Book + 7"`, `Red Vinyl + 7"`).
+
+Two details of the patterns are load-bearing:
+
+- **The inch marker is restricted to record sizes** (5, 7, 10, 12). An
+  unrestricted one admits `18"x24" Poster` and a tote bag measured `15"W x
+  16"H` — both live listings.
+- **The disc counts take a multiplier prefix** (`\d*\s*[x×]?\s*cds?`), because
+  there is no word boundary inside `5xCD` and a plain `\bcds?\b` reads straight
+  past it. `5xCD Box Set (... an elaborate 12"x12", 27 page bound-book)` is a
+  live listing whose only inch marker measures the book; without the prefix
+  nothing vetoes it before that `12"` admits it as a record. This was found by
+  a test asserting the rejection the prose already claimed.
+
+The gate is **positive**: a variant must show vinyl to be admitted. That is the
+opposite polarity from the crawlers whose shelf has already vouched for the
+medium, and it has a consequence the drift guards have to carry — see below.
+
+### Multi-release lots
+
+A lot of more than one release is excluded. Its price is not any single
+record's price, and the row would attach that price to whichever album it was
+shelved under. The store's clearest case: a $270 "Triptych Box Set" of three
+albums is a variant of each album it contains *and* a product of its own, so it
+would otherwise appear four times, against records whose own LP sells for $35.
+
+`Box Set` alone is deliberately **not** a bundle word — the store sells single
+releases that way (`4x10" Vinyl Box Set`; WHY?'s "Moh Lhean - Expanded" as
+eight 7"s in a box). The excluded wording is `bundle`, `grab bag`, `lucky dip`,
+`complete box set` and `full set`, plus `club`. `Complete Box Set` always names
+a whole series or discography here (Joan of Arc's first five albums, the Gray
+Area cassette series, Danielson's lathe-cut club).
+
+The bundle test runs against the **product** title as well as the variant,
+because the store sometimes puts the lot in the product name and a plain format
+in the variant (`Danielson Artist Enabler Club One-Time Payment` /
+`15 lathe-cuts + Wooden Box + Digital`).
+
+Note that the Triptych box needs none of this: its head names Digital and no
+vinyl, so the medium layer rejects it before the "Three 2xLPs" in its blurb can
+admit it. The bundle list catches what the format gate cannot.
+
+### The credit: `vendor`, unless it names a series
+
+`vendor` is the artist across the bulk of the catalog — unusually reliable for
+a store this size. The exception is the White Label Series, where `vendor` is
+the string `White Label Series` and the artist appears only in the product
+title, as `Artist 'Album'`.
+
+So the parse fires only where `vendor` demonstrably is not the artist: the
+title must match `Artist 'Album'` **and** the vendor must not appear anywhere
+in the title. Where the two agree — the store also quotes albums on products it
+vendors correctly — deferring to `vendor` costs nothing and risks nothing.
+
+Measured against the live catalog: all 36 in-stock series products parse to the
+right artist, and the rule fires on no other product in the catalog.
+
+The closing quote must be followed by whitespace or the end of the string. This
+is what stops an apostrophe *inside* the album closing it early — `Ambulances
+'Frankie Bacon's Blue, Blue Heart'` would otherwise yield an album of `Frankie
+Bacon`. The artist group excludes quotes outright, so the album's opening quote
+is always the title's first.
+
+A title that opens on the quote (`'Emerald Sea' (Test Pressing)`) has no artist
+ahead of it, does not match, and keeps its vendor.
+
+### The row title
+
+`{album} — {descriptor}`, where the descriptor is the variant head with the
+store's blurb dropped. The blurbs run to whole paragraphs; kept whole they make
+the row unreadable.
+
+The album leads because the Store tab's Collection and Wantlist filters match
+the library exact-or-prefix-with-space against the catalog title.
+
+Trimming is display-only, but `item_key` hashes the title, so a trim that
+collided two of a product's variants would silently overwrite one row with the
+other. No product collides today; a product that starts to falls back to the
+untrimmed titles, which are what distinguished the variants in the first place.
+
+### Availability and price
+
+`available` is a real bool on every variant in the catalog, and it agrees with
+the wording: all 60 variants whose titles announce `[SOLD OUT]` or `We are SOLD
+OUT` carry `available: false`. So the flag is the only stock signal read, and
+only the literal `True` admits — the string `"false"` is truthy.
+
+Prices are strings. A variant with no usable price is **skipped rather than
+listed blank**, which departs from the sibling crawlers and is worth stating
+plainly. Every unusable price in this catalog is an internal placeholder rather
+than a record: two "VIP LATHE TEST" products, and a duplicated product (handle
+`copy-of-...`) whose vendor and product_type are both the literal string
+`hidden`. That last one would otherwise reach the Store tab crediting an artist
+named "hidden", under a price nobody can act on.
+
+The bare `VIP` variant — the members' slot, priced like a pressing but naming
+no format — is excluded by the positive gate rather than by a rule of its own.
+A negative gate would publish it as vinyl.
+
+## Drift guards
+
+`replace_stock_items()` DELETEs this crawler's previous snapshot before
+inserting, and `_sync_stock` only skips that call when the crawl raised — so a
+completed-but-empty walk is destructive where a raise is inert. Each guard
+names a distinct way the payload can stop carrying what this crawler reads.
+
+| Guard | Fires when |
+| --- | --- |
+| collection empty | the walk returned no products at all |
+| artist-source drift | no product carries a vendor |
+| format-source drift | no product has a variant naming a vinyl format |
+| price-source drift | nothing yielded, while in-stock records were dropped for want of a usable price |
+| identity-source drift | nothing yielded, while records carry no title or handle |
+| stock-source drift | nothing yielded, while records carry no readable availability flag |
+
+The **format-source guard has no counterpart** in the crawlers whose format
+gate is negative, and it is the one this design most needs. Because the gate is
+positive, the store moving format out of the `Format` option — into
+`product_type`, tags, or a metafield — would empty the walk in silence rather
+than merely admitting too much. Nothing else notices that.
+
+The price, identity and stock guards are gated on having yielded nothing, so an isolated unreadable
+product among real rows stays an ordinary skipped row, and a store that has
+simply sold out still records an honest empty snapshot. The stock guard counts
+*unreadable* products rather than readable ones, so one genuinely sold-out
+record cannot vouch for a catalog that has gone unreadable behind it.
+
+## Verification
+
+Replayed over the live catalog captured on 2026-09-09: 462 rows, every one
+priced, every one carrying a cover image, and all 462 identities distinct. No
+row names a poster, tote, cassette, CD or download; no row is credited to
+`hidden`, `White Label Series` or the label itself.
+
+Unit tests mock the products endpoint with `respx` and never reach the store.
