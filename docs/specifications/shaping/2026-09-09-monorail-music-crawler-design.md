@@ -221,8 +221,16 @@ Chappell Roan - The Giver
   Limited Silver 7" with "The Private Investigator" Alternate Cover      £13.99
 ```
 
-— and without the pressing each would emit colliding rows into an `INSERT`
-that carries no `ON CONFLICT` guard.
+— and without the pressing each would emit several rows under **one
+identity**.
+
+Nothing would raise, and that is the point. `stock_items.item_key` is
+deliberately not unique — two stores stocking the same record share one, and
+`db.py` says so where the index is declared — and `stock_item_identities`
+upserts on it. So the failure is silent rather than loud: the pressings would
+share the saves, judgments and crawl-queue state keyed on that one identity,
+each would overwrite the last's `stock_item_identities` row, and the Store tab
+would list them as duplicates.
 
 The pressing is appended on **every** row, not only on multi-pressing
 products: a sibling selling out must not re-title the surviving rows and

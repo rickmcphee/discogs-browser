@@ -100,6 +100,27 @@ _NUMBER_RANGE_RE = re.compile(r'\d\s*$')
 _LEADING_NUMBER_RE = re.compile(r'^\s*\d')
 
 
+def _text(value) -> str:
+    """A whitespace-collapsed string, or "" for anything that is not one.
+
+    Every product-level field this crawler reads goes through here. A truthy
+    non-string would otherwise reach .strip() or .split() and raise, taking
+    the whole source down over one malformed product -- the opposite of the
+    discard-and-keep-going rule _read_variants already applies to a variant
+    title, and the reason the product-level fields are brought into line with
+    it here. Answering "" instead routes the product into the identity and
+    artist tallies below, so it is skipped and *counted*, and the drift guards
+    still see it.
+
+    That the abort is otherwise inert -- _sync_stock skips
+    replace_stock_items() on a raise, leaving the previous snapshot intact --
+    is not a defence. It leaves the store frozen at that snapshot for as long
+    as the one bad product is published, with every other record's price
+    silently stale.
+    """
+    return " ".join(value.split()) if isinstance(value, str) else ""
+
+
 class Crawler:
     site_name: str = "Monorail Music"
     base_url: str = "https://monorailmusic.com"
@@ -139,10 +160,15 @@ class Crawler:
             # the CDs' own titles while every record has lost its.
             if pressings:
                 vinyl_products += 1
-                if not self._artist(product):
-                    artist_missing += 1
-                elif not self._has_identity(product):
+                # Identity before artist: `title` is identity AND the artist's
+                # own source, so a product that has lost it has lost both, and
+                # reporting that as artist-source drift names the wrong field.
+                # `handle` is asked here for the same reason it is asked at
+                # all -- item_key hashes the URL built from it.
+                if not self._has_identity(product):
                     identity_missing += 1
+                elif not self._artist(product):
+                    artist_missing += 1
                 elif not self._has_readable_stock_flag(pressings):
                     unreadable_stock += 1
             for item in self._items(product):
@@ -233,13 +259,13 @@ class Crawler:
 
     @classmethod
     def _items(cls, product: dict) -> List[dict]:
+        if not cls._has_identity(product):
+            return []
         artist = cls._artist(product)
         if not artist:
             return []
-        if not cls._has_identity(product):
-            return []
         album = cls._album(product)
-        url = f"{cls.base_url}/products/{(product.get('handle') or '').strip()}"
+        url = f"{cls.base_url}/products/{_text(product.get('handle'))}"
         items = []
         for variant, pressing in cls._read_variants(product)[0]:
             # Only the literal True admits a variant: the string "false" is
@@ -269,8 +295,16 @@ class Crawler:
             # It is also what keeps the pressings of one release distinct:
             # item_key hashes (artist, title, url) and every variant of a
             # product shares the artist and the URL, so without the pressing
-            # the store's 46 live multi-pressing records would each emit
-            # colliding rows into an INSERT with no ON CONFLICT guard.
+            # the store's live multi-pressing records would each emit several
+            # rows under ONE identity.
+            #
+            # Nothing would raise. stock_items.item_key is deliberately not
+            # unique -- two stores stocking the same record share one -- and
+            # stock_item_identities upserts on it. That is exactly why this is
+            # worth spelling out: the pressings would silently share the saves,
+            # judgments and crawl-queue state keyed on that identity, each
+            # overwriting the last's identity row, and the Store tab would
+            # list them as duplicates.
             items.append({
                 "artist": artist,
                 "title": f"{album} — {pressing}" if pressing else album,
@@ -284,13 +318,32 @@ class Crawler:
                 # this payload carries as "14.99".
                 "currency": "GBP",
                 "url": url,
-                "cover_image_url": resolve_cover_image(product, variant),
+                "cover_image_url": cls._cover(product, variant),
             })
         return items
 
     @staticmethod
+    def _cover(product: dict, variant: dict) -> Optional[str]:
+        """resolve_cover_image() with its two collections type-checked first.
+
+        The shared helper reads `variant["featured_image"].get(...)` and
+        `product["images"][0].get(...)` behind `or` guards, which catch a
+        missing or null field but pass a *retyped* one straight through to
+        .get() -- and a raise there aborts the whole source over one product's
+        artwork, which is display-only. Guarded here rather than in
+        `shopify_catalog`, because every Shopify crawler in the fleet reads
+        that helper and this is one store's payload, not a fleet-wide change
+        to make from inside this crawler.
+        """
+        images = product.get("images")
+        images = [i for i in images if isinstance(i, dict)] if isinstance(images, (list, tuple)) else []
+        if not isinstance(variant.get("featured_image"), dict):
+            variant = {**variant, "featured_image": None}
+        return resolve_cover_image({**product, "images": images}, variant)
+
+    @staticmethod
     def _is_music(product: dict) -> bool:
-        return (product.get("product_type") or "").strip().lower() == _MUSIC_PRODUCT_TYPE
+        return _text(product.get("product_type")).lower() == _MUSIC_PRODUCT_TYPE
 
     @classmethod
     def _split_title(cls, title: str):
@@ -330,16 +383,23 @@ class Crawler:
         tags only ever appear ALONGSIDE the act's own tag, never alone. The
         one-tag test is what turns that into a rule.
         """
-        match = cls._split_title(" ".join((product.get("title") or "").split()))
+        match = cls._split_title(_text(product.get("title")))
         if match is not None:
             return match.group("artist").strip()
-        tags = [" ".join(t.split()) for t in product.get("tags") or []
-                if isinstance(t, str) and t.strip()]
+        # The collection itself is type-checked before it is iterated, not
+        # only its entries: `product.get("tags") or []` leaves a retyped
+        # `tags` intact, and iterating a non-collection raises TypeError from
+        # inside the artist read -- the same whole-source abort `_text` exists
+        # to prevent, one level up.
+        raw_tags = product.get("tags")
+        if not isinstance(raw_tags, (list, tuple)):
+            raw_tags = []
+        tags = [_text(t) for t in raw_tags if _text(t)]
         return tags[0] if len(tags) == 1 else ""
 
     @classmethod
     def _album(cls, product: dict) -> str:
-        title = " ".join((product.get("title") or "").split())
+        title = _text(product.get("title"))
         match = cls._split_title(title)
         # Whole when the title named no artist -- there is nothing to strip,
         # and the tag that supplied the artist took nothing out of the title.
@@ -403,7 +463,11 @@ class Crawler:
 
     @staticmethod
     def _has_identity(product: dict) -> bool:
-        return bool((product.get("title") or "").strip()) and bool((product.get("handle") or "").strip())
+        # Both must be readable STRINGS, not merely truthy: a non-string
+        # title or handle is a product this crawler cannot identify, and
+        # `_text` has already flattened it to "" so it is skipped and counted
+        # here rather than raising from inside the row build.
+        return bool(_text(product.get("title"))) and bool(_text(product.get("handle")))
 
     @staticmethod
     def _has_readable_stock_flag(pressings: List[Tuple[dict, str]]) -> bool:

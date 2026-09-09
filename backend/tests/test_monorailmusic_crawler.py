@@ -734,3 +734,101 @@ async def test_every_variant_title_being_blank_raises():
     with pytest.raises(RuntimeError, match="variant-identity-source drift"):
         await _crawl([{**_BULL_OF_THE_WOODS, "variants": [
             {**_BULL_OF_THE_WOODS["variants"][0], "title": ""}]}])
+
+
+# --------------------------------------------------------------------------
+# Malformed product-level fields. A truthy non-string would reach .strip() or
+# .split() and raise, taking the whole source down over one bad product --
+# the opposite of the discard-and-keep-going rule _read_variants applies to a
+# variant title. Raising is not inert here: _sync_stock keeps the previous
+# snapshot, so the store stays frozen at it, every other record's price
+# silently stale, for as long as the one bad product is published.
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("field", ["product_type", "title", "handle"])
+@respx.mock
+async def test_a_non_string_product_field_does_not_abort_the_source(field):
+    # The distinct handle is applied FIRST so the parametrised field wins for
+    # the `handle` case too, rather than being overwritten back to a valid one.
+    broken = {**_BULL_OF_THE_WOODS, "handle": "broken", field: 123}
+    items = await _crawl([broken, _ACTION_TIME_VISION])
+    assert [i["artist"] for i in items] == ["Alternative TV"]
+
+
+@respx.mock
+async def test_a_non_string_product_type_is_rejected_by_the_kind_gate():
+    # Rejected rather than normalised into the Music kind: an unreadable
+    # product_type says nothing about what the product is.
+    with pytest.raises(RuntimeError, match="kind-taxonomy drift"):
+        await _crawl([{**_BULL_OF_THE_WOODS, "product_type": 123}])
+
+
+@respx.mock
+async def test_a_non_string_title_is_counted_as_lost_identity_not_lost_artist():
+    # Identity before artist: `title` is identity AND the artist's own source,
+    # so a product that has lost it has lost both, and reporting that as
+    # artist-source drift names the wrong field.
+    with pytest.raises(RuntimeError, match="identity-source drift"):
+        await _crawl([{**_BULL_OF_THE_WOODS, "title": 123}])
+
+
+@respx.mock
+async def test_an_unparseable_title_beside_a_sole_tag_is_still_lost_identity():
+    # The tag fallback can supply an artist for a product whose title is
+    # unreadable, which would otherwise let it report as a healthy row with an
+    # empty album. Identity is asked first precisely so it cannot.
+    with pytest.raises(RuntimeError, match="identity-source drift"):
+        await _crawl([{**_ACTION_TIME_VISION, "title": 123}])
+
+
+@respx.mock
+async def test_a_readable_title_with_no_artist_still_reports_artist_drift():
+    # The reordering must not swallow the guard it now sits in front of.
+    with pytest.raises(RuntimeError, match="artist-source drift"):
+        await _crawl([{**_BULL_OF_THE_WOODS, "title": "Bull of the Woods", "tags": []}])
+
+
+@respx.mock
+async def test_a_non_string_tag_never_becomes_the_artist():
+    product = {**_ACTION_TIME_VISION, "tags": [123]}
+    with pytest.raises(RuntimeError, match="artist-source drift"):
+        await _crawl([product])
+
+
+@respx.mock
+async def test_a_retyped_tags_collection_does_not_abort_the_source():
+    # `product.get("tags") or []` leaves a retyped `tags` intact, so iterating
+    # it raises TypeError from inside the artist read -- the same whole-source
+    # abort as a non-string field, one level up.
+    broken = {**_ACTION_TIME_VISION, "handle": "broken", "tags": 5}
+    items = await _crawl([broken, _BULL_OF_THE_WOODS])
+    assert [i["artist"] for i in items] == ["13th Floor Elevators"]
+
+
+@pytest.mark.parametrize("images", ["junk", 5, ["junk"], [None]])
+@respx.mock
+async def test_a_retyped_images_collection_costs_the_cover_not_the_source(images):
+    # resolve_cover_image() reads images[0].get(...) behind an `or` guard,
+    # which passes a retyped collection straight through to .get(). Artwork is
+    # display-only, so it must never cost the whole refresh.
+    items = await _crawl([{**_BULL_OF_THE_WOODS, "images": images}])
+    assert len(items) == 1
+    assert items[0]["cover_image_url"] is None
+
+
+@respx.mock
+async def test_a_retyped_featured_image_falls_back_to_the_product_image():
+    product = {**_BULL_OF_THE_WOODS, "variants": [
+        {**_BULL_OF_THE_WOODS["variants"][0], "featured_image": "junk"}]}
+    items = await _crawl([product])
+    assert items[0]["cover_image_url"].endswith("a1333281053_10.png?v=1788772050")
+
+
+@respx.mock
+async def test_a_lost_title_with_no_tag_is_identity_drift_not_artist_drift():
+    # The case that actually discriminates the ordering. With a sole tag the
+    # artist resolves either way, so both guards agree; with no tag the artist
+    # is empty too, and only asking identity first names the field that is
+    # really gone -- `title` is identity AND the artist's own source.
+    with pytest.raises(RuntimeError, match="identity-source drift"):
+        await _crawl([{**_BULL_OF_THE_WOODS, "title": 123, "tags": []}])
