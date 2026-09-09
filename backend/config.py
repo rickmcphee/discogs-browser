@@ -1,7 +1,9 @@
+import copy
 import json
 import logging
 import os
 import socket
+import time
 from pathlib import Path
 from urllib.parse import quote, urlsplit, urlunsplit
 
@@ -130,21 +132,67 @@ def ensure_dirs():
         init.touch()
 
 
+# app_config is read on paths hot enough that the round trip, not the row, is
+# the cost: once per queue claim per worker, once per crawled unit for the site
+# delay (crawl_manager._paced_search), and on every settings read -- all through
+# the same five-connection admin pool the log writer and the log stream share.
+# A worker waiting out psycopg's 30s default for that pool and logging
+# "couldn't get a connection" is what this cache is for. It bounds the whole
+# process to one read per interval however many callers there are.
+#
+# Two seconds is chosen against what actually consumes a setting rather than
+# against how fast a person clicks Save: the claim loop's own idle sleep is
+# 5s, the scheduler resyncs on 5 minutes, and a crawl batch is longer still --
+# so nothing observes the difference, and the Machine that served the write
+# does not even wait that long because save_config() drops the cache outright.
+_CONFIG_CACHE_TTL_SECONDS = 2.0
+
+# (expires_at, config), replaced wholesale and never mutated in place. Read
+# without a lock deliberately: a lock held across the query below would
+# serialize every caller behind one connection, which is the stall this cache
+# exists to prevent, and the worst a race can do is have two callers read the
+# same row twice.
+_config_cache = None
+
+
+def invalidate_config_cache():
+    """Drop the cached app_config row so the next load_config() re-reads it.
+
+    Called by everything here that writes the row. A write from another
+    Machine is deliberately not covered -- it becomes visible when the TTL
+    expires, which is the freshness guarantee every caller now has."""
+    global _config_cache
+    _config_cache = None
+
+
 def load_config() -> dict:
     import db
 
+    global _config_cache
+    cached = _config_cache
+    if cached is not None and time.monotonic() < cached[0]:
+        return copy.deepcopy(cached[1])
+
     with db.get_admin_pool().connection() as conn:
         row = conn.execute("SELECT data FROM app_config WHERE id = TRUE").fetchone()
-    return row["data"] if row else {}
+    data = row["data"] if row else {}
+    _config_cache = (time.monotonic() + _CONFIG_CACHE_TTL_SECONDS, data)
+    # A copy, because callers mutate what they get back -- POST /api/settings
+    # reads, edits and re-saves the same dict -- and a mutation reaching the
+    # cached object would poison every other reader until the TTL expired.
+    return copy.deepcopy(data)
 
 
 # Whether marketplace crawlers should price only the stock items someone
 # actually wants -- saved, or matching a record in some user's collection or
 # wantlist -- rather than every item every enabled store lists. Off is the
-# original behaviour. Read fresh at each decision point (the worker's claim,
-# each store's enqueue during a stock sync, every sweep) rather than cached,
-# so flipping it in Settings takes effect on the next batch the way enabling
-# or disabling a crawler does. See db._stock_item_crawlable.
+# original behaviour. Read at each decision point (the worker's claim, each
+# store's enqueue during a stock sync, every sweep) rather than captured once
+# at boot, so flipping it in Settings takes effect on the next batch the way
+# enabling or disabling a crawler does. load_config()'s TTL cache does not
+# change that: the Machine serving the POST drops the cache as it saves, and
+# on any other Machine the TTL is shorter than the claim loop's own idle
+# sleep. See db._stock_item_crawlable.
 def crawl_library_only(config=None) -> bool:
     if config is None:
         config = load_config()
@@ -162,6 +210,13 @@ def save_config(data: dict):
             [Jsonb(data)],
         )
         conn.commit()
+    # So this Machine reads its own write back immediately rather than at the
+    # end of the TTL -- POST /api/settings is followed straight away by the
+    # GET that repopulates the form. A reader already mid-SELECT can still
+    # seed the cache from the old row a moment after this, which is why the
+    # TTL is short: it is the bound on how stale any reader can be, here and
+    # on every other Machine.
+    invalidate_config_cache()
 
 
 # Date-coded bigint, following db.py's pg_advisory_xact_lock(2026080901) and
@@ -217,6 +272,10 @@ def migrate_legacy_config_file():
         )
         conn.commit()
 
+    # This writes the row without going through save_config(), so it owes the
+    # cache the same drop. Nothing reads config before this runs at boot
+    # today, which is exactly why it would fail quietly if that ever changed.
+    invalidate_config_cache()
     get_logger("config").info("Migrated legacy config.json into app_config")
 
 

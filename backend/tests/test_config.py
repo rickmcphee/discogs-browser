@@ -24,6 +24,75 @@ def test_save_and_load_config(tmp_config_dir):
     assert load_config() == {"discogs_token": "abc123"}
 
 
+def _write_config_row_directly(data):
+    """Write app_config without going through save_config() -- what a write
+    from another Machine looks like from inside this process."""
+    from psycopg.types.json import Jsonb
+
+    with db.get_admin_pool().connection() as conn:
+        conn.execute(
+            "INSERT INTO app_config (id, data) VALUES (TRUE, %s) "
+            "ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data",
+            [Jsonb(data)],
+        )
+        conn.commit()
+
+
+# The TTL is widened or zeroed in these tests rather than slept through, so
+# each assertion is about the cache and not about how long two queries took.
+
+def test_load_config_serves_a_repeat_read_from_the_cache(tmp_config_dir):
+    save_config({"crawl_delay_seconds": 30})
+    with patch("config._CONFIG_CACHE_TTL_SECONDS", 60):
+        assert load_config() == {"crawl_delay_seconds": 30}
+        _write_config_row_directly({"crawl_delay_seconds": 5})
+        assert load_config() == {"crawl_delay_seconds": 30}
+
+
+def test_load_config_rereads_once_the_ttl_has_expired(tmp_config_dir):
+    save_config({"crawl_delay_seconds": 30})
+    with patch("config._CONFIG_CACHE_TTL_SECONDS", 0):
+        assert load_config() == {"crawl_delay_seconds": 30}
+        _write_config_row_directly({"crawl_delay_seconds": 5})
+        assert load_config() == {"crawl_delay_seconds": 5}
+
+
+def test_save_config_makes_its_own_write_visible_immediately(tmp_config_dir):
+    # The Machine that served POST /api/settings answers the GET that follows
+    # it, and must not answer it from a cache seeded before the save.
+    with patch("config._CONFIG_CACHE_TTL_SECONDS", 60):
+        load_config()
+        save_config({"ebay_app_id": "new-key"})
+        assert load_config() == {"ebay_app_id": "new-key"}
+
+
+def test_load_config_hands_out_a_copy_the_caller_may_mutate(tmp_config_dir):
+    # POST /api/settings reads, edits and re-saves the same dict. Were that the
+    # cached dict, editing it would rewrite what every other reader sees for
+    # the rest of the TTL -- with nothing having been saved at all. Nested,
+    # because a shallow copy passes the flat version of this and still shares
+    # every value that isn't a scalar.
+    save_config({"ebay_app_id": "real-key", "nested": {"kept": True}})
+    with patch("config._CONFIG_CACHE_TTL_SECONDS", 60):
+        first = load_config()
+        first["ebay_app_id"] = "edited-in-place"
+        first["nested"]["kept"] = False
+        assert load_config() == {"ebay_app_id": "real-key", "nested": {"kept": True}}
+
+
+def test_migrate_legacy_config_file_drops_the_cache(tmp_config_dir):
+    # The migration writes the row without going through save_config(), so it
+    # invalidates by hand. A config cached before it ran would otherwise
+    # outlive the migration that populated it.
+    with patch("config._CONFIG_CACHE_TTL_SECONDS", 60):
+        assert load_config() == {}
+        (tmp_config_dir / "config.json").write_text(
+            json.dumps({"ebay_app_id": "real-key"})
+        )
+        migrate_legacy_config_file()
+        assert load_config() == {"ebay_app_id": "real-key"}
+
+
 def test_ensure_dirs_creates_structure(tmp_config_dir):
     import config
     assert config.CONFIG_DIR.exists()
