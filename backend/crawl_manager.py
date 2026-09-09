@@ -422,7 +422,17 @@ class CrawlManager:
             # deliberately outside this borrow -- holding the pool the workers
             # claim through while doing unrelated I/O on another one is the
             # shape routers/queue.py just had removed.
-            config = load_config()
+            #
+            # fresh=True, uniquely on this path: library_only below decides
+            # which rows this worker may claim, and a row claimed under a stale
+            # "off" goes 'in_progress', which delete_dead_stock_crawl_queue_rows
+            # does not sweep -- it only deletes 'pending' rows. The Machine that
+            # served the POST drops its own cache as it saves, but every other
+            # Machine would otherwise keep claiming on the old value for a TTL,
+            # and this loop only sleeps between drains when it claimed nothing.
+            # Once per batch, so the cache still absorbs the per-unit reads in
+            # _paced_search that made up the bulk of the traffic.
+            config = load_config(fresh=True)
             crawl_delay_seconds = float(config.get("crawl_delay_seconds", 30))
             library_only = crawl_library_only(config)
             with get_app_pool().connection() as conn:

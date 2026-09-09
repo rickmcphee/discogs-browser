@@ -180,7 +180,11 @@ def invalidate_config_cache():
         _config_cache = None
 
 
-def load_config() -> dict:
+# fresh=True is for the one caller whose correctness depends on the current
+# value rather than a recent one: the crawl worker's claim. See
+# crawl_manager._claim_batch. A fresh read still refills the cache for
+# everyone else.
+def load_config(fresh: bool = False) -> dict:
     import db
 
     global _config_cache
@@ -188,7 +192,7 @@ def load_config() -> dict:
     with _cache_lock:
         cached = _config_cache
         generation = _config_generation
-    if cached is not None and time.monotonic() < cached[0]:
+    if not fresh and cached is not None and time.monotonic() < cached[0]:
         return copy.deepcopy(cached[1])
 
     with db.get_admin_pool().connection() as conn:
@@ -212,10 +216,11 @@ def load_config() -> dict:
 # original behaviour. Read at each decision point (the worker's claim, each
 # store's enqueue during a stock sync, every sweep) rather than captured once
 # at boot, so flipping it in Settings takes effect on the next batch the way
-# enabling or disabling a crawler does. load_config()'s TTL cache does not
-# change that: the Machine serving the POST drops the cache as it saves, and
-# on any other Machine the TTL is shorter than the claim loop's own idle
-# sleep. See db._stock_item_crawlable.
+# enabling or disabling a crawler does. The claim reads it through
+# load_config(fresh=True) so that holds across Machines and not just on the one
+# that served the POST: a row claimed under a stale "off" is 'in_progress', and
+# delete_dead_stock_crawl_queue_rows only sweeps 'pending'. See
+# db._stock_item_crawlable.
 def crawl_library_only(config=None) -> bool:
     if config is None:
         config = load_config()

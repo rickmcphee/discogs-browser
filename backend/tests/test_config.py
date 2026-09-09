@@ -115,6 +115,24 @@ def test_a_save_landing_mid_read_is_not_undone_by_the_read(tmp_config_dir):
     assert load_config() == {"ebay_app_id": "new-key"}
 
 
+def test_fresh_reads_past_a_valid_cache_and_refills_it(tmp_config_dir):
+    """The crawl worker's claim gates which rows it may take on
+    crawl_library_only, and a row claimed under a stale value goes
+    'in_progress' -- which delete_dead_stock_crawl_queue_rows never sweeps,
+    because it only deletes 'pending' rows. Another Machine's save has to
+    reach that one caller straight away, cache or no cache."""
+    save_config({"crawl_library_only": False})
+    with patch("config._CONFIG_CACHE_TTL_SECONDS", 60):
+        assert load_config() == {"crawl_library_only": False}
+        # Another Machine turns it on: no invalidation reaches this process.
+        _write_config_row_directly({"crawl_library_only": True})
+
+        assert load_config() == {"crawl_library_only": False}
+        assert load_config(fresh=True) == {"crawl_library_only": True}
+        # And having paid for the read, it refills the cache for everyone else.
+        assert load_config() == {"crawl_library_only": True}
+
+
 def test_migrate_legacy_config_file_drops_the_cache(tmp_config_dir):
     # The migration writes the row without going through save_config(), so it
     # invalidates by hand. A config cached before it ran would otherwise

@@ -1,4 +1,5 @@
 import os
+import time
 from contextlib import contextmanager
 
 import psycopg
@@ -37,14 +38,32 @@ def test_admin_pool_replaces_a_connection_the_server_closed():
     pool = db.get_admin_pool()
     pool.wait(timeout=10)
     with pool.connection() as conn:
+        pooled_pid = conn.info.backend_pid
         conn.execute("SELECT 1").fetchone()
+    # Asserted, not assumed: the pool opens min_size connections and a
+    # sequential borrow never grows it, so the connection killed below is the
+    # one the next borrow is handed. A pool holding a spare would let this test
+    # pass on the spare without the recovery path ever running.
+    assert pool.get_stats()["pool_size"] == 1
 
     with psycopg.connect(os.environ["TEST_DATABASE_URL"], autocommit=True) as killer:
-        killed = killer.execute(
-            "SELECT count(pg_terminate_backend(pid)) FROM pg_stat_activity "
-            "WHERE pid <> pg_backend_pid() AND datname = current_database()"
+        # The boolean for this one backend, rather than count() over a
+        # terminate-everything query: count() counts a FALSE result too, so a
+        # signal that failed would read as a successful kill and leave the
+        # borrow below proving nothing. Naming the pid also keeps the blast
+        # radius off connections the rest of the suite is holding.
+        terminated = killer.execute(
+            "SELECT pg_terminate_backend(%s)", [pooled_pid]
         ).fetchone()[0]
-    assert killed, "nothing was killed, so the reconnect below proves nothing"
+        assert terminated is True
+        # pg_terminate_backend signals and returns; wait for the backend to
+        # actually go, so the borrow below cannot race a connection that is
+        # still alive and pass without exercising anything.
+        deadline = time.monotonic() + 10
+        while killer.execute(
+            "SELECT 1 FROM pg_stat_activity WHERE pid = %s", [pooled_pid]
+        ).fetchone():
+            assert time.monotonic() < deadline, "backend still alive after termination"
 
     with pool.connection() as conn:
         assert conn.execute("SELECT 1 AS one").fetchone()["one"] == 1
