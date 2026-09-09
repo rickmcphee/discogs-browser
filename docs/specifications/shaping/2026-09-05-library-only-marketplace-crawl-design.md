@@ -98,19 +98,27 @@ leaving crawl workers to wait out psycopg's full 30s checkout timeout and log
 `PoolTimeout` instead of claiming work. The ordering requirement above only
 gets stronger, since a cached read borrows no connection at all.
 
-The *claim* is exempt, via `load_config(fresh=True)` in
-`crawl_manager._claim_batch`, and that exemption is what keeps this design's
-guarantee true rather than nearly true. The Machine serving `POST
-/api/settings` drops its own cache as it saves, but no invalidation crosses
-Machines. A worker elsewhere holding a cached `crawl_library_only=False` would
-claim rows the switch-on sweep is about to delete — and once claimed they are
-`in_progress`, which `delete_dead_stock_crawl_queue_rows` never touches,
-because it only deletes `pending` rows. Waiting out the TTL is not an answer
-either: `_worker_loop` sleeps between drains only when a drain claimed nothing,
-so a worker with a backlog can re-claim well inside one. The remaining reads —
-`_paced_search`'s per-unit pacing delay above all, which is what the traffic
-actually consisted of — are served from the cache, where a second of staleness
-changes nothing.
+This setting is exempt from that cache, and the exemption is what keeps this
+design's guarantee true rather than nearly true. `crawl_library_only()` reads
+`load_config(fresh=True)` whenever it fetches config for itself, so every
+decision point named above — the claim, each source's enqueue, the switch-on
+sweep, the end-of-sync sweep, the post-collection-sync restore — is
+authoritative without each having to remember to ask. Only the Settings and
+Queue reports pass a config they already hold, and there the value is displayed
+rather than acted on.
+
+Why the exemption is needed at all: the Machine serving `POST /api/settings`
+drops its own cache as it saves, but no invalidation crosses Machines. A worker
+elsewhere holding a cached `crawl_library_only=False` would claim rows the
+switch-on sweep is about to delete — and once claimed they are `in_progress`,
+which `delete_dead_stock_crawl_queue_rows` never touches, because it only
+deletes `pending` rows. Waiting out the TTL is no answer either: `_worker_loop`
+sleeps between drains only when a drain claimed nothing, so a worker with a
+backlog re-claims well inside one. None of these reads is hot — the claim is
+once per batch, the rest are once per source, per sweep, or per admin request —
+so the exemption costs almost nothing. What the cache absorbs is
+`_paced_search`'s per-unit pacing delay, which is what the traffic actually
+consisted of and where a second of staleness changes nothing.
 
 ### What "someone wants it" means
 

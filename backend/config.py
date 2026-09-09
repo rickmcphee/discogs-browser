@@ -138,8 +138,11 @@ def ensure_dirs():
 # delay (crawl_manager._paced_search), and on every settings read -- all through
 # the same five-connection admin pool the log writer and the log stream share.
 # A worker waiting out psycopg's 30s default for that pool and logging
-# "couldn't get a connection" is what this cache is for. It bounds the whole
-# process to one read per interval however many callers there are.
+# "couldn't get a connection" is what this cache is for. It bounds the
+# cache-eligible reads -- which is what that traffic consisted of -- to one
+# query per interval however many callers make them. The reads that gate
+# correctness rather than pacing opt out; see crawl_library_only and the
+# fresh= note below.
 #
 # Two seconds is chosen against what actually consumes a setting rather than
 # against how fast a person clicks Save: the claim loop's own idle sleep is
@@ -222,8 +225,16 @@ def load_config(fresh: bool = False) -> dict:
 # delete_dead_stock_crawl_queue_rows only sweeps 'pending'. See
 # db._stock_item_crawlable.
 def crawl_library_only(config=None) -> bool:
+    # fresh, whenever this fetches for itself: every no-argument caller is a
+    # decision about which queue rows exist or may be claimed -- the claim
+    # gate, each stock source's enqueue, the switch-on and end-of-sync sweeps,
+    # the post-collection-sync restore -- and none of them is hot enough for a
+    # query to matter. Tagging fresh= at each of those call sites instead was
+    # the version that kept missing one. A caller holding a config it already
+    # read passes it and decides for itself; the two that do are the Settings
+    # and Queue reports, where the value is displayed rather than acted on.
     if config is None:
-        config = load_config()
+        config = load_config(fresh=True)
     return bool(config.get("crawl_library_only", False))
 
 

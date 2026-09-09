@@ -8,7 +8,7 @@ import pytest
 
 import config as config_module
 import db
-from config import _with_userinfo, load_config, migrate_legacy_config_file, save_config, ensure_dirs
+from config import _with_userinfo, crawl_library_only, load_config, migrate_legacy_config_file, save_config, ensure_dirs
 
 
 def test_load_config_missing_returns_empty(tmp_config_dir):
@@ -131,6 +131,22 @@ def test_fresh_reads_past_a_valid_cache_and_refills_it(tmp_config_dir):
         assert load_config(fresh=True) == {"crawl_library_only": True}
         # And having paid for the read, it refills the cache for everyone else.
         assert load_config() == {"crawl_library_only": True}
+
+
+def test_the_library_only_gate_does_not_read_a_stale_cache(tmp_config_dir):
+    """Every no-argument caller of this gate is deciding which queue rows exist
+    or may be claimed, on a Machine that never sees another Machine's
+    invalidation. It reads through the cache rather than from it."""
+    save_config({"crawl_library_only": False})
+    with patch("config._CONFIG_CACHE_TTL_SECONDS", 60):
+        assert crawl_library_only() is False
+        # Another Machine turns it on. Nothing invalidates this process.
+        _write_config_row_directly({"crawl_library_only": True})
+
+        assert crawl_library_only() is True
+        # A caller that brings its own config still gets what it read -- that
+        # is what the Settings and Queue reports rely on.
+        assert crawl_library_only({"crawl_library_only": False}) is False
 
 
 def test_migrate_legacy_config_file_drops_the_cache(tmp_config_dir):

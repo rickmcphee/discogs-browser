@@ -184,11 +184,17 @@ strictly less often than `_pace_and_search`, which already calls
 `load_config()` once per *work unit* — so this adds no new class of load, and
 no throttle is introduced. A throttle would be a scheduler wearing a disguise.
 
-**Amendment (2026-09-09):** the `load_config()` read costed here is now usually
-not a query at all — it caches the `app_config` row process-wide for a couple of
-seconds, because the admin pool it reads through was starving crawl workers of
-connections. The argument above is unchanged and only more conservative: the
-per-iteration cost went down, not up.
+**Amendment (2026-09-09):** `load_config()` now caches the `app_config` row
+process-wide for a couple of seconds, because the admin pool it reads through
+was starving crawl workers of connections. This read is deliberately **not**
+served from that cache — `_claim_batch` calls `load_config(fresh=True)` — so
+the cost stated above stands exactly as written: one query per drain
+iteration, unchanged. The exemption is not about the stranded threshold, which
+would tolerate a stale value happily; it is that the same read carries
+`crawl_library_only`, which decides what this worker may claim, and a row
+claimed under a stale value is `in_progress` and so beyond the reach of the
+sweep that would have deleted it. What the cache absorbs instead is
+`_pace_and_search`'s per-*unit* read, which is where the volume was.
 
 ### Age, not liveness
 
