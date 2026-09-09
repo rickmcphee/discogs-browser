@@ -80,14 +80,28 @@ setting existed — no view join for the planner to weigh, and nothing for a
 generic plan to fail to prune. `library_only` is only ever the setting's value
 as read by the caller, never request-derived.
 
-The setting is read fresh at each decision point rather than cached in the
-worker: `_drain_one_batch` already loads config per claim for the stranded
+The setting is read at each decision point rather than captured once at boot:
+`_drain_one_batch` already loads config per claim for the stranded
 threshold, and the flag rides the same read; `_sync_stock` reads it per source,
 as it already re-reads the enabled list per source, so a flip mid-run governs
 the sites still to come. `load_config()` goes through the admin pool, so every
 read happens before the app-pool connection is borrowed, the ordering
 [`2026-08-25-admin-queue-tab-design.md`](2026-08-25-admin-queue-tab-design.md)
 already requires.
+
+**Amendment (2026-09-09):** the paragraph above used to read "read fresh at
+each decision point rather than cached in the worker", which is no longer
+accurate: `load_config()` now serves repeat reads from a short process-wide TTL
+cache (`config._CONFIG_CACHE_TTL_SECONDS`), so reading the setting at a
+decision point is no longer an admin-pool round trip per decision. What the
+sentence was protecting is unchanged. The Machine serving `POST /api/settings`
+drops the cache as it saves, so its own next read is authoritative; on any
+other Machine the TTL is shorter than the claim loop's own idle sleep, so a
+flip still governs the next batch. The ordering requirement above only gets
+stronger — a cached read borrows no connection at all. The cache exists because
+the admin pool, whose connections are also shared with the log writer and the
+log stream, was leaving crawl workers to wait out psycopg's full 30s checkout
+timeout and log `PoolTimeout` instead of claiming work.
 
 ### What "someone wants it" means
 

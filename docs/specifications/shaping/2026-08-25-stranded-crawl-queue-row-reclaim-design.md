@@ -184,6 +184,12 @@ strictly less often than `_pace_and_search`, which already calls
 `load_config()` once per *work unit* — so this adds no new class of load, and
 no throttle is introduced. A throttle would be a scheduler wearing a disguise.
 
+**Amendment (2026-09-09):** the `load_config()` read costed here is now usually
+not a query at all — it caches the `app_config` row process-wide for a couple of
+seconds, because the admin pool it reads through was starving crawl workers of
+connections. The argument above is unchanged and only more conservative: the
+per-iteration cost went down, not up.
+
 ### Age, not liveness
 
 The reclaim infers death from a claim's age. It cannot distinguish a dead
