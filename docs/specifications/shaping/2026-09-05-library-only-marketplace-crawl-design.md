@@ -103,9 +103,15 @@ design's guarantee true rather than nearly true. `crawl_library_only()` reads
 `load_config(fresh=True)` whenever it fetches config for itself, so every
 decision point named above — the claim, each source's enqueue, the switch-on
 sweep, the end-of-sync sweep, the post-collection-sync restore — is
-authoritative without each having to remember to ask. Only the Settings and
-Queue reports pass a config they already hold, and there the value is displayed
-rather than acted on.
+authoritative without each having to remember to ask.
+
+A caller that passes a config keeps responsibility for how it read it, and the
+rule is that acting on this flag requires a current value rather than a recent
+one. `_claim_batch` and `update_settings` both pass one and both act on the
+flag; both load it with `fresh=True` first, since they need the rest of that
+config anyway. The Settings and Queue reports pass a cached config, which is
+correct there because they render the value rather than act on it. A caller
+that acts on a *cached* config is the way back to the failure below.
 
 Why the exemption is needed at all: the Machine serving `POST /api/settings`
 drops its own cache as it saves, but no invalidation crosses Machines. A worker

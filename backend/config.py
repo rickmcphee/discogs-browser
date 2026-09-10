@@ -228,14 +228,20 @@ def load_config(fresh: bool = False) -> dict:
 # delete_dead_stock_crawl_queue_rows only sweeps 'pending'. See
 # db._stock_item_crawlable.
 def crawl_library_only(config=None) -> bool:
-    # fresh, whenever this fetches for itself: every no-argument caller is a
-    # decision about which queue rows exist or may be claimed -- the claim
-    # gate, each stock source's enqueue, the switch-on and end-of-sync sweeps,
-    # the post-collection-sync restore -- and none of them is hot enough for a
-    # query to matter. Tagging fresh= at each of those call sites instead was
-    # the version that kept missing one. A caller holding a config it already
-    # read passes it and decides for itself; the two that do are the Settings
-    # and Queue reports, where the value is displayed rather than acted on.
+    # The invariant: anything that *acts* on this flag needs a value that is
+    # current, not recent. Letting this fetch is how a caller gets that for
+    # free -- fresh, whenever config is None -- and every no-argument caller is
+    # such a decision: each stock source's enqueue, the switch-on and
+    # end-of-sync sweeps, the post-collection-sync restore. None is hot enough
+    # for the query to matter, and tagging fresh= at each site instead was the
+    # version that kept missing one.
+    #
+    # A caller passing a config keeps responsibility for how it read it.
+    # _claim_batch and update_settings both act on the flag and both load
+    # fresh first (they need the rest of that config anyway); the Settings and
+    # Queue reports pass a cached one, which is fine because they render the
+    # value rather than act on it. A future caller that acts on a cached
+    # config is the way back to the bug this exemption exists for.
     if config is None:
         config = load_config(fresh=True)
     return bool(config.get("crawl_library_only", False))
