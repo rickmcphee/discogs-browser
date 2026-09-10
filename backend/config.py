@@ -183,10 +183,13 @@ def invalidate_config_cache():
         _config_cache = None
 
 
-# fresh=True is for the one caller whose correctness depends on the current
-# value rather than a recent one: the crawl worker's claim. See
-# crawl_manager._claim_batch. A fresh read still refills the cache for
-# everyone else.
+# fresh=True is the opt-out for correctness-sensitive callers: those whose
+# decision depends on the current value rather than a recent one, as against
+# the pacing and display reads the cache exists for. crawl_library_only() takes
+# it for every caller that lets it fetch (see its own note), and
+# update_settings() takes it directly, because its off->on edge compares the
+# incoming value against the stored one. A fresh read still refills the cache
+# for everyone else on its way through.
 def load_config(fresh: bool = False) -> dict:
     import db
 
