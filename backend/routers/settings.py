@@ -67,7 +67,12 @@ def update_settings(body: SettingsUpdate):
                 status_code=400, detail=f"Invalid cron expression: {expression}"
             ) from e
 
-    config = load_config()
+    # fresh: switched_on below compares the incoming value against the stored
+    # one, so a cache entry another Machine's toggle has already invalidated
+    # would misread the edge -- and reading it as "already on" skips the sweep
+    # that is the whole point of detecting the edge. One query on an endpoint a
+    # person triggers by hand.
+    config = load_config(fresh=True)
     # Only the off->on edge sweeps. The setting rides the same debounced
     # auto-save as every other field, so this endpoint runs on each edit to
     # any of them; sweeping on every save would re-scan the pending stock
