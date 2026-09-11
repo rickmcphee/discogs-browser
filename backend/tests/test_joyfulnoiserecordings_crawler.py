@@ -2,7 +2,7 @@ import httpx
 import pytest
 import respx
 
-from crawlers.joyfulnoiserecordings import Crawler
+from crawlers.joyfulnoiserecordings import Crawler, _text
 
 _PRODUCTS_URL = "https://www.joyfulnoiserecordings.com/collections/all/products.json"
 
@@ -615,6 +615,69 @@ def test_the_stores_own_placeholders_are_not_counted_as_drift():
 @pytest.mark.parametrize("field", ["title", "handle"])
 def test_a_product_missing_its_identity_is_skipped(field):
     assert not Crawler._items(_product(**{field: ""}))
+
+
+# Product-level fields were read with the `or ""` idiom, which covers a null or
+# absent field but hands a truthy NON-string to .strip()/.split() -- raising
+# from inside the walk and aborting the whole source over one product. Found by
+# Copilot in review on PR #337, one commit after the same hole was closed for
+# variant titles alone.
+@pytest.mark.parametrize("value,expected", [
+    ("Black Vinyl", "Black Vinyl"), ("  a   b ", "a b"), ("", ""), ("  ", ""),
+    (None, ""), (123, ""), (True, ""), ({"en": "x"}, ""), (["x"], ""),
+])
+def test_text_reads_a_string_or_nothing(value, expected):
+    assert _text(value) == expected
+
+
+@pytest.mark.parametrize("field", ["title", "handle", "vendor"])
+@pytest.mark.parametrize("bad", [123, True, {"en": "x"}, ["x"]])
+def test_a_retyped_product_field_is_skipped_rather_than_raised_through(field, bad):
+    assert Crawler._items(_product(**{field: bad})) == []
+
+
+@respx.mock
+@pytest.mark.parametrize("field,guard", [
+    ("title", "identity-source drift"),
+    ("handle", "identity-source drift"),
+    ("vendor", "artist-source drift"),
+])
+async def test_a_store_wide_retyped_product_field_names_its_guard(crawler, field, guard):
+    _mock_pages(_product(**{field: 123}),
+                _product(handle="b", **{field: 456}) if field != "handle"
+                else _product(handle=456))
+    with pytest.raises(RuntimeError, match=guard):
+        await _crawl(crawler)
+
+
+@respx.mock
+async def test_one_retyped_product_among_real_rows_is_only_a_skipped_row(crawler):
+    _mock_pages(_TRAUMANAUT_PRODUCT, _product(handle="b", title=123))
+    assert len(await _crawl(crawler)) == 1
+
+
+# Artwork is display-only, so a retyped image field must cost the image and not
+# the row -- and certainly not the whole refresh. The shared helper reaches
+# straight into .get() behind an `or` guard, which a retyped field survives.
+@pytest.mark.parametrize("images", ["junk", ["junk"], {"src": "x"}, 123, None])
+def test_a_retyped_images_field_does_not_cost_the_row(images):
+    items = Crawler._items(_product(images=images))
+    assert len(items) == 1
+
+
+def test_a_retyped_featured_image_falls_back_to_the_product_image():
+    items = Crawler._items(_product(
+        images=[{"src": "https://cdn.shopify.com/cover.jpg"}],
+        variants=[_variant("Black Vinyl", featured_image="junk")]))
+    assert items[0]["cover_image_url"] == "https://cdn.shopify.com/cover.jpg"
+
+
+def test_a_variant_image_still_wins_when_both_are_readable():
+    items = Crawler._items(_product(
+        images=[{"src": "https://cdn.shopify.com/cover.jpg"}],
+        variants=[_variant("Black Vinyl",
+                           featured_image={"src": "https://cdn.shopify.com/variant.jpg"})]))
+    assert items[0]["cover_image_url"] == "https://cdn.shopify.com/variant.jpg"
 
 
 def test_junk_variant_entries_are_ignored():

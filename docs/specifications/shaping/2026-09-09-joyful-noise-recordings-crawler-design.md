@@ -331,6 +331,31 @@ truthy scalar `variants` one level up, aborting the source before any guard
 could name it. That was found while reproducing the blank-title case rather than
 reported.
 
+**Every string field goes through `_text`**, and the product-level fields were
+brought into line with the variant title a commit after it rather than with it —
+which is the more useful fact about this, so it is recorded rather than tidied
+away. Hardening `_variant_title` alone left `title`, `vendor` and `handle` still
+read through `or ""`, so a truthy non-string still reached `.strip()` or
+`.split()` and aborted the whole source over one malformed product. Answering
+`""` instead routes that product into the identity and artist tallies, so it is
+skipped **and** counted: a store-wide retyped `title` or `handle` now raises
+`identity-source drift`, a retyped `vendor` raises `artist-source drift`, and
+one malformed product among real rows stays an ordinary skipped row. The raise
+it replaces was not fail-safe, merely unexplained — it did stop
+`replace_stock_items()`, but by crashing rather than by any guard judging the
+payload untrustworthy.
+
+**Artwork is guarded separately, and does not cost the row.** `resolve_cover_image`
+reaches into `variant["featured_image"].get(...)` and `product["images"][0].get(...)`
+behind `or` guards, which catch a missing or null field but pass a retyped one
+straight through. `_cover` type-checks both collections first, so a record whose
+image field is a string still lists — with the product image, or with none. The
+proportion is the argument: artwork is display-only, and letting it abort the
+refresh would leave every price in the snapshot stale because one record's
+`images` was a string. Guarded in this crawler rather than in `shopify_catalog`,
+because every Shopify crawler in the fleet reads that helper and this is one
+store's payload; `monorailmusic.py` draws the same boundary for the same reason.
+
 The artist guard counts only products that **are** records, and only fires on
 an empty walk. A tally taken over every product instead would be satisfied by
 the merch and CD-only products that can never yield a row: they would keep

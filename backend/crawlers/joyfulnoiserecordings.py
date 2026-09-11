@@ -147,6 +147,31 @@ _CREDIT_RE = re.compile(
 )
 
 
+def _text(value) -> str:
+    """A whitespace-collapsed string, or "" for anything that is not one.
+
+    Every string field this crawler reads goes through here, and the reason is
+    the `or ""` idiom it replaces: that covers a null or absent field, but
+    hands a truthy NON-string straight to `.strip()` or `.split()`, which
+    raises AttributeError from inside the walk and aborts the whole source.
+    One malformed product would stop the catalog refreshing for as long as the
+    store served it, leaving every price stale.
+
+    That is not fail-safe, just unexplained -- the raise does keep
+    `replace_stock_items()` from running, but it does so by crashing rather
+    than by any guard deciding the payload was untrustworthy. Answering ""
+    instead routes the product into the identity, artist and title tallies, so
+    it is skipped AND counted, and the drift guards get to make that decision
+    where they can name it.
+
+    Found by Copilot in review on PR #337, at product level, after the same
+    hole was fixed one commit earlier for variant titles alone.
+    `theflenser.py` and `monorailmusic.py` both already carry this helper, with
+    docstrings making this same argument.
+    """
+    return " ".join(value.split()) if isinstance(value, str) else ""
+
+
 class Crawler:
     site_name: str = "Joyful Noise Recordings"
     base_url: str = "https://www.joyfulnoiserecordings.com"
@@ -313,7 +338,7 @@ class Crawler:
         artist, album = cls._credit(product)
         if not artist or not album:
             return []
-        url = f"{cls.base_url}/products/{(product.get('handle') or '').strip()}"
+        url = f"{cls.base_url}/products/{_text(product.get('handle'))}"
         items = []
         for variant, descriptor in pressings:
             # Only the literal True admits a variant: the string "false" is
@@ -347,7 +372,7 @@ class Crawler:
                 "price": price,
                 "currency": "USD",
                 "url": url,
-                "cover_image_url": resolve_cover_image(product, variant),
+                "cover_image_url": cls._cover(product, variant),
             })
         return items
 
@@ -370,8 +395,8 @@ class Crawler:
     @classmethod
     def _credit(cls, product: dict) -> Tuple[str, str]:
         """(artist, album) for a product, reading `vendor` unless it names a series."""
-        vendor = (product.get("vendor") or "").strip()
-        title = " ".join((product.get("title") or "").split())
+        vendor = _text(product.get("vendor"))
+        title = _text(product.get("title"))
         m = _CREDIT_RE.match(title)
         # The parse only wins where `vendor` demonstrably is not the artist.
         # Requiring the vendor to be absent from the title is what keeps it off
@@ -388,7 +413,7 @@ class Crawler:
     @classmethod
     def _pressings(cls, product: dict) -> List[Tuple[dict, str]]:
         """(variant, descriptor) for each of a product's variants that is a record."""
-        if _BUNDLE_RE.search(" ".join((product.get("title") or "").split())):
+        if _BUNDLE_RE.search(_text(product.get("title"))):
             return []
         # Non-mapping entries are dropped here, before anything reads them, so
         # a junk entry is an ordinary skipped row rather than an AttributeError
@@ -478,8 +503,31 @@ class Crawler:
         raises AttributeError -- the same shape as the truthy scalar
         `variants` one level up, and it aborts the source the same way.
         """
-        title = variant.get("title")
-        return " ".join(title.split()) if isinstance(title, str) else ""
+        return _text(variant.get("title"))
+
+    @staticmethod
+    def _cover(product: dict, variant: dict) -> Optional[str]:
+        """resolve_cover_image() with its two collections type-checked first.
+
+        The shared helper reads `variant["featured_image"].get(...)` and
+        `product["images"][0].get(...)` behind `or` guards, which catch a
+        missing or null field but pass a RETYPED one straight through to
+        `.get()`. A raise there aborts the whole source over one product's
+        artwork -- which is display-only, so the cost is wildly out of
+        proportion to what is broken: every price in the snapshot goes stale
+        because one record's image field is a string.
+
+        Guarded here rather than in `shopify_catalog`, because every Shopify
+        crawler in the fleet reads that helper and this is one store's payload,
+        not a fleet-wide change to make from inside this crawler.
+        `monorailmusic.py` draws the same boundary for the same reason. Found
+        by Copilot in review on PR #337.
+        """
+        images = product.get("images")
+        images = [i for i in images if isinstance(i, dict)] if isinstance(images, (list, tuple)) else []
+        if not isinstance(variant.get("featured_image"), dict):
+            variant = {**variant, "featured_image": None}
+        return resolve_cover_image({**product, "images": images}, variant)
 
     @classmethod
     def _untitled_live_variants(cls, product: dict) -> int:
@@ -522,7 +570,7 @@ class Crawler:
 
     @staticmethod
     def _has_identity(product: dict) -> bool:
-        return bool((product.get("title") or "").strip()) and bool((product.get("handle") or "").strip())
+        return bool(_text(product.get("title"))) and bool(_text(product.get("handle")))
 
     @staticmethod
     def _has_readable_stock_flag(pressings: List[Tuple[dict, str]]) -> bool:
