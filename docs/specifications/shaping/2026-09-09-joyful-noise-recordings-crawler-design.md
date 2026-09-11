@@ -46,12 +46,20 @@ the walk's own result is the evidence.
 The `vinyl` shelf was rejected on stronger grounds than that. It is exactly the
 set of products tagged `Vinyl` — 256 published products, matching the tagged set
 handle for handle — and that tag is not how this store decides what a record is.
-272 in-stock products **outside** the shelf still carry a vinyl variant. They
-are not edge cases: Surfer Blood's "1000 Palms" (Sky Blue and Black Vinyl),
-Joan of Arc's "1984" (Yellow Vinyl) and Tall Tall Trees' "A Wave of Golden
-Things" (Gold Vinyl) are ordinary catalog LPs tagged only `InPress`, and the
-7" singles, flexi-discs and test pressings sit outside it almost entirely — 355
-of the products naming one are off the shelf against 57 on it.
+271 products **outside** the shelf have an in-stock variant the format gate
+below reads as vinyl. They are not edge cases: Surfer Blood's "1000 Palms"
+(Sky Blue and Black Vinyl), Joan of Arc's "1984" (Yellow Vinyl) and Tall Tall
+Trees' "A Wave of Golden Things" (Gold Vinyl) are ordinary catalog LPs tagged
+only `InPress`, and the 7" singles, flexi-discs and test pressings sit outside
+it almost entirely — of the products naming one anywhere in their title,
+`product_type` or variant titles, 357 are off the shelf against 57 on it.
+
+Both figures are measured over the catalog captured 2026-09-09, and each is
+stated with the rule that produced it because neither survives a vague one:
+the vinyl figure moves with the format gate itself, which eleven review rounds
+changed, and the 7"/flexi figure moves by one or two depending on whether
+variant titles are read. An earlier draft of this section carried numbers a
+re-derivation did not reproduce, for exactly those reasons.
 Walking the shelf would drop the larger part of the store's vinyl.
 
 The cost is the extra paced pages a full walk fetches.

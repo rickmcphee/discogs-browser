@@ -8,12 +8,13 @@ from shopify_catalog import iter_products, resolve_cover_image
 
 # Shopify's built-in all-products collection, not the store's own `vinyl`
 # shelf. The shelf is exactly the products tagged `Vinyl`, and that tag is not
-# how this store decides what a record is: confirmed live 2026-09-09 that 272
-# in-stock products outside the shelf still carry a vinyl variant, among them
-# ordinary catalog LPs -- Surfer Blood "1000 Palms" (Sky Blue and Black Vinyl),
-# Joan of Arc "1984" (Yellow Vinyl), Tall Tall Trees "A Wave of Golden Things"
-# (Gold Vinyl) -- and the 7" singles, flexi-discs and test pressings sit
-# outside it almost entirely, 355 of them against 57 on the shelf.
+# how this store decides what a record is: measured over the catalog captured
+# 2026-09-09, 271 products outside the shelf have an in-stock variant this
+# gate reads as vinyl, among them ordinary catalog LPs -- Surfer Blood
+# "1000 Palms" (Sky Blue and Black Vinyl), Joan of Arc "1984" (Yellow Vinyl),
+# Tall Tall Trees "A Wave of Golden Things" (Gold Vinyl) -- and of the
+# products naming a 7", flexi or test pressing anywhere in their titles, 357
+# are off the shelf against 57 on it.
 # Walking the shelf would drop the larger part of the store's vinyl.
 #
 # `all` was confirmed the whole published catalog rather than a curated
