@@ -12,7 +12,8 @@ from shopify_catalog import iter_products, resolve_cover_image
 # in-stock products outside the shelf still carry a vinyl variant, among them
 # ordinary catalog LPs -- Surfer Blood "1000 Palms" (Sky Blue and Black Vinyl),
 # Joan of Arc "1984" (Yellow Vinyl), Tall Tall Trees "A Wave of Golden Things"
-# (Gold Vinyl) -- alongside every 7" single, flexi-disc and test pressing.
+# (Gold Vinyl) -- and the 7" singles, flexi-discs and test pressings sit
+# outside it almost entirely, 355 of them against 57 on the shelf.
 # Walking the shelf would drop the larger part of the store's vinyl.
 #
 # `all` was confirmed the whole published catalog rather than a curated

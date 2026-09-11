@@ -50,7 +50,8 @@ handle for handle — and that tag is not how this store decides what a record i
 are not edge cases: Surfer Blood's "1000 Palms" (Sky Blue and Black Vinyl),
 Joan of Arc's "1984" (Yellow Vinyl) and Tall Tall Trees' "A Wave of Golden
 Things" (Gold Vinyl) are ordinary catalog LPs tagged only `InPress`, and the
-7" singles, flexi-discs and test pressings sit outside it almost entirely.
+7" singles, flexi-discs and test pressings sit outside it almost entirely — 355
+of the products naming one are off the shelf against 57 on it.
 Walking the shelf would drop the larger part of the store's vinyl.
 
 The cost is the extra paced pages a full walk fetches.
