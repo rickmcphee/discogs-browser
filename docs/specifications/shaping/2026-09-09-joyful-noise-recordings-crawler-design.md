@@ -1,8 +1,8 @@
 # Joyful Noise Recordings crawler design
 
-**Status:** shipped
-**Branch:** `claude/joyful-noise-crawler-x5bmiq`
+**Status:** implemented
 **Date:** 2026-09-09
+**Store:** [joyfulnoiserecordings.com](https://www.joyfulnoiserecordings.com)
 
 ## Problem
 
