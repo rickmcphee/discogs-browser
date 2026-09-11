@@ -134,9 +134,18 @@ These details of the patterns are load-bearing:
   still there to be found; and a disc count survives untouched, because
   `4x10" Vinyl Box Set` carries no inch mark on the `4` — it counts discs
   rather than measuring one.
-- **The disc counts take a multiplier prefix** (`\d*\s*[x×]?\s*cds?`), because
-  there is no word boundary inside `5xCD` and a plain `\bcds?\b` reads straight
-  past it. `5xCD Box Set (... an elaborate 12"x12", 27 page bound-book)` is a
+- **The disc counts take a multiplier prefix**, composed once as `_COUNTED` and
+  shared by every pattern that needs one, because there is no word boundary
+  inside `5xCD` and a plain `\bcds?\b` reads straight past it. Its exact shape
+  is load-bearing in two ways the first spelling (`\d*\s*[x×]?\s*cds?`) got
+  wrong. The boundary sits before the **whole** prefix rather than before the
+  word, or a match restarts partway through a glued digit run — `Studio12LP CD`
+  matched from `2LP` and was admitted as vinyl, `Studio12CD (7" vinyl)` matched
+  from `2CD` and had a real record vetoed — and it excludes a preceding digit
+  as well as a letter for that reason. And the count is `\d+`, not `\d*`: with
+  the digits optional but the `x` still there, a bare letter reads as a
+  multiplier, so `XLP CD` was admitted and `XCD (7" vinyl)` was vetoed. The `x`
+  itself stays optional, since the store writes both `2CD` and `5xCD`. `5xCD Box Set (... an elaborate 12"x12", 27 page bound-book)` is a
   live listing whose only inch marker measures the book; without the prefix
   nothing vetoes it before that `12"` admits it as a record. This was found by
   a test asserting the rejection the prose already claimed.

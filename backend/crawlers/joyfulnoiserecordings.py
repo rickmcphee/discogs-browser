@@ -55,22 +55,51 @@ _COLLECTION_SLUG = "all"
 # `[a-z]` is ASCII-only even under IGNORECASE, so a lookbehind spelled that way
 # treats an accented letter as a separator: `ÉLP CD` matched the embedded `LP`
 # and was admitted as vinyl before the `CD` could reject it. These say what they
-# mean instead -- "not preceded by a letter", "not followed by a letter or
-# digit" -- in any script.
+# mean instead -- "not preceded by a letter or digit", "not followed by a
+# letter or digit" -- in any script.
 #
-# The right-hand one is defined beside its opposite deliberately. Without it the
-# inch marker had no closing boundary at all, so `12"CD` read `12"` as a
+# They are defined beside each other deliberately. Without the right-hand one
+# the inch marker had no closing boundary at all, so `12"CD` read `12"` as a
 # complete marker and was admitted before the `CD` veto ran; `dongiovanni`
 # records that fixing the left boundaries and leaving the right one ASCII, in
 # one commit, is exactly how that bug survived. Both found by Copilot in review
 # on PR #337, and both already solved on `dongiovannirecords.py` in PR #323 --
 # which pins `12"CD` and `12"Cassette` in its own suite.
-_NOT_AFTER_LETTER = r'(?<![^\W\d_])'
+#
+# A letter-only variant of the left boundary lived here for two rounds and is
+# deliberately gone: every caller sits before a disc count, where a preceding
+# digit is exactly as disqualifying as a preceding letter. Reintroducing one
+# reopens the glued-run match `_COUNTED` exists to close.
 _NOT_AFTER_LETTER_OR_DIGIT = r'(?<![^\W_])'
 _NOT_BEFORE_LETTER_OR_DIGIT = r'(?![^\W_])'
+# `LP`, `2LP`, `5xCD`: a medium word with an optional disc count welded to it,
+# with no word boundary to anchor on. Composed ONCE and shared by all three
+# patterns below, which is the point -- it was spelled out five separate times
+# and four consecutive review rounds fixed one spelling while leaving another,
+# so the asymmetry is removed by construction rather than by remembering.
+#
+# Two things the hand-spelled version got wrong, both found by Copilot in
+# review on PR #337, and both of which the inch marker below had already
+# solved without the lesson being carried across:
+#
+#   The boundary has to sit before the WHOLE prefix, not before the word. Put
+#   it after the count and a match can restart partway through a glued digit
+#   run -- `Studio12LP CD` matched from `2LP` and was admitted as vinyl, and
+#   `Studio12CD (7" vinyl)` matched from `2CD` and had a real record vetoed.
+#   It excludes a preceding DIGIT as well as a letter for the same reason.
+#
+#   The count must be digits. `\d*` makes the digits optional while leaving
+#   the `x`, so a bare letter reads as a multiplier: `XLP CD` was admitted as
+#   vinyl and `XCD (7" vinyl)` had its record vetoed. `\d+` binds the two
+#   together -- either a real count or nothing.
+#
+# The `x` itself stays optional because the store writes both `2CD` and `5xCD`.
+# The inch marker composes its own prefix instead, requiring the `x`, because
+# there the digits belong to the size: `2x12"` counts discs, `212"` is noise.
+_COUNTED = _NOT_AFTER_LETTER_OR_DIGIT + r'(?:\d+\s*[x×]?\s*)?'
 _VINYL_RE = re.compile(
     r'\bvinyl\b'
-    r'|' + _NOT_AFTER_LETTER + r'\d*\s*[x×]?\s*lps?\b'
+    r'|' + _COUNTED + r'lps?\b'
     # `flexi` alone, not just `flexi disc`: the store also sells a `Flexi Book`
     # -- one release spiral-bound out of several square flexi discs.
     r'|\bflexi[-\s]?(?:discs?)?\b'
@@ -121,21 +150,21 @@ _NON_VINYL_MEDIA_RE = re.compile(
     # `5xCD Box Set (... an elaborate 12"x12", 27 page bound-book)` is a live
     # listing whose only inch marker measures the book, and without the prefix
     # nothing here vetoes it before that 12" admits it as a record.
-    _NOT_AFTER_LETTER + r'\d*\s*[x×]?\s*cds?\b|\bcompact\s+discs?\b'
-    r'|' + _NOT_AFTER_LETTER + r'\d*\s*[x×]?\s*cassettes?\b|' + _NOT_AFTER_LETTER + r'\d*\s*[x×]?\s*tapes?\b'
+    _COUNTED + r'cds?\b|\bcompact\s+discs?\b'
+    r'|' + _COUNTED + r'cassettes?\b|' + _COUNTED + r'tapes?\b'
     r'|\bdigital\b|\bmp3s?\b|\bwavs?\b|\bdownloads?\b'
     r'|\bbooks?\b|\bzines?\b|\bposters?\b|\btotes?\b|\bshirts?\b'
-    r'|' + _NOT_AFTER_LETTER + r'\d*\s*[x×]?\s*dvds?\b|\bblu-?\s?rays?\b',
+    r'|' + _COUNTED + r'dvds?\b|\bblu-?\s?rays?\b',
     re.IGNORECASE,
 )
 # The media that are physical goods rather than the download every record here
 # ships with. Only these veto a bare container's blurb: the download words
 # cannot, because every legitimate record's blurb names one.
 _PHYSICAL_MEDIA_RE = re.compile(
-    _NOT_AFTER_LETTER + r'\d*\s*[x×]?\s*cds?\b|\bcompact\s+discs?\b'
-    r'|' + _NOT_AFTER_LETTER + r'\d*\s*[x×]?\s*cassettes?\b|' + _NOT_AFTER_LETTER + r'\d*\s*[x×]?\s*tapes?\b'
+    _COUNTED + r'cds?\b|\bcompact\s+discs?\b'
+    r'|' + _COUNTED + r'cassettes?\b|' + _COUNTED + r'tapes?\b'
     r'|\bbooks?\b|\bzines?\b|\bposters?\b|\btotes?\b|\bshirts?\b'
-    r'|' + _NOT_AFTER_LETTER + r'\d*\s*[x×]?\s*dvds?\b|\bblu-?\s?rays?\b',
+    r'|' + _COUNTED + r'dvds?\b|\bblu-?\s?rays?\b',
     re.IGNORECASE,
 )
 # A lot of more than one release: its price is not any single record's price,

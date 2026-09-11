@@ -436,6 +436,40 @@ def test_a_multiplier_or_standalone_inch_marker_still_admits(title):
     assert Crawler._is_vinyl(title) is True
 
 
+# The disc-count prefix repeated both of the holes the inch marker had already
+# had closed: the boundary sat after the count rather than before the whole
+# prefix, so a match could restart partway through a glued digit run; and `\d*`
+# left the `x` while making the digits optional, so a bare letter read as a
+# multiplier. Found by Copilot in review on PR #337. It bites in BOTH
+# directions, which is why each gets its own test -- on the vinyl side a false
+# match admits a non-record, on the veto side a false match drops a real one.
+@pytest.mark.parametrize("title", [
+    'Studio12LP CD', 'Abbey3LP Cassette',          # count restarted mid-token
+    'XLP CD', 'XLP Cassette',                      # bare letter read as a count
+])
+def test_a_glued_or_lettered_count_does_not_admit(title):
+    assert Crawler._is_vinyl(title) is False
+
+
+@pytest.mark.parametrize("title", [
+    'Studio12CD (7" vinyl)', 'Abbey3Cassette (7" vinyl)',
+    'XCD (7" vinyl)', 'XTape (7" vinyl)', 'XDVD (7" vinyl)',
+])
+def test_a_glued_or_lettered_count_does_not_veto_a_record(title):
+    assert Crawler._is_vinyl(title) is True
+
+
+@pytest.mark.parametrize("title,expected", [
+    ("LP", True), ("2LP", True), ("2xLP", True), ("3xLP Deluxe", True),
+    ("2 x LP", True), ("2\u00d7LP", True), ("Volume 2 LP", True),
+    ("CD", False), ("2CD", False), ("5xCD Box Set", False), ("5 x CD", False),
+    ("Cassette", False), ("2xCassette", False), ("Tape", False),
+    ("2xTape", False), ("DVD", False), ("2xDVD", False), ("Volume 2 CD", False),
+])
+def test_a_real_disc_count_reads_the_same_as_before(title, expected):
+    assert Crawler._is_vinyl(title) is expected
+
+
 # `[+&]` consumed the `&` of a literal `&amp;` and then failed to find the
 # medium word after it, so the companion clause was never cut and the record was
 # rejected on its own `Digital`. Several crawlers in this repo unescape for the

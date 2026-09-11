@@ -15,7 +15,7 @@
 - `format` is hardcoded `"Vinyl"`; `currency` is hardcoded `"USD"`.
 - **`_COLLECTION_SLUG = "all"`.** Confirmed to return exactly `meta.json`'s `published_products_count` and exactly the store-wide `/products.json` handle set. That check mattered: the store *also* publishes a hand-made collection titled "All" whose reported `products_count` is lower, and reading that number alone would have argued the walk onto a shelf.
 - **The format gate is positive** — a variant must show vinyl to be admitted. That is the opposite polarity from the crawlers whose shelf has already vouched for the medium, and it is why the format-source drift guard exists.
-- **The head is cut of its trailing `+ Digital` before the medium veto runs**, anchored on the joining `+`/`&`, so the download that ships *with* a record cannot convict it while a variant that *is* the download stays vetoed.
+- **The head is stripped of its trailing `+ Digital` before the medium veto runs**, anchored on the joining `+`/`&`, so the download that ships *with* a record cannot convict it while a variant that *is* the download stays vetoed.
 - **Only a competing *physical* medium in the blurb vetoes.** Every legitimate record's blurb names a download, so the download words would veto everything.
 - **Every string field is read through `_text`**, which requires `isinstance(..., str)`, unescapes HTML entities and normalises to NFC. The `or ""` idiom it replaces handed a truthy retyped value to `.strip()`/`.split()` and aborted the whole source over one malformed product.
 - **Every token boundary is Unicode-aware and the inch marker is closed on both sides.** The left boundary sits before the *whole* marker with the multiplier absorbed into it, or `2x12"` is lost.
