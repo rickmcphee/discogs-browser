@@ -138,11 +138,22 @@ def ensure_dirs():
 # delay (crawl_manager._paced_search), and on every settings read -- all through
 # the same five-connection admin pool the log writer and the log stream share.
 # A worker waiting out psycopg's 30s default for that pool and logging
-# "couldn't get a connection" is what this cache is for. It bounds the
-# cache-eligible reads -- which is what that traffic consisted of -- to one
-# query per interval however many callers make them. The reads that gate
-# correctness rather than pacing opt out; see crawl_library_only and the
-# fresh= note below.
+# "couldn't get a connection" is what this cache is for: a cache-eligible read
+# inside the TTL costs nothing, and that is what the traffic consisted of.
+#
+# What it does not do is collapse a miss to a single query. The publish path is
+# deliberately not single-flight (see the lock's note below), so callers that
+# find the entry expired at the same moment each run the SELECT. That burst is
+# bounded by how many callers are concurrently in here -- two crawl workers by
+# default, plus the occasional settings request or scheduler resync -- and it
+# happens once per interval rather than on every call, which is what the old
+# steady state was. Do not read this as one query per interval regardless of
+# caller count; it is not, and a single-flight lock is the wrong way to make it
+# so, because callers would then queue behind whichever one is stuck in the
+# very checkout this exists to survive.
+#
+# The reads that gate correctness rather than pacing opt out of the cache
+# entirely; see crawl_library_only and the fresh= note below.
 #
 # Two seconds is chosen against what actually consumes a setting rather than
 # against how fast a person clicks Save: the claim loop's own idle sleep is
