@@ -190,17 +190,37 @@ ahead of it, does not match, and keeps its vendor.
 
 ### The row title
 
-`{album} — {descriptor}`, where the descriptor is the variant head with the
-store's blurb dropped. The blurbs run to whole paragraphs; kept whole they make
-the row unreadable.
+`{album} — {descriptor}`, where the descriptor is the variant's **whole title**
+— the same choice every sibling crawler makes.
 
 The album leads because the Store tab's Collection and Wantlist filters match
 the library exact-or-prefix-with-space against the catalog title.
 
-Trimming is display-only, but `item_key` hashes the title, so a trim that
-collided two of a product's variants would silently overwrite one row with the
-other. No product collides today; a product that starts to falls back to the
-untrimmed titles, which are what distinguished the variants in the first place.
+The descriptor was first the variant *head*, with the store's blurb dropped,
+because this store's blurbs run to whole paragraphs: measured over the live
+catalog on 2026-09-09, trimming takes the median descriptor from 69 characters
+to 22 and the longest from 255 to 83. That readability was not free, and the
+bill fell on identity.
+
+`item_key` hashes the row title, so trimming can collide two of a product's
+variants and silently overwrite one row with the other. The crawler guarded that
+by falling back to the untrimmed titles whenever a product's heads collided —
+which made a pressing's title, and so its identity, a function of its
+**siblings**. Five products collide on the live catalog (an earlier version of
+this document asserted that none did; that was simply wrong), and two of them
+pair an in-stock variant with a sold-out one trimming to the same head. The
+store deleting that dead variant — routine housekeeping — would flip the
+survivor from its full title back to the trimmed one, change its `item_key`, and
+orphan the saves, judgments and listings keyed on it. Copilot found this in
+review on PR #337.
+
+Using the whole title always is what the collision fallback already reached for,
+so it costs only the readability and buys a descriptor that is a pure function
+of one variant. Carrying a variant-derived key *separately* from a trimmed
+display title would be the other way out, and it is the one this crawler cannot
+take alone: the catalog contract has no field for it, `item_key` is computed
+downstream from artist, title and URL, and every crawler in the repo keys its
+URL on the product handle rather than the variant.
 
 ### Availability and price
 

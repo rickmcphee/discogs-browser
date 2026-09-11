@@ -202,12 +202,12 @@ class Crawler:
         if not yielded and variants_unreadable:
             # An unreadable `variants` collection -- absent, retyped, empty,
             # or holding no mapping -- is invisible to every other guard here.
-            # `_pressings` reads it through `or []` and drops non-mappings, so
-            # such a product looks exactly like one that simply stocks no
-            # records, and a single readable sold-out record elsewhere is
-            # enough to keep `format_named` non-zero and wave the empty walk
-            # through. Found by Copilot in review on PR #337, the same shape
-            # of hole as the artist tally below.
+            # `_pressings` reads it through `_raw_variants` and drops
+            # non-mappings, so such a product looks exactly like one that
+            # simply stocks no records, and a single readable sold-out record
+            # elsewhere is enough to keep `format_named` non-zero and wave the
+            # empty walk through. Found by Copilot in review on PR #337, the
+            # same shape of hole as the artist tally below.
             #
             # Checked before the format guard so it names the upstream cause:
             # when the collection breaks store-wide both conditions hold, and
@@ -380,23 +380,28 @@ class Crawler:
                 continue
             if not cls._is_vinyl(title):
                 continue
-            pairs.append((variant, cls._descriptor(title)))
-        # The descriptor is the format's name, with the store's blurb dropped,
-        # because the blurb runs to whole paragraphs and the row title has to
-        # stay readable. Trimming can in principle collide two of a product's
-        # variants -- and a collision is not cosmetic, since item_key hashes
-        # the title, so the second row would overwrite the first. Confirmed no
-        # product collides today; a product that starts to falls back to the
-        # untrimmed titles, which are what distinguished them in the first
-        # place.
-        heads = [d for _, d in pairs]
-        if len(set(heads)) != len(heads):
-            return [(v, " ".join((v.get("title") or "").split())) for v, _ in pairs]
+            # The descriptor is the variant's WHOLE title, as every sibling
+            # crawler uses, and the reason is identity rather than taste.
+            # item_key hashes the row title, so the descriptor has to be a
+            # function of this variant and nothing else.
+            #
+            # This trimmed the store's blurb off first, for readability -- its
+            # variant titles run to whole paragraphs -- and fell back to the
+            # untrimmed titles when two of a product's heads collided, since
+            # the blurb was the only thing telling them apart. That made a
+            # pressing's identity depend on its SIBLINGS: five products collide
+            # today, two of them with an in-stock variant sitting beside the
+            # sold-out one it collides with, so the store deleting that dead
+            # variant -- routine housekeeping -- would flip the survivor from
+            # its full title back to the trimmed one, change its item_key, and
+            # orphan the saves, judgments and listings hanging off it. Found by
+            # Copilot in review on PR #337.
+            #
+            # Untrimmed is what the collision fallback reached for anyway, so
+            # using it always costs only the readability, and buys a title no
+            # sibling variant can move.
+            pairs.append((variant, title))
         return pairs
-
-    @staticmethod
-    def _descriptor(variant_title: str) -> str:
-        return variant_title.split("(")[0].strip()
 
     @staticmethod
     def _is_vinyl(variant_title: str) -> bool:

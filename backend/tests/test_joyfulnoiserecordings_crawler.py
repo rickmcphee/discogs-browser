@@ -200,7 +200,8 @@ async def test_crawl_catalog_yields_item_fields(crawler):
     _mock_pages(_one_pressing(_TRAUMANAUT_PRODUCT, index=1))
     assert await _crawl(crawler) == [{
         "artist": "Goblin Cock",
-        "title": "Traumanaut — 100% Recycled Eco Purple-Pink Vinyl + Digital",
+        "title": ("Traumanaut — 100% Recycled Eco Purple-Pink Vinyl + Digital "
+                  "(Download in AIFF/MP3/WAV)"),
         "format": "Vinyl",
         "price": 24.0,
         "currency": "USD",
@@ -385,7 +386,8 @@ def test_a_vinyl_word_in_the_head_survives_another_medium_beside_it():
 async def test_only_the_vinyl_variants_of_a_multi_format_product_are_listed(crawler):
     _mock_pages(_TRAUMANAUT_PRODUCT)
     assert [i["title"] for i in await _crawl(crawler)] == [
-        "Traumanaut — 100% Recycled Eco Purple-Pink Vinyl + Digital"]
+        "Traumanaut — 100% Recycled Eco Purple-Pink Vinyl + Digital "
+        "(Download in AIFF/MP3/WAV)"]
 
 
 # -------------------------------------------------------------- multi-release
@@ -409,7 +411,8 @@ async def test_a_box_of_other_albums_is_not_listed_under_this_one(crawler):
     _mock_pages(_SLEEPYTIME_PRODUCT)
     items = await _crawl(crawler)
     assert [i["title"] for i in items] == [
-        "In Glorious Times — 2xLP on Citrus Colored Vinyl"]
+        "In Glorious Times — 2xLP on Citrus Colored Vinyl "
+        "(Includes download in AIFF/MP3/WAV)"]
     assert [i["price"] for i in items] == [35.0]
 
 
@@ -493,11 +496,31 @@ async def test_the_row_title_leads_with_the_album_so_it_prefix_matches_a_library
                for i in await _crawl(crawler))
 
 
-def test_the_descriptor_drops_the_store_blurb():
+def test_the_descriptor_is_the_whole_variant_title():
+    # item_key hashes the row title, so the descriptor has to be a function of
+    # this variant alone. Trimming the blurb read better but made two of this
+    # store's variants collide, and the fallback out of that collision made a
+    # pressing's title depend on its siblings.
     items = Crawler._items(_product(variants=[_variant(
         "Limited Edition Vinyl + Digital (Limited to 400 hand-numbered copies "
         "on Silver Lava w/ Clear Splatter)")]))
-    assert items[0]["title"] == "Some Album — Limited Edition Vinyl + Digital"
+    assert items[0]["title"] == (
+        "Some Album — Limited Edition Vinyl + Digital (Limited to 400 "
+        "hand-numbered copies on Silver Lava w/ Clear Splatter)")
+
+
+def test_a_pressings_identity_does_not_move_when_a_colliding_sibling_goes():
+    # Captured shape: `dumb-numbers` ships an in-stock pressing beside a
+    # sold-out one whose title trims to the same head. The store deleting the
+    # dead variant is routine housekeeping, and it must not re-key the
+    # survivor -- item_key hashes the title, so a changed title orphans the
+    # saves, judgments and listings hanging off that row. Found by Copilot in
+    # review on PR #337.
+    live = _variant("Vinyl + Digital (electric blue vinyl)")
+    dead = _variant("Vinyl + Digital (black vinyl)", available=False)
+    with_sibling = Crawler._items(_product(variants=[live, dead]))
+    alone = Crawler._items(_product(variants=[live]))
+    assert [i["title"] for i in with_sibling] == [i["title"] for i in alone]
 
 
 def test_every_admitted_variant_yields_its_own_identity():
