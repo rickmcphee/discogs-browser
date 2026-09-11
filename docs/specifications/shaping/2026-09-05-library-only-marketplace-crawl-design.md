@@ -80,14 +80,51 @@ setting existed — no view join for the planner to weigh, and nothing for a
 generic plan to fail to prune. `library_only` is only ever the setting's value
 as read by the caller, never request-derived.
 
-The setting is read fresh at each decision point rather than cached in the
-worker: `_drain_one_batch` already loads config per claim for the stranded
+The setting is read at each decision point rather than captured once at boot:
+`_drain_one_batch` already loads config per claim for the stranded
 threshold, and the flag rides the same read; `_sync_stock` reads it per source,
 as it already re-reads the enabled list per source, so a flip mid-run governs
 the sites still to come. `load_config()` goes through the admin pool, so every
 read happens before the app-pool connection is borrowed, the ordering
 [`2026-08-25-admin-queue-tab-design.md`](2026-08-25-admin-queue-tab-design.md)
 already requires.
+
+**Amendment (2026-09-09):** the paragraph above used to read "read fresh at
+each decision point rather than cached in the worker", which is no longer
+accurate as written: `load_config()` now serves repeat reads from a short
+process-wide TTL cache (`config._CONFIG_CACHE_TTL_SECONDS`), because the admin
+pool it reads through — shared with the log writer and the log stream — was
+leaving crawl workers to wait out psycopg's full 30s checkout timeout and log
+`PoolTimeout` instead of claiming work. The ordering requirement above only
+gets stronger, since a cached read borrows no connection at all.
+
+This setting is exempt from that cache, and the exemption is what keeps this
+design's guarantee true rather than nearly true. `crawl_library_only()` reads
+`load_config(fresh=True)` whenever it fetches config for itself, so every
+decision point named above — the claim, each source's enqueue, the switch-on
+sweep, the end-of-sync sweep, the post-collection-sync restore — is
+authoritative without each having to remember to ask.
+
+A caller that passes a config keeps responsibility for how it read it, and the
+rule is that acting on this flag requires a current value rather than a recent
+one. `_claim_batch` and `update_settings` both pass one and both act on the
+flag; both load it with `fresh=True` first, since they need the rest of that
+config anyway. The Settings and Queue reports pass a cached config, which is
+correct there because they render the value rather than act on it. A caller
+that acts on a *cached* config is the way back to the failure below.
+
+Why the exemption is needed at all: the Machine serving `POST /api/settings`
+drops its own cache as it saves, but no invalidation crosses Machines. A worker
+elsewhere holding a cached `crawl_library_only=False` would claim rows the
+switch-on sweep is about to delete — and once claimed they are `in_progress`,
+which `delete_dead_stock_crawl_queue_rows` never touches, because it only
+deletes `pending` rows. Waiting out the TTL is no answer either: `_worker_loop`
+sleeps between drains only when a drain claimed nothing, so a worker with a
+backlog re-claims well inside one. None of these reads is hot — the claim is
+once per batch, the rest are once per source, per sweep, or per admin request —
+so the exemption costs almost nothing. What the cache absorbs is
+`_paced_search`'s per-unit pacing delay, which is what the traffic actually
+consisted of and where a second of staleness changes nothing.
 
 ### What "someone wants it" means
 

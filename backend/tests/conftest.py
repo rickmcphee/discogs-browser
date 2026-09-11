@@ -373,6 +373,19 @@ class _RespxBridgeTransport(_authlib_httpx.BaseTransport):
 
 
 @pytest.fixture(autouse=True)
+def _clear_config_cache():
+    """load_config() caches the app_config row for a couple of seconds, and
+    that cache is process-global while the row is one shared singleton for the
+    whole session. save_config() drops it, so most tests are covered already --
+    this is for the ones that write the row (or TRUNCATE it) through raw SQL,
+    where a value cached by the previous test would otherwise still be inside
+    its TTL when the next one reads."""
+    config.invalidate_config_cache()
+    yield
+    config.invalidate_config_cache()
+
+
+@pytest.fixture(autouse=True)
 def _oauth1_transport_bridge(monkeypatch):
     import discogs
     import oauth_discogs
