@@ -1,5 +1,6 @@
 import importlib
 import json
+from contextlib import contextmanager
 from unittest.mock import patch
 from urllib.parse import unquote, urlsplit
 
@@ -7,7 +8,7 @@ import pytest
 
 import config as config_module
 import db
-from config import _with_userinfo, load_config, migrate_legacy_config_file, save_config, ensure_dirs
+from config import _with_userinfo, crawl_library_only, load_config, migrate_legacy_config_file, save_config, ensure_dirs
 
 
 def test_load_config_missing_returns_empty(tmp_config_dir):
@@ -22,6 +23,143 @@ def test_load_config_missing_returns_empty(tmp_config_dir):
 def test_save_and_load_config(tmp_config_dir):
     save_config({"discogs_token": "abc123"})
     assert load_config() == {"discogs_token": "abc123"}
+
+
+def _write_config_row_directly(data):
+    """Write app_config without going through save_config() -- what a write
+    from another Machine looks like from inside this process."""
+    from psycopg.types.json import Jsonb
+
+    with db.get_admin_pool().connection() as conn:
+        conn.execute(
+            "INSERT INTO app_config (id, data) VALUES (TRUE, %s) "
+            "ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data",
+            [Jsonb(data)],
+        )
+        conn.commit()
+
+
+# The TTL is widened or zeroed in these tests rather than slept through, so
+# each assertion is about the cache and not about how long two queries took.
+
+def test_load_config_serves_a_repeat_read_from_the_cache(tmp_config_dir):
+    save_config({"crawl_delay_seconds": 30})
+    with patch("config._CONFIG_CACHE_TTL_SECONDS", 60):
+        assert load_config() == {"crawl_delay_seconds": 30}
+        _write_config_row_directly({"crawl_delay_seconds": 5})
+        assert load_config() == {"crawl_delay_seconds": 30}
+
+
+def test_load_config_rereads_once_the_ttl_has_expired(tmp_config_dir):
+    save_config({"crawl_delay_seconds": 30})
+    with patch("config._CONFIG_CACHE_TTL_SECONDS", 0):
+        assert load_config() == {"crawl_delay_seconds": 30}
+        _write_config_row_directly({"crawl_delay_seconds": 5})
+        assert load_config() == {"crawl_delay_seconds": 5}
+
+
+def test_save_config_makes_its_own_write_visible_immediately(tmp_config_dir):
+    # The Machine that served POST /api/settings answers the GET that follows
+    # it, and must not answer it from a cache seeded before the save.
+    with patch("config._CONFIG_CACHE_TTL_SECONDS", 60):
+        load_config()
+        save_config({"ebay_app_id": "new-key"})
+        assert load_config() == {"ebay_app_id": "new-key"}
+
+
+def test_load_config_hands_out_a_copy_the_caller_may_mutate(tmp_config_dir):
+    # POST /api/settings reads, edits and re-saves the same dict. Were that the
+    # cached dict, editing it would rewrite what every other reader sees for
+    # the rest of the TTL -- with nothing having been saved at all. Nested,
+    # because a shallow copy passes the flat version of this and still shares
+    # every value that isn't a scalar.
+    save_config({"ebay_app_id": "real-key", "nested": {"kept": True}})
+    with patch("config._CONFIG_CACHE_TTL_SECONDS", 60):
+        first = load_config()
+        first["ebay_app_id"] = "edited-in-place"
+        first["nested"]["kept"] = False
+        assert load_config() == {"ebay_app_id": "real-key", "nested": {"kept": True}}
+
+
+def test_a_save_landing_mid_read_is_not_undone_by_the_read(tmp_config_dir):
+    """A load already past its SELECT must not publish the pre-save row.
+
+    save_config() invalidates, but the read that raced it holds a row fetched
+    before the write. Publishing that would serve the old settings back to the
+    GET that repopulates the form right after POST /api/settings, for a whole
+    TTL, with the save itself having succeeded."""
+    save_config({"ebay_app_id": "old-key"})
+    real_pool = db.get_admin_pool()
+    saved = []
+
+    class _PoolThatSavesMidRead:
+        """The admin pool, but a competing save lands in the window between
+        this read's SELECT and its cache publish. One-shot: save_config()
+        borrows this same patched pool, and must not recurse."""
+
+        @contextmanager
+        def connection(self):
+            with real_pool.connection() as conn:
+                yield conn
+            if not saved:
+                saved.append(True)
+                save_config({"ebay_app_id": "new-key"})
+
+    with patch("config._CONFIG_CACHE_TTL_SECONDS", 60), \
+         patch.object(db, "get_admin_pool", _PoolThatSavesMidRead):
+        # What this read fetched, which is legitimately the pre-save row.
+        assert load_config() == {"ebay_app_id": "old-key"}
+    assert saved, "the competing save never ran, so this proves nothing"
+
+    # But it kept it to itself: the next reader sees the save, not the cache.
+    assert load_config() == {"ebay_app_id": "new-key"}
+
+
+def test_fresh_reads_past_a_valid_cache_and_refills_it(tmp_config_dir):
+    """The crawl worker's claim gates which rows it may take on
+    crawl_library_only, and a row claimed under a stale value goes
+    'in_progress' -- which delete_dead_stock_crawl_queue_rows never sweeps,
+    because it only deletes 'pending' rows. Another Machine's save has to
+    reach that one caller straight away, cache or no cache."""
+    save_config({"crawl_library_only": False})
+    with patch("config._CONFIG_CACHE_TTL_SECONDS", 60):
+        assert load_config() == {"crawl_library_only": False}
+        # Another Machine turns it on: no invalidation reaches this process.
+        _write_config_row_directly({"crawl_library_only": True})
+
+        assert load_config() == {"crawl_library_only": False}
+        assert load_config(fresh=True) == {"crawl_library_only": True}
+        # And having paid for the read, it refills the cache for everyone else.
+        assert load_config() == {"crawl_library_only": True}
+
+
+def test_the_library_only_gate_does_not_read_a_stale_cache(tmp_config_dir):
+    """Every no-argument caller of this gate is deciding which queue rows exist
+    or may be claimed, on a Machine that never sees another Machine's
+    invalidation. It reads through the cache rather than from it."""
+    save_config({"crawl_library_only": False})
+    with patch("config._CONFIG_CACHE_TTL_SECONDS", 60):
+        assert crawl_library_only() is False
+        # Another Machine turns it on. Nothing invalidates this process.
+        _write_config_row_directly({"crawl_library_only": True})
+
+        assert crawl_library_only() is True
+        # A caller that brings its own config still gets what it read -- that
+        # is what the Settings and Queue reports rely on.
+        assert crawl_library_only({"crawl_library_only": False}) is False
+
+
+def test_migrate_legacy_config_file_drops_the_cache(tmp_config_dir):
+    # The migration writes the row without going through save_config(), so it
+    # invalidates by hand. A config cached before it ran would otherwise
+    # outlive the migration that populated it.
+    with patch("config._CONFIG_CACHE_TTL_SECONDS", 60):
+        assert load_config() == {}
+        (tmp_config_dir / "config.json").write_text(
+            json.dumps({"ebay_app_id": "real-key"})
+        )
+        migrate_legacy_config_file()
+        assert load_config() == {"ebay_app_id": "real-key"}
 
 
 def test_ensure_dirs_creates_structure(tmp_config_dir):
