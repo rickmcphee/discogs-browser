@@ -98,8 +98,15 @@ _SLEEPYTIME_PRODUCT = {
 
 # Captured, then altered to `available: True` (live it is sold out): a White
 # Label Series record. `vendor` names the series rather than the artist, and
-# the artist is only in the product title. The album closes on a curly
-# apostrophe that also appears INSIDE it.
+# the artist is only in the product title.
+#
+# The two apostrophes are different glyphs, and which is which is the whole
+# point of the fixture: the album is enclosed by STRAIGHT ones, and the curly
+# U+2019 sits only INSIDE it, in `Bacon's`. What decides the match is not the
+# glyph but what follows -- the inner one is followed by `s`, so the lookahead
+# refuses to close there, while the closing straight one ends the string. A
+# review once read this the other way round and reported the parse as broken;
+# it is not, and the comment now says which mark is where.
 _WLS_PRODUCT = {
     "title": "Ambulances 'Frankie Bacon’s Blue, Blue Heart'",
     "vendor": "White Label Series",
