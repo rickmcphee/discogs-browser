@@ -160,7 +160,7 @@ _NON_VINYL_MEDIA_RE = re.compile(
     # nothing here vetoes it before that 12" admits it as a record.
     _COUNTED + r'cds?\b|\bcompact\s+discs?\b'
     r'|' + _COUNTED + r'cassettes?\b|' + _COUNTED + r'tapes?\b'
-    r'|\bdigital\b|\bmp3s?\b|\bwavs?\b|\bdownloads?\b'
+    r'|\bdigital\b|\bmp3s?\b|\bwavs?\b|\baiffs?\b|\bdownloads?\b'
     r'|\bbooks?\b|\bzines?\b|\bposters?\b|\btotes?\b|\bshirts?\b'
     r'|' + _COUNTED + r'dvds?\b|\bblu-?\s?rays?\b',
     re.IGNORECASE,
@@ -213,6 +213,18 @@ _CREDIT_RE = re.compile(
 )
 
 
+# Entities can be encoded more than once (`&amp;amp;`), and one pass leaves
+# the inner one intact -- which is worse than not decoding at all here,
+# because `&amp;` still reads as an `&` to `_COMPANION_RE`'s separator class
+# while no longer being followed by a medium word, so the companion clause
+# goes uncut and a real record is REJECTED on its own `Digital`. Decoding to a
+# fixed point is stable on text that holds no entity, so it costs nothing on
+# the ordinary title. The cap is there only so a pathological input cannot
+# spin; nothing in this catalog needs even a second pass. Found by Copilot in
+# review on PR #337.
+_MAX_UNESCAPE_PASSES = 4
+
+
 def _text(value) -> str:
     """A whitespace-collapsed string, or "" for anything that is not one.
 
@@ -247,7 +259,13 @@ def _text(value) -> str:
     """
     if not isinstance(value, str):
         return ""
-    return " ".join(unicodedata.normalize("NFC", html.unescape(value)).split())
+    decoded = value
+    for _ in range(_MAX_UNESCAPE_PASSES):
+        once = html.unescape(decoded)
+        if once == decoded:
+            break
+        decoded = once
+    return " ".join(unicodedata.normalize("NFC", decoded).split())
 
 
 class Crawler:
@@ -464,6 +482,16 @@ class Crawler:
         `_price_unreadable`.
         """
         if not cls._has_identity(product):
+            return 0
+        # Same order `_items` skips in, and for the same reason the artist and
+        # variant tallies are placed where they are: a product this crawler
+        # drops for want of a CREDIT never reaches its prices, so counting them
+        # here makes the price guard answer for an upstream failure. The price
+        # guard is checked before the artist guard, so on a walk emptied by a
+        # store-wide vendor break it would have reported `price-source drift`
+        # and named the wrong cause. Found by Copilot in review on PR #337.
+        artist, album = cls._credit(product)
+        if not artist or not album:
             return 0
         return sum(
             1 for variant, _ in cls._pressings(product)

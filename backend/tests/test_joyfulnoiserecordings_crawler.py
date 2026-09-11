@@ -102,7 +102,7 @@ _SLEEPYTIME_PRODUCT = {
 #
 # The two apostrophes are different glyphs, and which is which is the whole
 # point of the fixture: the album is enclosed by STRAIGHT ones, and the curly
-# U+2019 sits only INSIDE it, in `Bacon's`. What decides the match is not the
+# U+2019 sits only INSIDE it, in `Bacon’s`. What decides the match is not
 # glyph but what follows -- the inner one is followed by `s`, so the lookahead
 # refuses to close there, while the closing straight one ends the string. A
 # review once read this the other way round and reported the parse as broken;
@@ -518,6 +518,76 @@ def test_a_real_disc_count_reads_the_same_as_before(title, expected):
 def test_an_html_entity_separator_still_cuts_the_companion_clause():
     raw = "Limited Edition Box Set &amp; Digital (3xLP on deluxe colored vinyl)"
     assert Crawler._is_vinyl(Crawler._variant_title({"title": raw})) is True
+
+
+# `aiff` was a companion-download word but not a medium word, so a variant whose
+# head IS the AIFF download escaped the head veto and was then admitted by the
+# LP text in its own blurb -- the exact false positive the two-layer gate
+# exists to prevent. It belongs with digital/mp3/wav/downloads and deliberately
+# NOT in the physical list, which excludes download words because every real
+# record's blurb names one. Found by Copilot in review on PR #337.
+@pytest.mark.parametrize("title", [
+    "AIFF (Includes downloads of all 5 LPs)",
+    "AIFFs (Includes downloads of all 5 LPs)",
+    "AIFF (2xLP worth of audio)",
+])
+def test_a_bare_aiff_head_is_not_admitted_by_its_blurb(title):
+    assert Crawler._is_vinyl(title) is False
+
+
+@pytest.mark.parametrize("title", [
+    "Black Vinyl + AIFF", "2xLP + AIFF (high quality)", '12" Vinyl + AIFF',
+    "Vinyl + Digital (Includes MP3, AIFF + WAV.)",
+])
+def test_a_record_shipping_with_an_aiff_still_admits(title):
+    assert Crawler._is_vinyl(title) is True
+
+
+# One unescape pass leaves a doubly-encoded entity half-decoded, which is worse
+# here than not decoding at all: `&amp;` still reads as an `&` to the companion
+# separator while no longer being followed by a medium word, so the clause goes
+# uncut and a real record is rejected on its own `Digital`.
+@pytest.mark.parametrize("raw", [
+    # The single-encoded form is not a regression case for this fix -- it was
+    # already handled -- and is kept so widening one depth cannot drop another.
+    "Limited Edition Box Set &amp; Digital (3xLP on deluxe colored vinyl)",
+    "Limited Edition Box Set &amp;amp; Digital (3xLP on deluxe colored vinyl)",
+    "Limited Edition Box Set &amp;amp;amp; Digital (3xLP on deluxe colored vinyl)",
+])
+def test_a_nested_entity_separator_still_cuts_the_companion_clause(raw):
+    assert Crawler._is_vinyl(Crawler._variant_title({"title": raw})) is True
+
+
+def test_decoding_to_a_fixed_point_leaves_ordinary_text_alone():
+    assert _text("Rock & Roll") == "Rock & Roll"
+    assert _text("Sun Ra & His Arkestra — 2xLP") == "Sun Ra & His Arkestra — 2xLP"
+
+
+# The price tally has to skip in the same order `_items` does. A product with no
+# usable credit never reaches its prices, so counting them makes the price guard
+# answer for an upstream failure -- and since the price guard is checked BEFORE
+# the artist guard, a walk emptied by a store-wide vendor break would have been
+# reported as `price-source drift`, naming the wrong cause.
+def test_the_price_tally_skips_a_product_with_no_usable_credit():
+    product = {
+        "title": "Some Record", "handle": "some-record", "vendor": "",
+        "images": [{"src": "https://cdn.shopify.com/x.jpg"}],
+        "variants": [{"title": "Black Vinyl + Digital", "price": None,
+                      "available": True, "featured_image": None}],
+    }
+    assert Crawler._items(product) == []
+    assert Crawler._unreadable_prices(product) == 0
+
+
+def test_the_price_tally_still_counts_a_credited_product():
+    product = {
+        "title": "Some Record", "handle": "some-record", "vendor": "Some Artist",
+        "images": [{"src": "https://cdn.shopify.com/x.jpg"}],
+        "variants": [{"title": "Black Vinyl + Digital", "price": None,
+                      "available": True, "featured_image": None}],
+    }
+    assert Crawler._items(product) == []
+    assert Crawler._unreadable_prices(product) == 1
 
 
 def test_a_variant_that_is_the_download_stays_vetoed_through_an_entity():
