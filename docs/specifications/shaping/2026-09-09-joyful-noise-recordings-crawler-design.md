@@ -131,6 +131,27 @@ These details of the patterns are load-bearing:
   live listing whose only inch marker measures the book; without the prefix
   nothing vetoes it before that `12"` admits it as a record. This was found by
   a test asserting the rejection the prose already claimed.
+- **The token boundaries are Unicode-aware, and the inch marker has one on its
+  right.** `[a-z]` is ASCII-only even under `IGNORECASE`, so a lookbehind
+  spelled that way treats an accented letter as a separator: `ÉLP CD` matched
+  the embedded `LP` and was admitted before the `CD` could reject it. And the
+  inch alternative had no closing boundary at all, so `12"CD` read `12"` as a
+  complete marker and won the same way. Both matter because the gate takes a
+  vinyl head *at its word* — a spurious match there is not merely noise, it
+  pre-empts the veto. Found by Copilot in review on PR #337;
+  `dongiovannirecords.py` had already solved this class in PR #323, and its
+  comments name the exact trap of making the left boundaries Unicode-aware
+  while leaving the right one ASCII in the same commit.
+
+Titles are normalised to **NFC** in `_text` before any of this runs, and that
+is part of the same rule rather than tidiness. The boundaries ask whether a
+letter sits beside a token, and in decomposed text the neighbour is a combining
+mark rather than the letter it belongs to — so `éLP CD` classified as vinyl
+spelled one way and as a CD spelled the other. One descriptor must not read two
+ways depending on its encoding. NFC is canonical, so any two spellings of a
+string share a form; it does not compose every mark that exists, but it makes
+the reading consistent, which is the property that was missing. Every live
+title is already NFC, so this re-keys nothing.
 
 The gate is **positive**: a variant must show vinyl to be admitted. That is the
 opposite polarity from the crawlers whose shelf has already vouched for the

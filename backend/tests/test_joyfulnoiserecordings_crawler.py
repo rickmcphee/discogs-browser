@@ -1,3 +1,5 @@
+import unicodedata
+
 import httpx
 import pytest
 import respx
@@ -388,6 +390,41 @@ async def test_only_the_vinyl_variants_of_a_multi_format_product_are_listed(craw
     assert [i["title"] for i in await _crawl(crawler)] == [
         "Traumanaut — 100% Recycled Eco Purple-Pink Vinyl + Digital "
         "(Download in AIFF/MP3/WAV)"]
+
+
+# The format gate's boundaries were ASCII-only, so an accented letter read as a
+# separator and the inch marker had no closing boundary at all -- both of which
+# let a spurious vinyl match win before the medium veto could run. Found by
+# Copilot in review on PR #337; `dongiovannirecords.py` solved the same class in
+# PR #323 and pins `12"CD` in its own suite.
+@pytest.mark.parametrize("title", [
+    'ÉLP CD', 'éLP CD', 'ÜLP Cassette',            # accented letter before LP
+    '12"CD', '7"CD + Digital', '12"Cassette',      # inch marker glued to a medium
+    '10"DVD', '5"Tape',
+])
+def test_a_glued_format_token_does_not_beat_the_medium_veto(title):
+    assert Crawler._is_vinyl(title) is False
+
+
+@pytest.mark.parametrize("title", [
+    "Black Vinyl + Digital", '12" Vinyl', "2xLP on Citrus Colored Vinyl",
+    'Hardbound Book + 7"', '4x10" Vinyl Box Set', '12" Test Pressing',
+    'Limited Edition 7"', "7 inch Flexi", "2xLP", "LP + Digital",
+])
+def test_a_properly_separated_format_token_still_admits(title):
+    assert Crawler._is_vinyl(title) is True
+
+
+@pytest.mark.parametrize("raw", ["éLP CD", "Noël LP", 'Noël 12" Vinyl'])
+def test_a_descriptor_reads_the_same_decomposed_as_precomposed(raw):
+    # The boundaries ask whether a letter sits beside the token, and in
+    # decomposed text the neighbour is a combining mark rather than the letter
+    # it belongs to. `_text` normalises to NFC so one string cannot classify
+    # two ways depending on how it was encoded.
+    nfc = Crawler._variant_title({"title": unicodedata.normalize("NFC", raw)})
+    nfd = Crawler._variant_title({"title": unicodedata.normalize("NFD", raw)})
+    assert nfc == nfd
+    assert Crawler._is_vinyl(nfc) is Crawler._is_vinyl(nfd)
 
 
 # -------------------------------------------------------------- multi-release

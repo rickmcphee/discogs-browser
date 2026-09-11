@@ -1,5 +1,6 @@
 import math
 import re
+import unicodedata
 from typing import AsyncIterator, List, Optional, Tuple
 
 from shopify_catalog import iter_products, resolve_cover_image
@@ -48,9 +49,24 @@ _COLLECTION_SLUG = "all"
 # Hence: the head decides whether some OTHER medium owns the product, and the
 # full string then has to show vinyl. A head that names vinyl outright
 # (`Hardbound Book + 7"`) is not vetoed by the medium sitting beside it.
+# `[a-z]` is ASCII-only even under IGNORECASE, so a lookbehind spelled that way
+# treats an accented letter as a separator: `ÉLP CD` matched the embedded `LP`
+# and was admitted as vinyl before the `CD` could reject it. These say what they
+# mean instead -- "not preceded by a letter", "not followed by a letter or
+# digit" -- in any script.
+#
+# The right-hand one is defined beside its opposite deliberately. Without it the
+# inch marker had no closing boundary at all, so `12"CD` read `12"` as a
+# complete marker and was admitted before the `CD` veto ran; `dongiovanni`
+# records that fixing the left boundaries and leaving the right one ASCII, in
+# one commit, is exactly how that bug survived. Both found by Copilot in review
+# on PR #337, and both already solved on `dongiovannirecords.py` in PR #323 --
+# which pins `12"CD` and `12"Cassette` in its own suite.
+_NOT_AFTER_LETTER = r'(?<![^\W\d_])'
+_NOT_BEFORE_LETTER_OR_DIGIT = r'(?![^\W_])'
 _VINYL_RE = re.compile(
     r'\bvinyl\b'
-    r'|(?<![a-z])\d*\s*[x×]?\s*lps?\b'
+    r'|' + _NOT_AFTER_LETTER + r'\d*\s*[x×]?\s*lps?\b'
     # `flexi` alone, not just `flexi disc`: the store also sells a `Flexi Book`
     # -- one release spiral-bound out of several square flexi discs.
     r'|\bflexi[-\s]?(?:discs?)?\b'
@@ -60,7 +76,7 @@ _VINYL_RE = re.compile(
     # Record sizes only. An unrestricted inch marker is what lets a poster
     # (`18"x24" Poster`) and a tote bag (`15"W x 16"H`) in, and those are the
     # store's own live listings, not hypotheticals.
-    r'|(?<![\d.])(?:5|7|10|12)\s*(?:"|”|″|\s*inch\b)',
+    r'|(?<![\d.])(?:5|7|10|12)\s*(?:["”″]' + _NOT_BEFORE_LETTER_OR_DIGIT + r'|\s*inch\b)',
     re.IGNORECASE,
 )
 # A pair of inch marks joined by an x is a physical measurement, never a
@@ -176,8 +192,20 @@ def _text(value) -> str:
     hole was fixed one commit earlier for variant titles alone.
     `theflenser.py` and `monorailmusic.py` both already carry this helper, with
     docstrings making this same argument.
+
+    Normalised to NFC on the way through, which the format gate depends on.
+    Its boundaries ask "is a letter next to this token", and in DECOMPOSED text
+    the character beside the token is a combining mark rather than the letter
+    it belongs to -- so `éLP CD` read as vinyl spelled one way and as a CD
+    spelled the other. The same descriptor must not classify two ways
+    depending on how it was encoded. NFC is canonical, so any two spellings of
+    one string share a form; it does not compose every mark in existence, but
+    it makes the reading consistent, which is the property that was missing.
+    Every live title is already NFC, so this re-keys nothing.
     """
-    return " ".join(value.split()) if isinstance(value, str) else ""
+    if not isinstance(value, str):
+        return ""
+    return " ".join(unicodedata.normalize("NFC", value).split())
 
 
 class Crawler:
