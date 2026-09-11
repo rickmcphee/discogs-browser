@@ -332,7 +332,7 @@ placeholders above are prices the walk declines to *use*, not prices it cannot
 tally permanently at the number of placeholders; a guard gated on *nothing
 yielded* then fires on every empty walk, including the honest one where the
 catalog has simply sold out, and pins a stale snapshot in place on exactly the
-payload it exists to let through. Absent, retyped and non-finite is the shape
+payload it exists to let through. Absent, retyped and non-finite are the shapes
 a price field actually breaks in, so those alone are counted — which also puts
 the price guard in step with how the stock and variant guards read their own
 sources. A store-wide break that expressed itself as zeros rather than as

@@ -700,9 +700,9 @@ class Crawler:
         in place precisely when the store is telling the truth. Found by
         Copilot in review on PR #337.
 
-        Absent, retyped and non-finite is the shape a price field actually
-        breaks in, and only those are counted -- matching how the stock and
-        variant guards already read their own sources.
+        Absent, retyped and non-finite are the shapes a price field
+        actually breaks in, and only those are counted -- matching how the
+        stock and variant guards already read their own sources.
         """
         raw = variant.get("price")
         # A boolean price is a retyped field, not a cheap record: True would
