@@ -56,8 +56,8 @@ it almost entirely — of the products naming one anywhere in their title,
 
 Both figures are measured over the catalog captured 2026-09-09, and each is
 stated with the rule that produced it because neither survives a vague one:
-the vinyl figure moves with the format gate itself, which eleven review rounds
-changed, and the 7"/flexi figure moves by one or two depending on whether
+the vinyl figure moves with the format gate itself, which successive review
+rounds changed, and the 7"/flexi figure moves by one or two depending on whether
 variant titles are read. An earlier draft of this section carried numbers a
 re-derivation did not reproduce, for exactly those reasons.
 Walking the shelf would drop the larger part of the store's vinyl.
@@ -465,9 +465,18 @@ priced, every one carrying a cover image, and all 462 identities distinct. No
 row names a poster, tote, cassette, CD or download; no row is credited to
 `hidden`, `White Label Series` or the label itself.
 
-Every review finding on this branch was confirmed against the code before being
-fixed, and none of the fixes changes the live result: the replay still produces
-the same 462 rows. Each has a regression test.
+Every review finding on this branch was checked against the code before
+anything was changed, and every one that turned out to be a **confirmed
+defect** was fixed and carries a regression test. The qualifier is load-bearing
+rather than throat-clearing: one finding — the claim that `_credit` misparses
+the captured White Label title — was checked and found **not** to hold, and the
+code was deliberately left unchanged. Checking first is what made the
+difference there; fixing on report would have changed working code to satisfy a
+false premise. The limit that report pointed at is real even though its example
+was not, and is recorded under the credit rule above.
+
+None of the fixes changes the live result: the replay still produces the same
+462 rows.
 
 Two of them are worth separating from the rest, because the replay could not
 have caught either and did not. The companion-download rejection was a *latent*

@@ -43,7 +43,7 @@ TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/discogs_browser_
 - [x] **Write the test suite** against captured live products, marking each fixture captured / altered / invented.
 - [x] **Write the design doc** recording the evidence behind every rule.
 - [x] **Replay the captured catalog** and confirm the emitted rows are all priced, all distinct, and name no merch, CD, cassette or download.
-- [x] **Review rounds.** Copilot reviewed after every push. Each finding was reproduced against the code before being fixed, each has a regression test, and each test was confirmed to fail against the pre-fix code. One finding was verified **false** and the code deliberately left unchanged. The design doc was amended alongside every fix. See the PR for the full account — the recurring shapes were a drift tally that could not see the failure it was meant to catch, and a reader that crashed before its guard could report.
+- [x] **Review rounds.** Copilot reviewed after every push. Every finding was checked against the code before anything was changed; each one that proved to be a **confirmed defect** was fixed, carries a regression test, and that test was confirmed to fail against the pre-fix code. One finding was checked and found **not** to hold, and the code was deliberately left unchanged — checking first is what made the difference, since fixing on report would have changed working code to satisfy a false premise. The design doc was amended alongside every fix. See the PR for the full account — the recurring shapes were a drift tally that could not see the failure it was meant to catch, a reader that crashed before its guard could report, and a symmetric rule fixed on one side and left standing on the other.
 
 ## Verification
 
