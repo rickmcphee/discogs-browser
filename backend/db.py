@@ -23,11 +23,23 @@ _app_pool: Optional[ConnectionPool] = None
 _UNSET = object()
 
 
+# check= costs one empty round trip per checkout and buys the pool the ability
+# to notice a connection the server closed under it. Managed Postgres closes
+# them routinely -- a Neon compute restart or a blip at the pooler drops every
+# connection this process is holding at once -- and with no check the pool
+# hands the corpse to the next borrower, which fails on a query it had no
+# reason to expect to fail. Failing inside check() instead is what lets the
+# pool throw the connection away and open a fresh one, so the borrower simply
+# waits a little longer rather than seeing an error.
+_POOL_CHECK = ConnectionPool.check_connection
+
+
 def get_admin_pool() -> ConnectionPool:
     global _admin_pool
     if _admin_pool is None:
         _admin_pool = ConnectionPool(
-            config.DATABASE_URL, min_size=1, max_size=5, kwargs={"row_factory": dict_row}
+            config.DATABASE_URL, min_size=1, max_size=5, kwargs={"row_factory": dict_row},
+            check=_POOL_CHECK,
         )
     return _admin_pool
 
@@ -36,7 +48,8 @@ def get_identity_pool() -> ConnectionPool:
     global _identity_pool
     if _identity_pool is None:
         _identity_pool = ConnectionPool(
-            config.IDENTITY_DATABASE_URL, min_size=1, max_size=5, kwargs={"row_factory": dict_row}
+            config.IDENTITY_DATABASE_URL, min_size=1, max_size=5, kwargs={"row_factory": dict_row},
+            check=_POOL_CHECK,
         )
     return _identity_pool
 
@@ -45,7 +58,8 @@ def get_app_pool() -> ConnectionPool:
     global _app_pool
     if _app_pool is None:
         _app_pool = ConnectionPool(
-            config.APP_DATABASE_URL, min_size=2, max_size=10, kwargs={"row_factory": dict_row}
+            config.APP_DATABASE_URL, min_size=2, max_size=10, kwargs={"row_factory": dict_row},
+            check=_POOL_CHECK,
         )
     return _app_pool
 
