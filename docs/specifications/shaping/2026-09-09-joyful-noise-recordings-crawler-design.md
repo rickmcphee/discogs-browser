@@ -131,12 +131,18 @@ These details of the patterns are load-bearing:
   live listing whose only inch marker measures the book; without the prefix
   nothing vetoes it before that `12"` admits it as a record. This was found by
   a test asserting the rejection the prose already claimed.
-- **The token boundaries are Unicode-aware, and the inch marker has one on its
-  right.** `[a-z]` is ASCII-only even under `IGNORECASE`, so a lookbehind
+- **The token boundaries are Unicode-aware, and the inch marker is closed on
+  both sides.** `[a-z]` is ASCII-only even under `IGNORECASE`, so a lookbehind
   spelled that way treats an accented letter as a separator: `ÉLP CD` matched
   the embedded `LP` and was admitted before the `CD` could reject it. And the
   inch alternative had no closing boundary at all, so `12"CD` read `12"` as a
-  complete marker and won the same way. Both matter because the gate takes a
+  complete marker and won the same way — and then had no *opening* one either,
+  so `Studio12" CD` matched the glued marker and won a third time. The left
+  boundary sits before the **whole** marker with the multiplier absorbed into
+  it: placing it before the size digits instead would block `2x12"`, whose
+  digits follow the letter `x`, and lose every multiplier descriptor the store
+  uses. `dongiovannirecords.py` composes its own marker that way for that
+  reason. Both matter because the gate takes a
   vinyl head *at its word* — a spurious match there is not merely noise, it
   pre-empts the veto. Found by Copilot in review on PR #337;
   `dongiovannirecords.py` had already solved this class in PR #323, and its
@@ -164,6 +170,17 @@ ways depending on its encoding. NFC is canonical, so any two spellings of a
 string share a form; it does not compose every mark that exists, but it makes
 the reading consistent, which is the property that was missing. Every live
 title is already NFC, so this re-keys nothing.
+
+`_text` also **unescapes HTML entities**, and the format gate depends on that
+too. `_COMPANION_RE` joins on `[+&]`, so a literal `&amp;` had its `&`
+consumed and then failed to find the medium word after it — the companion
+clause went uncut and `Limited Edition Box Set &amp; Digital (3xLP …)` was
+rejected on its own `Digital` before the blurb could answer. Unescaping in the
+shared reader rather than in that one pattern also keeps an entity out of a
+displayed title and out of `item_key`. `asbestosrecords`, `darkdescentrecords`,
+`dischordrecords` and `spkr` all do the same; `spkr` puts the reason best —
+the row is read by a person, not a browser. No live variant title carries an
+entity today, but `spkr` documents neighbouring stores that do.
 
 The gate is **positive**: a variant must show vinyl to be admitted. That is the
 opposite polarity from the crawlers whose shelf has already vouched for the
