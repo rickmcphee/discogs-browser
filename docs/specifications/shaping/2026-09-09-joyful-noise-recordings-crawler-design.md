@@ -179,11 +179,26 @@ vendors correctly — deferring to `vendor` costs nothing and risks nothing.
 Measured against the live catalog: all 36 in-stock series products parse to the
 right artist, and the rule fires on no other product in the catalog.
 
-The closing quote must be followed by whitespace or the end of the string. This
-is what stops an apostrophe *inside* the album closing it early — `Ambulances
-'Frankie Bacon's Blue, Blue Heart'` would otherwise yield an album of `Frankie
-Bacon`. The artist group excludes quotes outright, so the album's opening quote
-is always the title's first.
+The closing quote must be followed by whitespace or the end of the string. That
+is what stops an apostrophe *inside* the album closing it early: in the live
+`Ambulances 'Frankie Bacon’s Blue, Blue Heart'` the inner apostrophe is followed
+by `s`, so the lookahead refuses to close there and the album survives whole.
+(Earlier drafts of this section wrote that title with a straight `'` where the
+store uses a curly `’`. The rule turns on what *follows* the mark rather than on
+the glyph, but quoting a live title inaccurately is worth not doing.) The artist
+group excludes quotes outright, so the album's opening quote is always the
+title's first.
+
+The rule is a heuristic, not a guarantee, and the limit is worth stating: an
+inner quote that *is* followed by whitespace — a possessive plural, say — does
+close the album early, so `Ambulances 'The Beatles' Greatest'` would parse to an
+album of `The Beatles Greatest'`, carrying the stray quote into it. No title in
+the catalog has that shape: of the 89 products where this parse fires in the
+2026-09-09 capture, none misparses. Copilot raised this in review on PR #337
+against the `Bacon’s` title, where it does not apply — that apostrophe is
+followed by a letter, and the parse there is correct — but the shape it points
+at is real, and preferring the last eligible quote is what would close it if a
+title ever needs it.
 
 A title that opens on the quote (`'Emerald Sea' (Test Pressing)`) has no artist
 ahead of it, does not match, and keeps its vendor.

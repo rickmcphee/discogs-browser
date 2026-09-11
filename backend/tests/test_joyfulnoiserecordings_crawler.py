@@ -672,6 +672,39 @@ def test_a_retyped_featured_image_falls_back_to_the_product_image():
     assert items[0]["cover_image_url"] == "https://cdn.shopify.com/cover.jpg"
 
 
+# Type-checking the two containers is not enough: the shared helper returns
+# whatever sits at `src` without looking at it, so a nested non-string reached
+# `cover_image_url` in breach of the Optional[str] contract and would be handed
+# to a Postgres TEXT column. Found by Copilot in review on PR #337.
+@pytest.mark.parametrize("src", [123, True, {"a": 1}, ["x"], "", "   ", None])
+def test_an_unusable_variant_image_src_falls_back_to_the_product_image(src):
+    items = Crawler._items(_product(
+        images=[{"src": "https://cdn.shopify.com/cover.jpg"}],
+        variants=[_variant("Black Vinyl", featured_image={"src": src})]))
+    assert items[0]["cover_image_url"] == "https://cdn.shopify.com/cover.jpg"
+
+
+@pytest.mark.parametrize("src", [123, True, {"a": 1}, ["x"], "", "   ", None])
+def test_an_unusable_product_image_src_yields_no_cover_rather_than_junk(src):
+    items = Crawler._items(_product(images=[{"src": src}]))
+    assert len(items) == 1
+    assert items[0]["cover_image_url"] is None
+
+
+def test_the_first_usable_product_image_answers():
+    items = Crawler._items(_product(images=[{"src": 123}, {"src": "https://cdn.shopify.com/ok.jpg"}]))
+    assert items[0]["cover_image_url"] == "https://cdn.shopify.com/ok.jpg"
+
+
+def test_every_cover_is_a_string_or_none():
+    for images in ([{"src": 123}], [{"src": {}}], "junk", 123, None, [{"src": "ok.jpg"}]):
+        for featured in ({"src": 123}, {"src": {}}, "junk", None, {"src": "v.jpg"}):
+            items = Crawler._items(_product(
+                images=images, variants=[_variant("Black Vinyl", featured_image=featured)]))
+            cover = items[0]["cover_image_url"]
+            assert cover is None or isinstance(cover, str), (images, featured, cover)
+
+
 def test_a_variant_image_still_wins_when_both_are_readable():
     items = Crawler._items(_product(
         images=[{"src": "https://cdn.shopify.com/cover.jpg"}],

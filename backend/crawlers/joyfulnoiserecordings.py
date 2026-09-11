@@ -142,6 +142,14 @@ _BUNDLE_RE = re.compile(
 # closing it early (`Ambulances 'Frankie Bacon’s Blue, Blue Heart'` would
 # otherwise credit an album of `Frankie Bacon`). The artist group excludes
 # quotes outright, so the album's opening quote is always the title's first.
+#
+# A heuristic, not a guarantee: an inner quote that IS followed by whitespace --
+# a possessive plural -- does close early, so `Ambulances 'The Beatles'
+# Greatest'` would yield an album of `The Beatles Greatest'`. No title in the
+# catalog has that shape. Raised by Copilot in review on PR #337 against the
+# `Bacon’s` title, where it does not apply -- that apostrophe is followed by a
+# letter -- but the shape is real, and preferring the LAST eligible quote is
+# what would close it if a title ever needs it.
 _CREDIT_RE = re.compile(
     r"^(?P<artist>[^'’\"“]+?)\s*['’]\s*(?P<album>.+?)\s*['’](?=\s|$)\s*(?P<rest>.*)$"
 )
@@ -522,10 +530,22 @@ class Crawler:
         not a fleet-wide change to make from inside this crawler.
         `monorailmusic.py` draws the same boundary for the same reason. Found
         by Copilot in review on PR #337.
+
+        Type-checking the two CONTAINERS is not enough, which is the second
+        thing found here: the helper returns whatever sits at `src` without
+        looking at it, so a nested `{"src": 123}` came back as the row's
+        `cover_image_url` in breach of the `Optional[str]` contract, and
+        `replace_stock_items()` then hands an int to a Postgres TEXT column --
+        killing the whole refresh over display-only artwork, which is the
+        failure this boundary exists to prevent, arriving one level deeper.
+        So `src` is required to be a non-empty string too, and an image that
+        has no usable one is passed over rather than allowed to answer.
         """
-        images = product.get("images")
-        images = [i for i in images if isinstance(i, dict)] if isinstance(images, (list, tuple)) else []
-        if not isinstance(variant.get("featured_image"), dict):
+        raw = product.get("images")
+        raw = raw if isinstance(raw, (list, tuple)) else []
+        images = [i for i in raw if _text(i.get("src") if isinstance(i, dict) else None)]
+        featured = variant.get("featured_image")
+        if not (isinstance(featured, dict) and _text(featured.get("src"))):
             variant = {**variant, "featured_image": None}
         return resolve_cover_image({**product, "images": images}, variant)
 
