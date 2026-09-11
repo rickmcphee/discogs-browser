@@ -68,9 +68,11 @@ _SURFER_BLOOD_PRODUCT = {
 }
 
 # Captured: the multi-release lot the store shelves as a variant of each album
-# it contains. Its head names no vinyl and does name Digital, so the medium
-# layer rejects it before the "Three 2xLPs" in its blurb can admit it -- which
-# is what keeps a $270 three-album box off three separate records' rows.
+# it contains. Its `+ Digital` is cut from the head before anything reads it,
+# leaving a bare `Triptych Box Set` that names no medium at all -- so the blurb
+# answers, and the blurb names a signed poster, a physical good, which vetoes
+# before the "Three 2xLPs" beside it can admit the variant. That is what keeps
+# a $270 three-album box off three separate records' rows.
 _SLEEPYTIME_PRODUCT = {
     "title": "In Glorious Times",
     "vendor": "Sleepytime Gorilla Museum",
@@ -563,6 +565,28 @@ def test_the_price_is_read_as_a_number():
     assert items[0]["price"] == 22.5
 
 
+# A price the walk declines to USE is not a price it cannot READ, and only the
+# second is evidence of drift. Conflating them is what made the price guard
+# fire on every empty walk; see the guard tests below.
+@pytest.mark.parametrize("price", ["0.00", "0", "-5.00", "22.00", 22.0])
+def test_a_readable_price_is_never_drift_evidence(price):
+    assert not Crawler._price_unreadable(_variant("Black Vinyl", price=price))
+
+
+@pytest.mark.parametrize("price", [None, "", "free", "22.00 USD", True, False,
+                                   float("nan"), float("inf"), {"amount": "22.00"},
+                                   ["22.00"]])
+def test_a_price_that_cannot_be_read_at_all_is_drift_evidence(price):
+    assert Crawler._price_unreadable(_variant("Black Vinyl", price=price))
+
+
+def test_the_stores_own_placeholders_are_not_counted_as_drift():
+    # The two "VIP LATHE TEST" products and the `copy-of-...` duplicate are
+    # priced at zero on purpose. Counting them left the tally permanently at
+    # their number, which is what broke the guard.
+    assert Crawler._unreadable_prices(_HIDDEN_PLACEHOLDER_PRODUCT) == 0
+
+
 # ---------------------------------------------------------------- the identity
 
 @pytest.mark.parametrize("field", ["title", "handle"])
@@ -650,8 +674,38 @@ async def test_a_catalog_that_names_no_vinyl_format_raises(crawler):
 
 @respx.mock
 async def test_a_catalog_whose_prices_all_broke_raises(crawler):
-    _mock_pages(_product(variants=[_variant("Black Vinyl", price="0.00")]),
-                _product(handle="b", variants=[_variant("Red Vinyl", price=None)]))
+    # Only unreadable shapes here: a zero is a price the store means, and
+    # counting it is what the test below exists to prevent regressing.
+    _mock_pages(_product(variants=[_variant("Black Vinyl", price=None)]),
+                _product(handle="b", variants=[_variant("Red Vinyl", price="12.00 USD")]))
+    with pytest.raises(RuntimeError, match="price-source drift"):
+        await _crawl(crawler)
+
+
+@respx.mock
+async def test_a_sold_out_catalog_keeps_its_placeholders_from_forcing_a_raise(crawler):
+    # The honest empty walk: every real record sold out, while the store's
+    # zero-priced placeholders stay in stock. Counting those as drift left the
+    # tally non-zero whatever the payload did, so this walk raised and pinned
+    # the previous snapshot in place -- the one case an empty walk is supposed
+    # to be believed. Found by Copilot in review on PR #337.
+    _mock_pages(
+        _product(variants=[_variant("Black Vinyl + Digital", available=False)]),
+        _HIDDEN_PLACEHOLDER_PRODUCT,
+        _product(handle="vip-lathe-test", title="VIP LATHE TEST",
+                 variants=[_variant('Lathe-Cut 7" / Ships Immediately', price="0.00")]),
+    )
+    assert await _crawl(crawler) == []
+
+
+@respx.mock
+async def test_a_placeholder_does_not_vouch_for_a_catalog_whose_prices_broke(crawler):
+    # The other half of the same distinction: a placeholder alongside a real
+    # break must not dilute the tally into silence.
+    _mock_pages(
+        _HIDDEN_PLACEHOLDER_PRODUCT,
+        _product(handle="b", variants=[_variant("Red Vinyl", price=None)]),
+    )
     with pytest.raises(RuntimeError, match="price-source drift"):
         await _crawl(crawler)
 

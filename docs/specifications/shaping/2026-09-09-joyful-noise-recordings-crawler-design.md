@@ -109,7 +109,7 @@ Two refinements to that, both found by Copilot in review on PR #337:
   would veto everything. This is what keeps out a box of ten cassettes whose
   lid doubles as a playable lathe-cut single.
 
-Two details of the patterns are load-bearing:
+These details of the patterns are load-bearing:
 
 - **The inch marker is restricted to record sizes** (5, 7, 10, 12). An
   unrestricted one admits `18"x24" Poster` and a tote bag measured `15"W x
@@ -217,6 +217,21 @@ than a record: two "VIP LATHE TEST" products, and a duplicated product (handle
 `hidden`. That last one would otherwise reach the Store tab crediting an artist
 named "hidden", under a price nobody can act on.
 
+**"Unusable" and "unreadable" are different, and the price guard counts only
+the second.** A zero reads perfectly well — the store means it — so the
+placeholders above are prices the walk declines to *use*, not prices it cannot
+*read*. Counting them as drift evidence, as this crawler first did, left the
+tally permanently at the number of placeholders; a guard gated on *nothing
+yielded* then fires on every empty walk, including the honest one where the
+catalog has simply sold out, and pins a stale snapshot in place on exactly the
+payload it exists to let through. Absent, retyped and non-finite is the shape
+a price field actually breaks in, so those alone are counted — which also puts
+the price guard in step with how the stock and variant guards read their own
+sources. A store-wide break that expressed itself as zeros rather than as
+unreadable values would therefore record the empty snapshot instead of raising;
+that is the deliberate cost of not having the guard fire on the store's own
+data, and the rows it would drop are unbuyable either way.
+
 The bare `VIP` variant — the members' slot, priced like a pressing but naming
 no format — is excluded by the positive gate rather than by a rule of its own.
 A negative gate would publish it as vinyl.
@@ -234,7 +249,7 @@ names a distinct way the payload can stop carrying what this crawler reads.
 | variant-source drift | nothing yielded, while products carry no readable `variants` |
 | artist-source drift | nothing yielded, while records carry no artist |
 | format-source drift | no product has a variant naming a vinyl format |
-| price-source drift | nothing yielded, while in-stock records were dropped for want of a usable price |
+| price-source drift | nothing yielded, while in-stock records carry a price that cannot be read at all |
 | identity-source drift | nothing yielded, while records carry no title or handle |
 | stock-source drift | nothing yielded, while records carry no readable availability flag |
 

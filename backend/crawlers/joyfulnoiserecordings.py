@@ -37,11 +37,12 @@ _COLLECTION_SLUG = "all"
 # set is titled `Digital (Includes MP3 and WAV downloads of all 5 LPs ...)`
 # and its only vinyl word sits in that blurb.
 #
-# But the head cannot supply the vinyl signal, only veto it. The store titles
-# its hand-made lathe-cut singles with the SONG -- `Can't Let Go Juno
-# (Hand-made lathe-cut 7" limited to 100 copies)` -- so for a whole series of
-# real records the head names no format at all and the evidence is entirely
-# inside the parenthesis. Same for `Limited Edition Box Set + Digital (3xLP on
+# But the head cannot be RELIED ON for the vinyl signal. Where it does name
+# vinyl it is taken at its word and admits the variant on the spot; the trouble
+# is how often it says nothing. The store titles its hand-made lathe-cut
+# singles with the SONG -- `Can't Let Go Juno (Hand-made lathe-cut 7" limited
+# to 100 copies)` -- so for a whole series of real records the head names no
+# format at all and the evidence is entirely inside the parenthesis. Same for `Limited Edition Box Set + Digital (3xLP on
 # deluxe colored vinyl ...)`.
 #
 # Hence: the head decides whether some OTHER medium owns the product, and the
@@ -161,7 +162,7 @@ class Crawler:
         identity_missing = 0
         unreadable_stock = 0
         yielded = 0
-        unpriced = 0
+        unreadable_prices = 0
         async for product in iter_products(self.base_url, _COLLECTION_SLUG):
             products_seen += 1
             # Counted outside the `pressings` branch below, which is the whole
@@ -185,7 +186,7 @@ class Crawler:
                     artist_missing += 1
                 elif not self._has_readable_stock_flag(pressings):
                     unreadable_stock += 1
-            unpriced += self._unpriced(product)
+            unreadable_prices += self._unreadable_prices(product)
             for item in self._items(product):
                 yielded += 1
                 yield item
@@ -224,16 +225,24 @@ class Crawler:
             raise RuntimeError(
                 f"no product in the {_COLLECTION_SLUG} collection has a variant naming "
                 "a vinyl format -- format-source drift")
-        if not yielded and unpriced:
+        if not yielded and unreadable_prices:
             # A record with no usable price is dropped rather than listed
             # (see _items), so a `price` field removed or retyped store-wide
             # would empty the walk instead of merely blanking it -- and an
-            # empty walk REPLACES the snapshot. Gated on having yielded
-            # nothing, so the store's own unpriced placeholders stay ordinary
-            # skipped rows.
+            # empty walk REPLACES the snapshot.
+            #
+            # Counts prices that cannot be READ, not every price the walk
+            # declined to use. Gating on `not yielded` does not by itself
+            # excuse the store's zero-priced placeholders, which was the
+            # original mistake here: they are in-stock records the walk drops,
+            # so a tally of dropped records never falls below their number,
+            # and this guard would then fire on every empty walk -- pinning a
+            # stale snapshot in place on the one payload it is supposed to let
+            # through, a catalog that has honestly sold out. Found by Copilot
+            # in review on PR #337.
             raise RuntimeError(
                 f"{_COLLECTION_SLUG} collection yielded no rows while "
-                f"{unpriced} in-stock record(s) carry no usable price -- "
+                f"{unreadable_prices} in-stock record(s) carry no readable price -- "
                 "price-source drift")
         if not yielded and artist_missing:
             # `vendor` is the artist for all but the series-vendored records,
@@ -320,13 +329,19 @@ class Crawler:
         return items
 
     @classmethod
-    def _unpriced(cls, product: dict) -> int:
-        """In-stock records this product drops for want of a usable price."""
+    def _unreadable_prices(cls, product: dict) -> int:
+        """In-stock records this product drops for want of a READABLE price.
+
+        Deliberately not every record dropped for want of a *usable* one: the
+        store's zero-priced placeholders are usable-price failures but not
+        drift, and counting them broke the guard outright. See
+        `_price_unreadable`.
+        """
         if not cls._has_identity(product):
             return 0
         return sum(
             1 for variant, _ in cls._pressings(product)
-            if variant.get("available") is True and cls._price(variant) is None
+            if variant.get("available") is True and cls._price_unreadable(variant)
         )
 
     @classmethod
@@ -444,3 +459,31 @@ class Crawler:
         if not math.isfinite(price) or price <= 0:
             return None
         return price
+
+    @staticmethod
+    def _price_unreadable(variant: dict) -> bool:
+        """Whether a variant's price cannot be read as a number at all.
+
+        Strictly narrower than `_price() is None`, and the gap between the two
+        is the whole point. A price of zero reads perfectly well -- the store
+        means it, and every one on a record here is a placeholder (see
+        _items) -- so counting those as evidence of drift leaves the tally
+        permanently non-zero, and a guard gated on `not yielded` then fires on
+        EVERY empty walk, including the honest one where the catalog has
+        simply sold out. That inverts the guard: it would pin a stale snapshot
+        in place precisely when the store is telling the truth. Found by
+        Copilot in review on PR #337.
+
+        Absent, retyped and non-finite is the shape a price field actually
+        breaks in, and only those are counted -- matching how the stock and
+        variant guards already read their own sources.
+        """
+        raw = variant.get("price")
+        # A boolean price is a retyped field, not a cheap record: True would
+        # otherwise parse to a perfectly finite 1.0.
+        if isinstance(raw, bool):
+            return True
+        try:
+            return not math.isfinite(float(raw))
+        except (TypeError, ValueError):
+            return True
