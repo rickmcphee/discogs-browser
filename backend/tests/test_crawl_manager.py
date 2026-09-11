@@ -1688,6 +1688,26 @@ async def test_worker_retries_once_on_bot_detection_then_succeeds(pg_schema):
     assert listing["price"] == 5.0
 
 
+async def test_drain_one_batch_claims_on_a_fresh_config_read(pg_schema):
+    """The claim must not run on a cached crawl_library_only.
+
+    Only the Machine that served POST /api/settings drops its own cache, and
+    this loop sleeps between drains only when it claimed nothing -- so on any
+    other Machine a cached "off" would keep claiming rows nobody wants, and the
+    post-save sweep cannot take them back once they are 'in_progress'."""
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+
+    with patch("config.load_config", return_value={"crawl_delay_seconds": 0}) as load:
+        await manager._drain_one_batch("worker-test", {}, pages={})
+
+    assert load.call_args_list, "the claim did not read config at all"
+    assert all(
+        call.kwargs.get("fresh") is True for call in load.call_args_list
+    ), f"the claim read a cacheable config: {load.call_args_list}"
+
+
 async def test_drain_one_batch_excludes_empty_stock_item_result_from_circuit_breaker(pg_schema):
     with db.get_admin_pool().connection() as conn:
         db.register_crawler(conn, "Amazon", "/x.py")
@@ -2620,12 +2640,15 @@ async def _run_worker_crawl_with_slow_load_config_call(slow_call_number: int) ->
 
     call_count = 0
 
-    def load_config_at_position():
+    # Mirrors load_config's real signature, fresh= included: the worker's claim
+    # passes it, and a double that cannot take it turns "did this block the
+    # event loop?" into a TypeError.
+    def load_config_at_position(fresh: bool = False):
         nonlocal call_count
         call_count += 1
         if call_count == slow_call_number:
             time.sleep(0.3)
-        return real_load_config()
+        return real_load_config(fresh=fresh)
 
     with db.get_admin_pool().connection() as conn:
         db.register_crawler(conn, "eBay", "/ebay_general.py")
