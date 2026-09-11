@@ -142,6 +142,18 @@ These details of the patterns are load-bearing:
   `dongiovannirecords.py` had already solved this class in PR #323, and its
   comments name the exact trap of making the left boundaries Unicode-aware
   while leaving the right one ASCII in the same commit.
+- **The medium veto's boundaries are Unicode-aware too**, and they were not in
+  the commit that fixed the vinyl ones — a gap worth recording, because the
+  reasoning that produced it was wrong rather than merely incomplete. It ran:
+  the gate tests vinyl first, so a loose veto boundary can only reject
+  something that had no vinyl word anyway. That holds only when the vinyl word
+  is in the head. It is false for precisely the shape this crawler exists to
+  support — a lathe-cut single titled with the song, whose format lives
+  entirely in the parenthesis — because the head veto runs *before* the blurb
+  is read. So `CaféCD (7" vinyl)` had its embedded `CD` read as the head's
+  medium and the record was dropped, while the unaccented `CafeCD (7" vinyl)`
+  was kept: one accent, opposite classifications. Found by Copilot in review on
+  PR #337, in the round after the vinyl-side fix.
 
 Titles are normalised to **NFC** in `_text` before any of this runs, and that
 is part of the same rule rather than tidiness. The boundaries ask whether a

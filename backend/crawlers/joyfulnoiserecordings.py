@@ -116,21 +116,21 @@ _NON_VINYL_MEDIA_RE = re.compile(
     # `5xCD Box Set (... an elaborate 12"x12", 27 page bound-book)` is a live
     # listing whose only inch marker measures the book, and without the prefix
     # nothing here vetoes it before that 12" admits it as a record.
-    r'(?<![a-z])\d*\s*[x×]?\s*cds?\b|\bcompact\s+discs?\b'
-    r'|(?<![a-z])\d*\s*[x×]?\s*cassettes?\b|(?<![a-z])\d*\s*[x×]?\s*tapes?\b'
+    _NOT_AFTER_LETTER + r'\d*\s*[x×]?\s*cds?\b|\bcompact\s+discs?\b'
+    r'|' + _NOT_AFTER_LETTER + r'\d*\s*[x×]?\s*cassettes?\b|' + _NOT_AFTER_LETTER + r'\d*\s*[x×]?\s*tapes?\b'
     r'|\bdigital\b|\bmp3s?\b|\bwavs?\b|\bdownloads?\b'
     r'|\bbooks?\b|\bzines?\b|\bposters?\b|\btotes?\b|\bshirts?\b'
-    r'|(?<![a-z])\d*\s*[x×]?\s*dvds?\b|\bblu-?\s?rays?\b',
+    r'|' + _NOT_AFTER_LETTER + r'\d*\s*[x×]?\s*dvds?\b|\bblu-?\s?rays?\b',
     re.IGNORECASE,
 )
 # The media that are physical goods rather than the download every record here
 # ships with. Only these veto a bare container's blurb: the download words
 # cannot, because every legitimate record's blurb names one.
 _PHYSICAL_MEDIA_RE = re.compile(
-    r'(?<![a-z])\d*\s*[x×]?\s*cds?\b|\bcompact\s+discs?\b'
-    r'|(?<![a-z])\d*\s*[x×]?\s*cassettes?\b|(?<![a-z])\d*\s*[x×]?\s*tapes?\b'
+    _NOT_AFTER_LETTER + r'\d*\s*[x×]?\s*cds?\b|\bcompact\s+discs?\b'
+    r'|' + _NOT_AFTER_LETTER + r'\d*\s*[x×]?\s*cassettes?\b|' + _NOT_AFTER_LETTER + r'\d*\s*[x×]?\s*tapes?\b'
     r'|\bbooks?\b|\bzines?\b|\bposters?\b|\btotes?\b|\bshirts?\b'
-    r'|(?<![a-z])\d*\s*[x×]?\s*dvds?\b|\bblu-?\s?rays?\b',
+    r'|' + _NOT_AFTER_LETTER + r'\d*\s*[x×]?\s*dvds?\b|\bblu-?\s?rays?\b',
     re.IGNORECASE,
 )
 # A lot of more than one release: its price is not any single record's price,

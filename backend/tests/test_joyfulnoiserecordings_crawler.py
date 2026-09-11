@@ -415,6 +415,39 @@ def test_a_properly_separated_format_token_still_admits(title):
     assert Crawler._is_vinyl(title) is True
 
 
+# The medium veto's own lookbehinds were left ASCII in the commit that made the
+# vinyl ones Unicode-aware -- so a media word embedded after an accented letter
+# falsely owned the head and REJECTED a real record. It bites hardest on the
+# shape this crawler exists to support: a lathe-cut single whose format lives
+# entirely in the parenthesis, where the head veto runs before the blurb is
+# ever read. Found by Copilot in review on PR #337.
+@pytest.mark.parametrize("title", [
+    'CaféCD (7" vinyl)',
+    'CaféCD (Hand-made lathe-cut 7")',
+    'MúsicaCD (7" vinyl)',
+    'CafeCD (7" vinyl)',
+    'Mcdonalds (7" vinyl)',
+    'BeyoncéTape (7" vinyl)',
+])
+def test_a_media_word_embedded_in_another_word_does_not_veto_a_record(title):
+    assert Crawler._is_vinyl(title) is True
+
+
+@pytest.mark.parametrize("title", [
+    "CD + Digital", "5xCD Box Set", "Cassette + Digital", "Digital (Download)",
+    "3xCD", "DVD + Digital", "Tape + Digital", "Compact Disc",
+])
+def test_a_real_medium_word_still_vetoes(title):
+    assert Crawler._is_vinyl(title) is False
+
+
+@pytest.mark.parametrize("raw", ['CaféCD (7" vinyl)', "CD + Digital"])
+def test_a_medium_word_reads_the_same_decomposed_as_precomposed(raw):
+    nfc = Crawler._variant_title({"title": unicodedata.normalize("NFC", raw)})
+    nfd = Crawler._variant_title({"title": unicodedata.normalize("NFD", raw)})
+    assert Crawler._is_vinyl(nfc) is Crawler._is_vinyl(nfd)
+
+
 @pytest.mark.parametrize("raw", ["éLP CD", "Noël LP", 'Noël 12" Vinyl'])
 def test_a_descriptor_reads_the_same_decomposed_as_precomposed(raw):
     # The boundaries ask whether a letter sits beside the token, and in
