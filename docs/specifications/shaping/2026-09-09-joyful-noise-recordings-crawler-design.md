@@ -133,7 +133,12 @@ These details of the patterns are load-bearing:
   keeps a record that merely states its dimensions, since the strong words are
   still there to be found; and a disc count survives untouched, because
   `4x10" Vinyl Box Set` carries no inch mark on the `4` — it counts discs
-  rather than measuring one.
+  rather than measuring one. **Requiring a unit on both sides is what draws
+  that line**, so the unit alternation has to cover every spelling the vinyl
+  pattern will accept. It read only the quote glyphs while the vinyl pattern
+  also takes a spelled-out `inch`, so `12 inch x 12 inch Poster` survived the
+  strip and was admitted as vinyl before the poster veto ran — the same
+  half-covered symmetry as the token boundaries below, found the same way.
 - **The disc counts take a multiplier prefix**, composed once as `_COUNTED` and
   shared by every pattern that needs one, because there is no word boundary
   inside `5xCD` and a plain `\bcds?\b` reads straight past it. Its exact shape

@@ -305,6 +305,40 @@ def test_a_measurement_does_not_reject_a_record_that_names_itself(variant_title)
     assert Crawler._is_vinyl(variant_title)
 
 
+# The strip read only the quote glyphs while the vinyl pattern also accepts a
+# spelled-out `inch`, so a pair written that way survived and was then admitted
+# as vinyl before the poster veto could run. Requiring a unit on BOTH sides is
+# what separates a measurement from a disc count, so the unit alternation has to
+# cover every spelling the vinyl pattern will take. Found by Copilot in review
+# on PR #337.
+@pytest.mark.parametrize("variant_title", [
+    "12 inch x 12 inch Poster",
+    "12 inch x 12 inch Print",
+    "10 inch x 10 inch Art Print",
+    "7 inch x 7 inch Sticker Sheet",
+    # Not a regression case: the plural was already rejected, because the vinyl
+    # pattern's own `\binch\b` never matched `inches` either. Pinned so that
+    # widening one side later cannot silently reopen the other.
+    "12 inches x 12 inches Poster",
+    "12 inch W x 12 inch H Tote",
+    # Mixed spellings, since each side takes its unit independently.
+    '12" x 12 inch Poster',
+    '12 inch x 12" Poster',
+])
+def test_a_spelled_out_measurement_is_not_evidence_of_vinyl(variant_title):
+    assert not Crawler._is_vinyl(variant_title)
+
+
+@pytest.mark.parametrize("variant_title", [
+    # A lone marker is a record size, not half of a measurement.
+    "7 inch Flexi", "12 inch Vinyl", "10 inch Lathe Cut", "12 inch Test Pressing",
+    # A count on the far side carries no unit, so this is not a pair either.
+    "12 inch x 2 Vinyl",
+])
+def test_a_spelled_out_marker_alone_still_admits(variant_title):
+    assert Crawler._is_vinyl(variant_title)
+
+
 def test_the_head_decides_the_medium_so_a_download_is_not_admitted_by_its_blurb():
     # The digital edition of a box set. Its blurb names the LPs the download
     # covers; reading the whole string would sell it as vinyl.

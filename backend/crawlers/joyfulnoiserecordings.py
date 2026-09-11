@@ -122,9 +122,17 @@ _VINYL_RE = re.compile(
 #
 # A record's own multiplier is not a pair and survives: `4x10" Vinyl Box Set`
 # carries no inch mark on the 4, because it counts discs rather than measuring
-# one. The optional letter covers the store's `15"W x 16"H` spelling.
+# one. Requiring a unit on BOTH sides is what draws that line, so the unit
+# alternation has to cover every spelling the vinyl pattern will accept -- it
+# read only the quote glyphs while `_VINYL_RE` also takes a spelled-out `inch`,
+# so `12 inch x 12 inch Poster` survived the strip and was then admitted as
+# vinyl before the poster veto could run. Found by Copilot in review on PR
+# #337; the fifth consecutive round in which one spelling of a pair was handled
+# and its twin left. The optional letter covers the store's `15"W x 16"H`.
+_INCH_UNIT = r'(?:["”″]|\s*inch(?:es)?\b)'
 _MEASUREMENT_RE = re.compile(
-    r'\d+(?:\.\d+)?\s*["”″]\s*[whd]?\s*[x×]\s*\d+(?:\.\d+)?\s*["”″]',
+    r'\d+(?:\.\d+)?\s*' + _INCH_UNIT + r'\s*[whd]?\s*[x×]\s*'
+    r'\d+(?:\.\d+)?\s*' + _INCH_UNIT,
     re.IGNORECASE,
 )
 # A trailing `+ Digital` (or `+ MP3`, `& WAV`, ...) is the download that comes
