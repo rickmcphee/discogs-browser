@@ -261,7 +261,7 @@ than merely admitting too much. Nothing else notices that.
 
 The variant guard is the one that cannot be nested inside the record branch,
 and that is precisely why it is needed. `_pressings` reads `variants` through
-`or []` and drops non-mappings, so a product whose collection is absent,
+`_raw_variants` and drops non-mappings, so a product whose collection is absent,
 retyped, empty or holds no mapping yields no pressings — indistinguishable, to
 every tally inside that branch, from a product that simply stocks no records.
 A single readable sold-out record elsewhere then keeps `format_named` non-zero,
@@ -270,6 +270,19 @@ before the branch, and checked *before* the format guard so that a
 store-wide break names the upstream cause rather than the format gate it
 starved. Copilot found this in review on PR #337 — the same shape of hole as
 the artist tally, one guard later.
+
+**Both readers of `variants` go through `_raw_variants`**, and that sharing is
+load-bearing rather than tidiness. The guard tested `isinstance(..., list)`
+while `_pressings` iterated `product.get("variants") or []`, and a truthy
+scalar (`1`, `true`, `2.5`) takes the two apart: it survives the `or`, is not
+iterable, and raises `TypeError` out of the comprehension before
+`variant-source drift` can report — so the tally counted the product unreadable
+while the path meant to tolerate it crashed on it. An isinstance test rather
+than a try/except, because the opposite hazard is equally real: a string or a
+dict *is* iterable, and iterating one invents entries out of characters or keys
+instead of failing. `theflenser.py` grew the same helper for the same reason on
+PR #331, and its docstring already recorded that sharing the derivation is what
+stops the two readers diverging; this crawler had to learn it again.
 
 The artist guard counts only products that **are** records, and only fires on
 an empty walk. A tally taken over every product instead would be satisfied by

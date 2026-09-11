@@ -369,8 +369,10 @@ class Crawler:
             return []
         # Non-mapping entries are dropped here, before anything reads them, so
         # a junk entry is an ordinary skipped row rather than an AttributeError
-        # from inside the yield loop.
-        variants = [v for v in product.get("variants") or [] if isinstance(v, dict)]
+        # from inside the yield loop. `_raw_variants` settles what is even a
+        # collection first -- iterating that directly is what crashed on a
+        # truthy scalar.
+        variants = [v for v in cls._raw_variants(product) if isinstance(v, dict)]
         pairs = []
         for variant in variants:
             title = " ".join((variant.get("title") or "").split())
@@ -419,7 +421,28 @@ class Crawler:
         return bool(_VINYL_RE.search(title))
 
     @staticmethod
-    def _has_readable_variants(product: dict) -> bool:
+    def _raw_variants(product: dict) -> list:
+        """The product's `variants` collection, or [] when it is not one.
+
+        isinstance before anything iterates: a truthy JSON scalar (`1`, `true`,
+        `2.5`) is not iterable, so a comprehension over it raises TypeError and
+        aborts the whole source before `variant-source drift` can name the
+        cause. A string or dict is worse than useless in the other direction --
+        both ARE iterable, and would invent entries out of characters or keys.
+        A retyped `variants` is a broken payload, so it reads as no variants
+        and lands in that guard, which is the one that explains it.
+
+        Shared with `_has_readable_variants` rather than re-derived there: the
+        two disagreeing about what counts as a collection is exactly how the
+        crash got in, since that one already tested isinstance and `_pressings`
+        did not. Found by Copilot in review on PR #337; `theflenser.py` carries
+        the same helper, for the same reason, from PR #331.
+        """
+        raw = product.get("variants")
+        return raw if isinstance(raw, list) else []
+
+    @classmethod
+    def _has_readable_variants(cls, product: dict) -> bool:
         """Whether a product's `variants` is a non-empty list of mappings.
 
         Every published product on this store carries one, so anything else is
@@ -427,8 +450,8 @@ class Crawler:
         dropped silently in `_pressings`, leaving an isolated malformed product
         an ordinary skipped row -- this only decides whether it is COUNTED.
         """
-        variants = product.get("variants")
-        if not isinstance(variants, list) or not variants:
+        variants = cls._raw_variants(product)
+        if not variants:
             return False
         return all(isinstance(v, dict) for v in variants)
 

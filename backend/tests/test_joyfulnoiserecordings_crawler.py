@@ -725,7 +725,8 @@ async def test_a_catalog_whose_stock_flags_went_unreadable_raises(crawler):
 
 
 @respx.mock
-@pytest.mark.parametrize("variants", [None, {}, "junk", ["not a dict", 42], []])
+@pytest.mark.parametrize("variants", [None, {}, "junk", ["not a dict", 42], [],
+                                     1, True, 2.5])
 async def test_a_catalog_whose_variants_went_unreadable_raises(crawler, variants):
     # A product whose variants cannot be read yields no pressings, so it looks
     # exactly like one that stocks no records and every tally nested in the
@@ -762,9 +763,27 @@ async def test_one_malformed_product_among_real_rows_is_only_a_skipped_row(crawl
     (None, False), ({}, False), ("junk", False), ([], False),
     (["not a dict"], False),
     ([{"title": "Black Vinyl"}, "not a dict"], False),
+    # Truthy scalars: not iterable, so reading them without an isinstance
+    # check raises TypeError rather than reaching the guard.
+    (1, False), (True, False), (2.5, False),
 ])
 def test_readable_variants_requires_a_non_empty_list_of_mappings(variants, readable):
     assert Crawler._has_readable_variants({"variants": variants}) is readable
+
+
+@pytest.mark.parametrize("variants", [None, {}, "junk", 1, True, 2.5, 0, ""])
+def test_a_variants_field_that_is_not_a_list_reads_as_no_variants(variants):
+    # Both readers go through this, which is the point: `_has_readable_variants`
+    # already tested isinstance while `_pressings` iterated the raw value, and
+    # a truthy scalar took the two apart -- TypeError out of the comprehension,
+    # aborting the source before the guard could name the cause.
+    assert Crawler._raw_variants({"variants": variants}) == []
+
+
+def test_a_truthy_scalar_variants_field_reaches_the_guard_instead_of_crashing():
+    product = _product(variants=1)
+    assert Crawler._pressings(product) == []
+    assert Crawler._has_readable_variants(product) is False
 
 
 @respx.mock
