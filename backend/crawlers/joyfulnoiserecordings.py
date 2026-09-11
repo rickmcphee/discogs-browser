@@ -42,8 +42,8 @@ _COLLECTION_SLUG = "all"
 # is how often it says nothing. The store titles its hand-made lathe-cut
 # singles with the SONG -- `Can't Let Go Juno (Hand-made lathe-cut 7" limited
 # to 100 copies)` -- so for a whole series of real records the head names no
-# format at all and the evidence is entirely inside the parenthesis. Same for `Limited Edition Box Set + Digital (3xLP on
-# deluxe colored vinyl ...)`.
+# format at all and the evidence is entirely inside the parenthesis. Same for
+# `Limited Edition Box Set + Digital (3xLP on deluxe colored vinyl ...)`.
 #
 # Hence: the head decides whether some OTHER medium owns the product, and the
 # full string then has to show vinyl. A head that names vinyl outright
@@ -163,6 +163,7 @@ class Crawler:
         unreadable_stock = 0
         yielded = 0
         unreadable_prices = 0
+        untitled_live = 0
         async for product in iter_products(self.base_url, _COLLECTION_SLUG):
             products_seen += 1
             # Counted outside the `pressings` branch below, which is the whole
@@ -171,6 +172,10 @@ class Crawler:
             # reaches no guard at all.
             if not self._has_readable_variants(product):
                 variants_unreadable += 1
+            # Counted outside the branch too, and for the same reason: an
+            # untitled variant is dropped before `available` is read, so it
+            # produces no pressing and every tally below skips it.
+            untitled_live += self._untitled_live_variants(product)
             # Tallied before the availability filter, and only for products
             # this crawler reads as records, so a sold-out record still
             # vouches for the payload it was read out of.
@@ -216,6 +221,24 @@ class Crawler:
                 f"{_COLLECTION_SLUG} collection yielded no rows while "
                 f"{variants_unreadable} product(s) carry no readable variants "
                 "-- variant-source drift")
+        if not yielded and untitled_live:
+            # A variant with no readable title is dropped before `available` is
+            # ever read, and `_has_readable_variants` calls its product
+            # readable because the variant IS a mapping -- so the drop reached
+            # no guard at all. Titles going blank or retyped across the store's
+            # in-stock variants would empty the walk while one sold-out sibling
+            # with an intact title kept `format_named` non-zero, and the
+            # completed-but-empty walk would delete the snapshot.
+            #
+            # Checked before the format guard for the same reason the variant
+            # guard is: when titles break store-wide both conditions hold, and
+            # "no variant names a vinyl format" names the gate that was starved
+            # rather than what starved it. Found by Copilot in review on
+            # PR #337.
+            raise RuntimeError(
+                f"{_COLLECTION_SLUG} collection yielded no rows while "
+                f"{untitled_live} variant(s) not known to be sold out carry no "
+                "readable title -- title-source drift")
         if format_named == 0:
             # Unlike a negative format gate, this one is positive: it needs a
             # vinyl word in the variant to admit anything. So the store moving
@@ -375,7 +398,7 @@ class Crawler:
         variants = [v for v in cls._raw_variants(product) if isinstance(v, dict)]
         pairs = []
         for variant in variants:
-            title = " ".join((variant.get("title") or "").split())
+            title = cls._variant_title(variant)
             if not title or _BUNDLE_RE.search(title):
                 continue
             if not cls._is_vinyl(title):
@@ -445,6 +468,43 @@ class Crawler:
         """
         raw = product.get("variants")
         return raw if isinstance(raw, list) else []
+
+    @staticmethod
+    def _variant_title(variant: dict) -> str:
+        """A variant's title as whitespace-normalised text, or "" if it is none.
+
+        isinstance before `.split()`: a retyped title (a number, a mapping, a
+        list) is truthy, so `or ""` hands it straight through and `.split()`
+        raises AttributeError -- the same shape as the truthy scalar
+        `variants` one level up, and it aborts the source the same way.
+        """
+        title = variant.get("title")
+        return " ".join(title.split()) if isinstance(title, str) else ""
+
+    @classmethod
+    def _untitled_live_variants(cls, product: dict) -> int:
+        """Variants dropped for want of a title that were not proven sold out.
+
+        `_pressings` drops an untitled variant before it ever reads
+        `available`, and `_has_readable_variants` calls the product readable
+        because the variant IS a mapping -- so this drop reached no guard at
+        all. Titles going blank or retyped across the store's in-stock
+        variants would empty the walk while a sold-out sibling with an intact
+        title kept `format_named` non-zero, and the completed-but-empty walk
+        would delete the snapshot. Found by Copilot in review on PR #337.
+
+        Only `available is False` excuses a variant, never a truthy or
+        unreadable flag: a sold-out variant with no title is a dead row the
+        store stopped maintaining, but anything else is a record this crawler
+        cannot see. That asymmetry is the point -- the sold-out sibling must
+        not vouch for the ones that are still live.
+        """
+        return sum(
+            1 for v in cls._raw_variants(product)
+            if isinstance(v, dict)
+            and not cls._variant_title(v)
+            and v.get("available") is not False
+        )
 
     @classmethod
     def _has_readable_variants(cls, product: dict) -> bool:

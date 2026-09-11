@@ -267,6 +267,7 @@ names a distinct way the payload can stop carrying what this crawler reads.
 | --- | --- |
 | collection empty | the walk returned no products at all |
 | variant-source drift | nothing yielded, while products carry no readable `variants` |
+| title-source drift | nothing yielded, while variants not known to be sold out carry no readable title |
 | artist-source drift | nothing yielded, while records carry no artist |
 | format-source drift | no product has a variant naming a vinyl format |
 | price-source drift | nothing yielded, while in-stock records carry a price that cannot be read at all |
@@ -303,6 +304,32 @@ dict *is* iterable, and iterating one invents entries out of characters or keys
 instead of failing. `theflenser.py` grew the same helper for the same reason on
 PR #331, and its docstring already recorded that sharing the derivation is what
 stops the two readers diverging; this crawler had to learn it again.
+
+**The title guard is the variant guard one level down**, and it exists because
+`_has_readable_variants` answers a question about the *collection* rather than
+about each variant in it. A mapping with a blank or retyped title is a perfectly
+readable member of a readable list, so the product passes that guard — while
+`_pressings` drops the variant for having no title, and drops it *before* it
+ever reads `available`. Nothing counted that drop. Titles going blank across the
+store's in-stock variants would therefore empty the walk while a single sold-out
+sibling with an intact title held `format_named` above zero, and the
+completed-but-empty walk would delete the snapshot. Copilot found this in review
+on PR #337.
+
+Only a literal `available: False` excuses an untitled variant. A sold-out
+variant the store stopped maintaining is a dead row; anything else — in stock,
+or a flag this crawler cannot read — is a record it failed to see, and the
+sold-out sibling must not vouch for it. The guard is checked before the format
+guard for the same reason the variant guard is: when titles break store-wide
+both conditions hold, and "no variant names a vinyl format" names the gate that
+was starved rather than what starved it.
+
+Reading the title goes through `_variant_title`, which tests `isinstance(...,
+str)` before `.split()`. A retyped title is truthy, so `or ""` passed it
+straight through and `.split()` raised `AttributeError` — the same shape as the
+truthy scalar `variants` one level up, aborting the source before any guard
+could name it. That was found while reproducing the blank-title case rather than
+reported.
 
 The artist guard counts only products that **are** records, and only fires on
 an empty walk. A tally taken over every product instead would be satisfied by

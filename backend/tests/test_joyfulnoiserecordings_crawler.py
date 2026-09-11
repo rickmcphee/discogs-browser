@@ -809,6 +809,74 @@ def test_a_truthy_scalar_variants_field_reaches_the_guard_instead_of_crashing():
     assert Crawler._has_readable_variants(product) is False
 
 
+@pytest.mark.parametrize("raw,expected", [
+    ("Black Vinyl", "Black Vinyl"), ("  Black   Vinyl ", "Black Vinyl"),
+    ("", ""), ("   ", ""), (None, ""),
+    # Retyped: truthy, so `or ""` passes it through and `.split()` raises.
+    (123, ""), (True, ""), ({"en": "Black Vinyl"}, ""), (["Black Vinyl"], ""),
+])
+def test_a_variant_title_reads_as_text_or_not_at_all(raw, expected):
+    assert Crawler._variant_title({"title": raw}) == expected
+
+
+def test_a_variant_title_that_is_absent_reads_as_empty():
+    assert Crawler._variant_title({}) == ""
+
+
+@respx.mock
+async def test_an_untitled_in_stock_variant_is_not_vouched_for_by_a_sold_out_sibling(crawler):
+    # `_pressings` drops an untitled variant before it reads `available`, and
+    # `_has_readable_variants` calls the product readable because the variant
+    # is a mapping -- so the drop reached no guard. The sold-out sibling keeps
+    # `format_named` non-zero, and the empty walk would delete the snapshot.
+    # Found by Copilot in review on PR #337.
+    _mock_pages(_product(variants=[
+        _variant("", available=True),
+        _variant("Black Vinyl + Digital", available=False)]))
+    with pytest.raises(RuntimeError, match="title-source drift"):
+        await _crawl(crawler)
+
+
+@respx.mock
+@pytest.mark.parametrize("title", ["", "   ", None, 123, True, {"en": "LP"}])
+async def test_a_title_that_cannot_be_read_reaches_the_guard(crawler, title):
+    # A retyped title used to raise AttributeError out of `.split()` before any
+    # guard could name it -- the same shape as the truthy scalar `variants`.
+    _mock_pages(_product(variants=[
+        _variant(title, available=True),
+        _variant("Black Vinyl + Digital", available=False)]))
+    with pytest.raises(RuntimeError, match="title-source drift"):
+        await _crawl(crawler)
+
+
+@respx.mock
+async def test_an_untitled_variant_proven_sold_out_does_not_raise(crawler):
+    # Only the literal False excuses it: a sold-out variant the store stopped
+    # maintaining is a dead row, not a record this crawler failed to see.
+    _mock_pages(_product(variants=[
+        _variant("", available=False),
+        _variant("Black Vinyl + Digital", available=False)]))
+    assert await _crawl(crawler) == []
+
+
+@respx.mock
+async def test_one_untitled_variant_among_real_rows_is_only_a_skipped_row(crawler):
+    _mock_pages(_product(variants=[
+        _variant("", available=True),
+        _variant("Black Vinyl + Digital", available=True)]))
+    assert len(await _crawl(crawler)) == 1
+
+
+@respx.mock
+async def test_untitled_variants_are_named_before_the_format_guard(crawler):
+    # Broken store-wide, both conditions hold; the message must name the
+    # upstream cause rather than the format gate it starved.
+    _mock_pages(_product(variants=[_variant("", available=True)]),
+                _product(handle="b", variants=[_variant(None, available=True)]))
+    with pytest.raises(RuntimeError, match="title-source drift"):
+        await _crawl(crawler)
+
+
 @respx.mock
 async def test_a_catalog_that_merely_sold_out_does_not_raise(crawler):
     _mock_pages(_product(variants=[_variant("Black Vinyl", available=False)]))
