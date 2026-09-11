@@ -1,3 +1,4 @@
+import html
 import math
 import re
 import unicodedata
@@ -63,6 +64,7 @@ _COLLECTION_SLUG = "all"
 # on PR #337, and both already solved on `dongiovannirecords.py` in PR #323 --
 # which pins `12"CD` and `12"Cassette` in its own suite.
 _NOT_AFTER_LETTER = r'(?<![^\W\d_])'
+_NOT_AFTER_LETTER_OR_DIGIT = r'(?<![^\W_])'
 _NOT_BEFORE_LETTER_OR_DIGIT = r'(?![^\W_])'
 _VINYL_RE = re.compile(
     r'\bvinyl\b'
@@ -76,7 +78,8 @@ _VINYL_RE = re.compile(
     # Record sizes only. An unrestricted inch marker is what lets a poster
     # (`18"x24" Poster`) and a tote bag (`15"W x 16"H`) in, and those are the
     # store's own live listings, not hypotheticals.
-    r'|(?<![\d.])(?:5|7|10|12)\s*(?:["”″]' + _NOT_BEFORE_LETTER_OR_DIGIT + r'|\s*inch\b)',
+    r'|' + _NOT_AFTER_LETTER_OR_DIGIT + r'(?<!\.)(?:\d+\s*[x×]\s*)?(?:5|7|10|12)\s*'
+    r'(?:["”″]' + _NOT_BEFORE_LETTER_OR_DIGIT + r'|\s*inch\b)',
     re.IGNORECASE,
 )
 # A pair of inch marks joined by an x is a physical measurement, never a
@@ -205,7 +208,7 @@ def _text(value) -> str:
     """
     if not isinstance(value, str):
         return ""
-    return " ".join(unicodedata.normalize("NFC", value).split())
+    return " ".join(unicodedata.normalize("NFC", html.unescape(value)).split())
 
 
 class Crawler:

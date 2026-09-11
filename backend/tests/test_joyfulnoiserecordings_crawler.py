@@ -415,6 +415,51 @@ def test_a_properly_separated_format_token_still_admits(title):
     assert Crawler._is_vinyl(title) is True
 
 
+# The inch marker got a right-hand boundary before it got a left one, so an
+# embedded marker still admitted a non-record: `Studio12" CD` matched the glued
+# `12"` and beat the CD veto. The boundary has to sit before the WHOLE marker,
+# multiplier included -- putting it before the size digits instead would block
+# `2x12"`, where the digits are preceded by the letter `x`. That is how
+# `dongiovannirecords.py` composes its own marker, and the reason why.
+@pytest.mark.parametrize("title", [
+    'Studio12" CD', 'Abbey12" Cassette', 'Studio12" Cassette', 'Room45" CD',
+])
+def test_an_inch_marker_glued_to_a_word_does_not_admit(title):
+    assert Crawler._is_vinyl(title) is False
+
+
+@pytest.mark.parametrize("title", [
+    '2x12" Vinyl', '4x10" Vinyl Box Set', '2x12"', '4x10"', '3 x 12"', '2×12"',
+    '12" Vinyl', 'Limited Edition 7"', 'Hardbound Book + 7"', '7 inch Flexi',
+])
+def test_a_multiplier_or_standalone_inch_marker_still_admits(title):
+    assert Crawler._is_vinyl(title) is True
+
+
+# `[+&]` consumed the `&` of a literal `&amp;` and then failed to find the
+# medium word after it, so the companion clause was never cut and the record was
+# rejected on its own `Digital`. Several crawlers in this repo unescape for the
+# same reason -- the row is read by a person, not a browser.
+def test_an_html_entity_separator_still_cuts_the_companion_clause():
+    raw = "Limited Edition Box Set &amp; Digital (3xLP on deluxe colored vinyl)"
+    assert Crawler._is_vinyl(Crawler._variant_title({"title": raw})) is True
+
+
+def test_a_variant_that_is_the_download_stays_vetoed_through_an_entity():
+    raw = "Digital (Includes MP3 &amp; WAV downloads of all 5 LPs)"
+    assert Crawler._is_vinyl(Crawler._variant_title({"title": raw})) is False
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("Black Vinyl &amp; Digital", "Black Vinyl & Digital"),
+    ("Caf&eacute; LP", "Café LP"),
+    ("A &#8211; B", "A – B"),
+    ("plain text", "plain text"),
+])
+def test_text_unescapes_html_entities(raw, expected):
+    assert _text(raw) == expected
+
+
 # The medium veto's own lookbehinds were left ASCII in the commit that made the
 # vinyl ones Unicode-aware -- so a media word embedded after an accented letter
 # falsely owned the head and REJECTED a real record. It bites hardest on the
