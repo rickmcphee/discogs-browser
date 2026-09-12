@@ -281,9 +281,10 @@ is the change that reaches production.
 - Removing the owner's bypass entry, or requiring review on the owner's own
   pull requests by some other route.
 - Turning off Copilot code review, or changing `review_on_push`.
-- Touching `--auto` in `integration-promote.yml` or `integration-sync.yml`. The
-  auto-merge ban in `CLAUDE.md` is scoped to hand-opened pull requests and
-  explicitly does not reach those workflows; nothing here widens it.
+- Touching `--auto` in `integration-promote.yml` or `integration-sync.yml` (and,
+  since 2026-09-12, `dependabot-auto-merge.yml`). The auto-merge ban in
+  `CLAUDE.md` is scoped to hand-opened pull requests and explicitly does not
+  reach those workflows; nothing here widens it.
 - Revisiting whether `main` should require an approving review at all.
 - `require_extra_approval_for_unattributed_changes` is left alone. It is a
   separate question about commit attribution and deserves its own read.
