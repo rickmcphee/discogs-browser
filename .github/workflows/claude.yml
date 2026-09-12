@@ -185,7 +185,7 @@ jobs:
       # App logins by appending the suffix when GraphQL returns it bare
       # (`resolveActorName`), which REST does not show. A pattern that matches
       # nothing costs nothing; a missing one loses the review.
-      - uses: anthropics/claude-code-action@d75b94d5ad426cb8546e6628b6f5f19b84e5cce1 # v1
+      - uses: anthropics/claude-code-action@19dda84776b3518d98b8798e591daee763049ed3 # v1
         if: steps.pr.outputs.same_repo != 'false'
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
