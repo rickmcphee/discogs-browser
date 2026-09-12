@@ -1,0 +1,109 @@
+name: Auto-merge Dependabot bumps into integration
+
+# The third of a set, and the one that makes the other two mean anything:
+# .github/workflows/integration-promote.yml carries `integration`'s batch into
+# `main`, integration-sync.yml carries `main` back and moves stale PR heads
+# forward -- but neither of them ever puts a bump ON `integration`. That was a
+# hand click, and when it stopped happening nothing said so. The promotion is a
+# no-op by construction in that state: `sync` keeps `integration` holding
+# `main`'s files, so with no bump merged in the two branches match, and the
+# promotion prints "integration and main already match; nothing to promote" and
+# exits 0. A green workflow, every Tuesday, promoting nothing. Observed
+# 2026-09-12: bumps from two consecutive Dependabot runs sat open and mergeable,
+# the oldest twelve days, while every scheduled run reported success.
+#
+# So this arms auto-merge on each Dependabot PR targeting `integration`. The
+# gate is `integration`'s own required checks -- a bump that fails CI never
+# merges, and majors are included deliberately (a breaking one fails its own
+# checks and stops there). Nothing reaches production unattended regardless:
+# the promotion PR into `main` still requires a human approving review.
+
+on:
+  # `pull_request_target`, not `pull_request`, and the difference is load-bearing:
+  # a `pull_request` run raised by Dependabot gets a read-only token and no
+  # access to secrets, so it can neither arm auto-merge nor mint the app token
+  # below. `pull_request_target` runs in the BASE branch's context with the full
+  # token instead.
+  #
+  # That context is why this job must never check out, install, or execute
+  # anything from the PR head -- it would be running head code with a write
+  # token. There is deliberately no `actions/checkout` step here, and none may
+  # be added: everything this needs comes from the event payload.
+  pull_request_target:
+    branches: [integration]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  arm:
+    name: Arm auto-merge
+    # Same-repo guard as well as the author check: `head.repo.full_name` pins
+    # this to branches Dependabot pushed into this repository, so a fork PR that
+    # somehow presented as Dependabot still gets nothing.
+    if: >-
+      github.event.pull_request.user.login == 'dependabot[bot]'
+      && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    env:
+      # See integration-promote.yml for why this is reduced to a boolean: the
+      # secrets context is not available in a step-level `if`, and guarding on
+      # the Client ID alone makes a half-removed configuration an outage rather
+      # than the documented fallback, because create-github-app-token FAILS on
+      # an empty private key before any `|| github.token` is reached.
+      APP_PRIVATE_KEY_SET: ${{ secrets.INTEGRATION_PROMOTE_APP_PRIVATE_KEY != '' }}
+    steps:
+      # Why the app rather than the default token: auto-merge armed with
+      # GITHUB_TOKEN merges as github-actions[bot], and GitHub does not raise
+      # new workflow runs from GITHUB_TOKEN-authored events. The merge commit
+      # landing on `integration` would therefore not trigger integration-sync's
+      # push run -- and that run's `refresh` job is the only thing that moves
+      # the REMAINING Dependabot PRs forward after each merge. Without it they
+      # sit `behind` (integration-branch-protection sets
+      # strict_required_status_checks_policy) and the chain stalls after one
+      # bump, which is the failure this workflow exists to end.
+      #
+      # The fallback to github.token is kept so a half-removed configuration
+      # degrades instead of failing, but it degrades to exactly that stall:
+      # each bump then needs a push to `integration` from something else before
+      # the next one can go.
+      - name: Mint an installation token for the sync app
+        id: app-token
+        if: ${{ vars.INTEGRATION_PROMOTE_APP_CLIENT_ID != ''
+          && env.APP_PRIVATE_KEY_SET == 'true' }}
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.INTEGRATION_PROMOTE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.INTEGRATION_PROMOTE_APP_PRIVATE_KEY }}
+
+      - name: Arm auto-merge on this bump
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+
+          # --merge, never --squash: `integration`'s ruleset pins
+          # allowed_merge_methods to merge only, so a squash is refused with a
+          # 405. That is a prerequisite rather than a preference -- a merge
+          # commit is what keeps `main`'s tip an ancestor of `integration`, so
+          # `git merge-base` stays current by construction. See
+          # docs/specifications/shaping/2026-08-25-integration-branch-sync-design.md.
+          if out="$(gh pr merge "$PR" --auto --merge --repo "$GITHUB_REPOSITORY" 2>&1)"; then
+            echo "$out"
+            exit 0
+          fi
+
+          # A PR with every required check already green cannot be "armed" --
+          # GitHub rejects enabling auto-merge on a mergeable PR rather than
+          # merging it. Merge it directly instead; the outcome this workflow
+          # wants is identical.
+          if grep -qi "clean status" <<<"$out"; then
+            echo "PR #$PR is already mergeable; merging it directly."
+            gh pr merge "$PR" --merge --repo "$GITHUB_REPOSITORY"
+            exit 0
+          fi
+
+          echo "$out" >&2
+          exit 1
