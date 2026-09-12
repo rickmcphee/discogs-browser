@@ -671,4 +671,6 @@ re-freezing the base.
 
 `CLAUDE.md` carries the invariant in its "Key invariants" list, and a scope note
 on the auto-merge rule clarifying that it governs PRs opened by hand — the
-`--auto` in these two workflows is deliberate and load-bearing.
+`--auto` in the repository's own branch-plumbing workflows is deliberate and
+load-bearing. (Amended 2026-09-12: `dependabot-auto-merge.yml` joined them, so
+the scope note no longer enumerates a fixed pair.)
