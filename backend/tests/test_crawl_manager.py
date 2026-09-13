@@ -2065,6 +2065,128 @@ async def test_start_sync_returns_false_while_plex_match_running(pg_schema):
 # _run_plex_match (per-user Plex library matching, SSRF-guarded via plex_security)
 # ---------------------------------------------------------------------------
 
+@respx.mock
+async def test_a_transient_release_failure_does_not_strand_the_claim(pg_schema, monkeypatch):
+    """The Plex release is the only thing that hands the claim back.
+
+    It answers None when it cannot reach the row, which is not a takeover --
+    but leaving it there keeps the row saying 'plex_matching', one of the two
+    statuses the claim predicate refuses on, for a phase that has already
+    ended. The user's every refresh is then refused until the staleness window
+    expires, because of one connection blip."""
+    import config
+    import db as db_module
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "s")
+    monkeypatch.setattr(config, "TOKEN_ENCRYPTION_KEY", "kL8mN2pQ7rT5vX9yB3cF6hJ1kM4nP8sU2wZ5aD7eG0i=")
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute(
+            "UPDATE users SET discogs_oauth_token_encrypted = %s, discogs_oauth_secret_encrypted = %s, "
+            "plex_base_url = %s, plex_token = %s WHERE id = %s",
+            [
+                token_encryption.encrypt("tok"), token_encryption.encrypt("sec"),
+                "http://plex.local:32400", "ptok", user["id"],
+            ],
+        )
+        conn.commit()
+
+    respx.get("https://api.discogs.com/users/alice/collection/fields").mock(
+        return_value=httpx.Response(200, json={"fields": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/collection/folders/0/releases").mock(
+        return_value=_collection_page(111, total_pages=1)
+    )
+    respx.get(url__regex=r"https://api\.discogs\.com/releases/\d+").mock(
+        return_value=httpx.Response(200, json={"identifiers": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/wants").mock(
+        return_value=httpx.Response(200, json={"pagination": {"pages": 1}, "wants": []})
+    )
+
+    real_release = db_module.finish_library_sync_plex_phase
+    calls = []
+
+    def _flaky_release(conn, user_id, run_token):
+        calls.append(run_token)
+        if len(calls) == 1:
+            raise RuntimeError("connection reset during release")
+        return real_release(conn, user_id, run_token)
+
+    monkeypatch.setattr(db_module, "finish_library_sync_plex_phase", _flaky_release)
+
+    async def _fake_plex(user_id, base_url, token, threshold, run_token=None):
+        return None
+
+    manager = CrawlManager()
+    manager._run_plex_match = _fake_plex  # type: ignore
+    assert await manager.start_sync(user["id"], "all") is True
+    await manager._sync_tasks[user["id"]]
+
+    assert len(calls) == 2
+    # The claim is handed back, so the next refresh is not refused.
+    with db.user_scope(user["id"]) as conn:
+        run = db.get_library_sync_run(conn, user["id"])
+    assert run["status"] == "complete"
+    other_machine = CrawlManager()
+    assert await other_machine.start_sync(user["id"], "all") is True
+    other_machine._sync_tasks[user["id"]].cancel()
+
+
+@respx.mock
+async def test_a_dispossessed_worker_does_not_announce_a_failure_for_the_run_that_replaced_it(pg_schema, monkeypatch):
+    """sync_error closes before it announces.
+
+    A dispossessed worker can reach an ordinary exception. Announcing first
+    tells every browser on this Machine that the run failed -- when the run
+    belongs to the replacement now, and may be running perfectly well. A
+    terminal sync event also sets the client's "an outcome was just published"
+    flag, so the false failure can swallow the replacement's real one."""
+    import config
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "s")
+    monkeypatch.setattr(config, "TOKEN_ENCRYPTION_KEY", "kL8mN2pQ7rT5vX9yB3cF6hJ1kM4nP8sU2wZ5aD7eG0i=")
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute(
+            "UPDATE users SET discogs_oauth_token_encrypted = %s, discogs_oauth_secret_encrypted = %s WHERE id = %s",
+            [token_encryption.encrypt("tok"), token_encryption.encrypt("sec"), user["id"]],
+        )
+        conn.commit()
+
+    respx.get("https://api.discogs.com/users/alice/collection/fields").mock(
+        return_value=httpx.Response(200, json={"fields": []})
+    )
+
+    import discogs
+
+    def _pages(*args, **kwargs):
+        with db.user_scope(user["id"]) as other:
+            other.execute(
+                "UPDATE library_sync_runs SET heartbeat_at = clock_timestamp() - INTERVAL '%s minutes' "
+                "WHERE user_id = %%s" % (db.SYNC_RUN_STALE_MINUTES + 1),
+                [user["id"]],
+            )
+            db.claim_library_sync_run(other, user["id"], "all", "all")
+            other.commit()
+        raise RuntimeError("collection page fetch exploded")
+
+    monkeypatch.setattr(discogs, "iter_collection_pages", _pages)
+
+    manager = CrawlManager()
+    assert await manager.start_sync(user["id"], "all") is True
+    await manager._sync_tasks[user["id"]]
+
+    # Nothing on this Machine's stream claims a sync failed: the run this
+    # worker would have been speaking for is the replacement's.
+    assert "sync_error" not in [e["status"] for e in manager.recent_events()]
+    with db.user_scope(user["id"]) as conn:
+        run = db.get_library_sync_run(conn, user["id"])
+    assert (run["status"], run["running"]) == ("running", True)
+
+
 async def test_a_slow_plex_chunk_heartbeats_before_its_25th_item(pg_schema, monkeypatch):
     """The Plex phase holds the sync's claim, so its heartbeat needs the same
     wall-clock bound the sync's own checkpoint has.

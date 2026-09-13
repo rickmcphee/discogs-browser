@@ -281,9 +281,17 @@ next click is no longer refused.
 
 Every exit from `_sync_collection_blocking` closes it: the three early error
 returns (no user, no Discogs token, collection-fields fetch failed) now go
-through one `sync_error` helper that broadcasts *and* records, the happy path
-records `complete` with both counts, and the `except` records `error` with the
-message. A `finally` closes anything else as an error — its `UPDATE` is
+through one `sync_error` helper that records *and* broadcasts — in that order,
+because the close is what reveals whether there is still a run of ours to
+speak for. A dispossessed worker can reach an ordinary exception, and
+announcing first tells every browser on this Machine that the run failed when
+the run belongs to the replacement and may be going perfectly well; a terminal
+sync event also sets the client's "an outcome was just published" flag, so the
+false failure can swallow the replacement's real one. Only a definite refusal
+silences the broadcast — an indeterminate close, or a run that never entered
+the claim protocol, still speaks, because staying quiet about a real failure is
+the worse error. The happy path records `complete` with both counts, and the
+`except` records `error` with the message. A `finally` closes anything else as an error — its `UPDATE` is
 `WHERE status = 'running'`, so it can be called unconditionally and cannot
 overwrite an outcome a path already recorded.
 
@@ -323,7 +331,12 @@ refuses.
 So the run moves to `plex_matching` rather than closing: the claim still
 covers it, while `running` is already false, so the client reads the sync as
 finished with its counts final and stops polling. It is released when the Plex
-phase ends, on every exit including a cancelled one. The Plex loop heartbeats
+phase ends, on every exit including a cancelled one — and that release is
+retried once if it cannot reach the row, because it is the only thing that
+hands the claim back. Left unreleased, the row goes on saying `plex_matching`
+for a phase that has already ended, which the claim predicate refuses on, so a
+single connection blip would cost the user every refresh until the staleness
+window expired. The Plex loop heartbeats
 on its own commits for the same reason the sync's checkpoints do — a large
 library takes time to match, and an unfed claim goes stale.
 

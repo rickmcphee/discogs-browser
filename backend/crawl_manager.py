@@ -987,6 +987,24 @@ class CrawlManager:
                 released = await run_in_threadpool(
                     self._release_plex_phase, user_id, run_token
                 )
+                if released is None:
+                    # Not a takeover -- the release never reached the row. It
+                    # is the only thing that hands the claim back, so leaving
+                    # it there costs the user every refresh until the lease
+                    # expires: the row still says 'plex_matching', and that is
+                    # one of the two statuses the claim predicate refuses on,
+                    # for a phase that has already ended. One retry on a fresh
+                    # connection, the same backstop shape the sync's own close
+                    # gets, so a one-off blip cannot strand the claim.
+                    released = await run_in_threadpool(
+                        self._release_plex_phase, user_id, run_token
+                    )
+                    if released is None:
+                        log.warning(
+                            "Could not release user %d's sync claim after the Plex phase; "
+                            "it will hold until the staleness window expires",
+                            user_id,
+                        )
                 if run_token is not None and released is False:
                     log.warning(
                         "Not queueing store items for user %d's library: this sync's run was taken over",
@@ -1049,9 +1067,24 @@ class CrawlManager:
         def sync_error(message):
             """Report a failure, and hand back what the close did -- callers
             that go on to do follow-on work have to know whether this run was
-            still theirs."""
-            broadcast({"status": "sync_error", "error": message})
-            return finish_run("error", error=message)
+            still theirs.
+
+            Closed before announced, deliberately. A dispossessed worker can
+            reach an ordinary exception, and the close is what reveals it:
+            announcing first tells every browser on this Machine that the run
+            failed, when the run is the *replacement's* now and may be running
+            perfectly well. It is not only a wrong line on screen -- a terminal
+            sync event also sets the client's "an outcome was just published"
+            flag, which can then swallow the replacement's real outcome.
+
+            Only a definite False silences it. A None means the close could not
+            be attempted, which is no evidence of a takeover, and a run with no
+            token never entered the claim protocol at all -- both still speak,
+            because staying quiet about a real failure is the worse error."""
+            closed = finish_run("error", error=message)
+            if not (run_token is not None and closed is False):
+                broadcast({"status": "sync_error", "error": message})
+            return closed
 
         def still_ours(conn, **progress):
             """Record progress and assert the run is still this worker's. In
