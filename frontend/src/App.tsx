@@ -832,10 +832,12 @@ export default function App() {
     try {
       await refreshCollection(mode)
     } catch (e: any) {
-      // 409 is not a failed sync, it is a sync already under way -- this tab's
-      // own earlier click, another tab's, or one the other Machine is running,
-      // which this tab could not have heard start. Following it answers the
-      // question the click was asking; "Sync failed" would not.
+      // 409 is a refused start, not a failed sync, and says no more than
+      // that: the server answers it for every reason start_sync declines --
+      // a sync already running (this tab's own earlier click, another tab's,
+      // or the other Machine's, which this tab could not have heard start) or
+      // a Plex match for this user. Which it was is what the poll below goes
+      // and reads; "Sync failed" would answer neither.
       if (e?.status !== 409) {
         setSyncStatus(`Sync failed: ${e.message}`)
         return

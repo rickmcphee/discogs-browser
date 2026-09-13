@@ -104,7 +104,8 @@ One row per user, in the tenant schema beside `library_items`, RLS-scoped on
 ```sql
 CREATE TABLE IF NOT EXISTS library_sync_runs (
     user_id INTEGER PRIMARY KEY REFERENCES users(id),
-    status TEXT NOT NULL,              -- 'running' | 'complete' | 'error'
+    status TEXT NOT NULL,              -- 'running' | 'plex_matching'
+                                       -- | 'complete' | 'error'
     mode TEXT NOT NULL,
     scope TEXT NOT NULL,
     page INTEGER,
@@ -283,6 +284,20 @@ The two phases have separate closers, deliberately. The sync's
 `finally` backstop fires on the handoff path too, and a single closer
 that accepted both phases would let that backstop close the phase it had
 just handed off to.
+
+The handoff is fenced like every other write, and its answer is read: the
+cleanup transaction releases the run row's lock when it commits, and a Machine
+that was waiting on that lock can take the claim in the moment after. A worker
+that finds the handoff refused stops there rather than broadcasting completion
+and starting a Plex match against the sync that replaced it. The Plex loop's
+own heartbeat is read the same way, and for the same reason its chunk must not
+commit beside that sync.
+
+The stock-row restoration runs outside the claim on both paths — after the
+sync closes on one, after the Plex phase releases on the other. It is
+follow-on work for the crawl queue rather than part of the sync, and it is the
+one step here with no bound worth leasing against: inside the claim, a long
+enough run of it lets the lease lapse under a worker that is still working.
 
 Still open, and pre-existing: `start_plex_match`'s own guard remains
 in-process only, so a Plex match started on another Machine can still overlap

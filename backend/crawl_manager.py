@@ -75,6 +75,18 @@ def _is_playwright_timeout(exc: BaseException) -> bool:
     return isinstance(exc, PlaywrightTimeoutError)
 
 
+class _ClaimLost(Exception):
+    """Raised when the run a worker is writing is no longer the run in the row.
+
+    Fencing the writes to library_sync_runs is not by itself enough: a
+    dispossessed worker would go on committing library rows and then run the
+    wantlist cleanup, which deletes -- against a `wishlist_seen` snapshot older
+    than the sync that replaced it. So losing the claim has to stop the worker,
+    not just its bookkeeping. The Plex phase that can follow a sync holds the
+    same claim and owes the same duty, which is why this lives out here rather
+    than inside the sync's own body."""
+
+
 class CrawlManager:
     def __init__(self):
         self._sync_tasks: dict[int, asyncio.Task] = {}
@@ -804,6 +816,27 @@ class CrawlManager:
             log.warning("Could not record the end of user %d's collection sync: %s", user_id, e)
 
     @staticmethod
+    def _restore_library_stock_rows(user_id: int):
+        """Give the user's freshly synced records their marketplace crawl rows
+        back. Insert-if-absent, and only under crawl_library_only: with it off
+        every live item already has a row, so the statement would scan the
+        whole stock inventory against this library, under the reconciliation
+        lock, to insert nothing.
+
+        Runs outside the sync's claim on both paths -- it is follow-on work for
+        the crawl queue rather than part of the sync, and it is the one step
+        with no bound worth leasing against."""
+        from db import user_scope, enqueue_crawl_queue_for_library_stock_items
+        from config import crawl_library_only
+        if not crawl_library_only():
+            return
+        with user_scope(user_id) as conn:
+            restored = enqueue_crawl_queue_for_library_stock_items(conn, user_id)
+            conn.commit()
+        if restored:
+            log.info("Queued %d store items matching user %d's library for marketplace prices", restored, user_id)
+
+    @staticmethod
     def _release_plex_phase(user_id: int, run_token: Optional[str]):
         from db import user_scope, finish_library_sync_plex_phase
         try:
@@ -906,8 +939,17 @@ class CrawlManager:
             finally:
                 # The run has been holding the claim across the Plex phase (see
                 # start_library_sync_plex_phase); this is where it is released,
-                # on every exit, including a cancelled Plex match.
+                # on every exit, including a cancelled Plex match. The stock-row
+                # restoration the sync deferred runs after that release, so it
+                # never has a lease to overrun.
                 await run_in_threadpool(self._release_plex_phase, user_id, run_token)
+                try:
+                    await run_in_threadpool(self._restore_library_stock_rows, user_id)
+                except Exception as restore_error:
+                    log.warning(
+                        "Could not queue store items for user %d's library after the sync: %s",
+                        user_id, restore_error,
+                    )
 
     def _broadcast_threadsafe(self, event: dict, loop: asyncio.AbstractEventLoop):
         asyncio.run_coroutine_threadsafe(self._broadcast(event), loop)
@@ -921,10 +963,8 @@ class CrawlManager:
         from db import (
             get_identity_pool, user_scope, upsert_catalog_release, upsert_library_item,
             clear_wishlist_flags_not_in, delete_orphaned_releases, enqueue_crawl_queue,
-            enqueue_crawl_queue_for_library_stock_items, record_library_sync_progress,
-            start_library_sync_plex_phase,
+            record_library_sync_progress, start_library_sync_plex_phase,
         )
-        from config import crawl_library_only
         import httpx
 
         broadcast = lambda event: self._broadcast_threadsafe({**event, "user_id": user_id}, loop)
@@ -939,19 +979,9 @@ class CrawlManager:
                 wishlist_synced=wishlist_synced, error=error,
             )
 
-
         def sync_error(message):
             broadcast({"status": "sync_error", "error": message})
             finish_run("error", error=message)
-
-        # Raised when the run this worker is writing is no longer the run in
-        # the row. Fencing the writes to library_sync_runs is not by itself
-        # enough: a dispossessed worker would go on committing library rows
-        # and then run the wantlist cleanup, which deletes -- against a
-        # `wishlist_seen` snapshot older than the sync that replaced it. So
-        # losing the claim has to stop the worker, not just its bookkeeping.
-        class _ClaimLost(Exception):
-            pass
 
         def still_ours(conn, **progress):
             """Record progress and assert the run is still this worker's. In
@@ -1004,13 +1034,13 @@ class CrawlManager:
         # has still committed the earlier ones, and those records are owed
         # their rows just the same.
         def restore_library_stock_rows():
-            if not crawl_library_only():
-                return
-            with user_scope(user_id) as conn:
-                restored = enqueue_crawl_queue_for_library_stock_items(conn, user_id)
-                conn.commit()
-            if restored:
-                log.info("Queued %d store items matching user %d's library for marketplace prices", restored, user_id)
+            try:
+                self._restore_library_stock_rows(user_id)
+            except Exception as restore_error:
+                log.warning(
+                    "Could not queue store items for user %d's library after the sync: %s",
+                    user_id, restore_error,
+                )
 
         # How often a loop stops to record progress, prove its claim and
         # commit. Small enough that the staleness window still measures
@@ -1181,20 +1211,29 @@ class CrawlManager:
             # the local guard would have refused.
             if plex_follows:
                 with user_scope(user_id) as conn:
-                    start_library_sync_plex_phase(
+                    handed_over = start_library_sync_plex_phase(
                         conn, user_id, run_token,
                         synced=count, wishlist_synced=wishlist_count,
                     )
                     conn.commit()
+                # Fenced like every other write, so its answer decides whether
+                # this worker may go on: the cleanup transaction above released
+                # its row lock, and a Machine that was waiting on it can have
+                # taken the claim in between. Broadcasting completion and
+                # starting a Plex match without the claim is exactly the
+                # overlap it exists to prevent.
+                if run_token is not None and not handed_over:
+                    raise _ClaimLost()
             else:
                 finish_run("complete", synced=count, wishlist_synced=wishlist_count)
-            try:
+            # Only when nothing else holds the claim. On the Plex path the
+            # run is still claimed, and this statement -- a scan of the stock
+            # inventory against this library, under the reconciliation lock --
+            # has no bound worth leasing against: long enough and the claim
+            # lapses under a sync that is still working. _sync_collection runs
+            # it there instead, once the claim has been released.
+            if not plex_follows:
                 restore_library_stock_rows()
-            except Exception as restore_error:
-                log.warning(
-                    "Could not queue store items for user %d's library after the sync: %s",
-                    user_id, restore_error,
-                )
             broadcast({
                 "status": "sync_complete",
                 "synced": count,
@@ -1776,8 +1815,13 @@ class CrawlManager:
                         # against can outlast the staleness window -- so the
                         # heartbeat rides these commits, on this connection,
                         # for the same reasons the sync's own checkpoint does.
-                        if run_token is not None:
-                            record_library_sync_progress(conn, user_id, run_token)
+                        # And like the sync's, it is read rather than fired and
+                        # forgotten: this chunk's matches must not commit
+                        # alongside the sync that replaced this run.
+                        if run_token is not None and not record_library_sync_progress(
+                            conn, user_id, run_token
+                        ):
+                            raise _ClaimLost()
                         conn.commit()
                         # user_scope()'s set_config(..., true) is transaction-local and
                         # was just reverted by the commit above -- re-issue it so the
@@ -1788,6 +1832,18 @@ class CrawlManager:
 
             await broadcast({"status": "plex_match_complete", "matched": matched})
             log.info("Plex match complete for %s: %d/%d matched", username, matched, len(items))
+        except _ClaimLost:
+            # The run this phase was holding is somebody else's now; the
+            # uncommitted chunk rolls back with the exception on its way out of
+            # user_scope. Stopping here is the point -- the replacement sync is
+            # writing these same library_items rows.
+            log.warning(
+                "Plex match for %s was taken over by another instance; stopping", username
+            )
+            await broadcast({
+                "status": "plex_match_error",
+                "error": "Plex match was taken over by another instance",
+            })
         except Exception as e:
             if isinstance(e, plex_security.PlexUnsafeAddressError):
                 log.warning("Plex match rejected for %s: %s", username, e)

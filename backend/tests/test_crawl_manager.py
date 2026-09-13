@@ -763,6 +763,82 @@ async def test_the_claim_is_held_across_the_plex_phase(pg_schema, monkeypatch):
     await asyncio.sleep(0.01)
 
 
+@respx.mock
+async def test_a_lost_handoff_stops_the_sync_before_the_plex_phase(pg_schema, monkeypatch):
+    """The wantlist cleanup's transaction releases the run row's lock when it
+    commits, and a Machine that was waiting on that lock can take the claim in
+    the moment that follows. The handoff to the Plex phase is fenced for that
+    reason -- and its answer has to be read, or this worker broadcasts
+    completion and starts a Plex match on a claim it no longer holds, against
+    the very sync that replaced it."""
+    import config
+    import db as db_module
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "s")
+    monkeypatch.setattr(config, "TOKEN_ENCRYPTION_KEY", "kL8mN2pQ7rT5vX9yB3cF6hJ1kM4nP8sU2wZ5aD7eG0i=")
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute(
+            "UPDATE users SET discogs_oauth_token_encrypted = %s, discogs_oauth_secret_encrypted = %s, "
+            "plex_base_url = %s, plex_token = %s WHERE id = %s",
+            [
+                token_encryption.encrypt("tok"), token_encryption.encrypt("sec"),
+                "http://plex.local:32400", "ptok", user["id"],
+            ],
+        )
+        conn.commit()
+
+    respx.get("https://api.discogs.com/users/alice/collection/fields").mock(
+        return_value=httpx.Response(200, json={"fields": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/collection/folders/0/releases").mock(
+        return_value=_collection_page(111, total_pages=1)
+    )
+    respx.get(url__regex=r"https://api\.discogs\.com/releases/\d+").mock(
+        return_value=httpx.Response(200, json={"identifiers": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/wants").mock(
+        return_value=httpx.Response(200, json={"pagination": {"pages": 1}, "wants": []})
+    )
+
+    # Somebody else gets the claim in the window between the cleanup commit and
+    # the handoff.
+    real_handoff = db_module.start_library_sync_plex_phase
+
+    def _stolen(conn, user_id, run_token, **kwargs):
+        with db.user_scope(user_id) as other:
+            other.execute(
+                "UPDATE library_sync_runs SET heartbeat_at = clock_timestamp() - INTERVAL '%s minutes' "
+                "WHERE user_id = %%s" % (db.SYNC_RUN_STALE_MINUTES + 1),
+                [user_id],
+            )
+            db.claim_library_sync_run(other, user_id, "all", "all")
+            other.commit()
+        return real_handoff(conn, user_id, run_token, **kwargs)
+
+    monkeypatch.setattr(db_module, "start_library_sync_plex_phase", _stolen)
+
+    plex_ran = []
+
+    async def _fake_plex(user_id, base_url, token, threshold, run_token=None):
+        plex_ran.append(user_id)
+
+    manager = CrawlManager()
+    manager._run_plex_match = _fake_plex  # type: ignore
+    assert await manager.start_sync(user["id"], "all") is True
+    await manager._sync_tasks[user["id"]]
+
+    assert plex_ran == []
+    statuses = [e["status"] for e in manager.recent_events()]
+    assert "sync_complete" not in statuses
+
+    # The replacement's claim is untouched.
+    with db.user_scope(user["id"]) as conn:
+        run = db.get_library_sync_run(conn, user["id"])
+    assert (run["status"], run["running"]) == ("running", True)
+
+
 @pytest.fixture
 def library_only_on(pg_schema):
     """The sync's restoration of store-item rows runs only under
