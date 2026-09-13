@@ -693,6 +693,98 @@ async def test_progress_lands_mid_page_without_a_second_pooled_connection(pg_sch
 
 
 @respx.mock
+async def test_a_rate_limited_page_still_heartbeats_before_its_25th_item(pg_schema, monkeypatch):
+    """A sync that is alive but slow must not be reported as one that stopped.
+
+    Counting items bounded the heartbeat gap only while an item's worst case
+    was one request timeout. discogs._get_with_retry waits out a 429 on top of
+    that, so a sustained rate limit stretches a chunk of items past
+    SYNC_RUN_STALE_MINUTES -- and a sync that is making progress the whole
+    time gets read as stale, announced to the user as stopped, and taken over
+    by the next start_sync. The gap is bounded in wall-clock time as well, so
+    here a single slow item is enough to make the row advance, with the item
+    count still far short of CHECKPOINT_EVERY."""
+    import config
+    import crawl_manager as crawl_manager_module
+    import discogs
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "s")
+    monkeypatch.setattr(config, "TOKEN_ENCRYPTION_KEY", "kL8mN2pQ7rT5vX9yB3cF6hJ1kM4nP8sU2wZ5aD7eG0i=")
+
+    class _Clock:
+        """Stands in for the module's time so a retry budget can be spent
+        without the test spending it too."""
+
+        def __init__(self):
+            self.now = 0.0
+
+        def monotonic(self):
+            return self.now
+
+        def sleep(self, *a, **k):
+            pass
+
+    clock = _Clock()
+    monkeypatch.setattr(crawl_manager_module, "time", clock)
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute(
+            "UPDATE users SET discogs_oauth_token_encrypted = %s, discogs_oauth_secret_encrypted = %s WHERE id = %s",
+            [token_encryption.encrypt("tok"), token_encryption.encrypt("sec"), user["id"]],
+        )
+        conn.commit()
+
+    seen = {}
+
+    def _barcode(oauth_token, oauth_secret, release_id):
+        # The third release is the rate-limited one: it comes back only after
+        # a retry budget's worth of waiting.
+        if release_id == 1003:
+            clock.now += crawl_manager_module.SYNC_CHECKPOINT_MAX_SECONDS + 1
+        # The fifth reads what the other Machine would read. Four items in,
+        # the count alone would not have committed anything yet.
+        if release_id == 1005:
+            with db.get_admin_pool().connection() as conn:
+                seen["run"] = conn.execute(
+                    "SELECT synced, heartbeat_at FROM library_sync_runs WHERE user_id = %s",
+                    [user["id"]],
+                ).fetchone()
+        return None
+
+    monkeypatch.setattr(discogs, "fetch_release_barcode", _barcode)
+
+    respx.get("https://api.discogs.com/users/alice/collection/fields").mock(
+        return_value=httpx.Response(200, json={"fields": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/collection/folders/0/releases").mock(
+        return_value=httpx.Response(200, json={
+            "pagination": {"pages": 1},
+            "releases": [{
+                "basic_information": {
+                    "id": 1000 + n, "title": f"Album {n}", "year": 2020,
+                    "artists": [{"name": "Artist"}], "labels": [], "formats": [],
+                    "cover_image": "",
+                },
+            } for n in range(1, 11)],
+        })
+    )
+    respx.get("https://api.discogs.com/users/alice/wants").mock(
+        return_value=httpx.Response(200, json={"pagination": {"pages": 1}, "wants": []})
+    )
+
+    manager = CrawlManager()
+    assert await manager.start_sync(user["id"], "all") is True
+    await manager._sync_tasks[user["id"]]
+
+    assert "sync_error" not in [e["status"] for e in manager.recent_events()]
+    # Committed mid-page on the clock, not on the count: three items in, with
+    # CHECKPOINT_EVERY still more than twenty away.
+    assert seen["run"] is not None
+    assert seen["run"]["synced"] == 3
+
+
+@respx.mock
 async def test_the_claim_is_held_across_the_plex_phase(pg_schema, monkeypatch):
     """_sync_collection runs a Plex match straight after the sync, and this
     Machine's _sync_tasks entry stays occupied for its duration -- so a local

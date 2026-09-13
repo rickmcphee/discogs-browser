@@ -12,6 +12,12 @@ log = get_logger("crawl_manager")
 # pg_advisory_xact_lock(2026080901) convention.
 STOCK_SYNC_LOCK_KEY = 2026081601
 
+# The longest a collection sync may go without recording progress, which is
+# also the longest its claim can go without a heartbeat. Paired with
+# db.SYNC_RUN_STALE_MINUTES: this has to stay far enough below it that the
+# ceiling plus one maximally slow item is still comfortably inside the window.
+SYNC_CHECKPOINT_MAX_SECONDS = 120
+
 
 async def _shielded(coro):
     """Runs `coro` to completion even if the awaiting task is cancelled
@@ -1007,8 +1013,8 @@ class CrawlManager:
             """Record progress, prove the claim, and commit what the loop has
             written so far.
 
-            Called every CHECKPOINT_EVERY items rather than only at the end of
-            a Discogs page, for three reasons that all point the same way: the
+            Called on checkpoint_due rather than only at the end of a
+            Discogs page, for three reasons that all point the same way: the
             heartbeat has to land often enough that the staleness window
             measures silence rather than a slow page; a claim lost mid-page
             should cost this chunk rather than a hundred releases' work; and a
@@ -1019,8 +1025,10 @@ class CrawlManager:
             connections for the sync's whole duration, and a heartbeat that
             had to borrow another would be queueing behind exactly the syncs
             it exists to keep alive."""
+            nonlocal last_checkpoint
             still_ours(conn, **progress)
             conn.commit()
+            last_checkpoint = time.monotonic()
             # user_scope()'s set_config(..., true) is transaction-local and was
             # just reverted by the commit above -- to Postgres's empty-string
             # placeholder for a never-set custom GUC, not to NULL, so the RLS
@@ -1050,10 +1058,29 @@ class CrawlManager:
                 )
 
         # How often a loop stops to record progress, prove its claim and
-        # commit. Small enough that the staleness window still measures
-        # silence when every item spends a request timeout, and that a lost
-        # claim costs a chunk rather than a whole page.
+        # commit -- a count of items, and a wall-clock ceiling on the gap
+        # between two of them.
+        #
+        # The count alone used to bound that gap, because an item's worst case
+        # was one request timeout and 25 of those stayed inside the staleness
+        # window. discogs._get_with_retry ended that: an item that is rate
+        # limited now waits out its retry budget on top of its timeouts, so a
+        # sustained 429 stretches 25 items well past the window while the sync
+        # is alive and making progress. It would be reported stale, told the
+        # user it had stopped, and be taken over by the next start_sync -- at
+        # which point its own fencing stops it. The ceiling keeps the window
+        # measuring silence rather than slowness, whatever a request costs.
+        #
+        # Only the pathological case reaches the ceiling: at the pacing a
+        # healthy sync runs at, the count comes due first every time and the
+        # clock never fires.
         CHECKPOINT_EVERY = 25
+
+        def checkpoint_due(since_checkpoint):
+            return (
+                since_checkpoint >= CHECKPOINT_EVERY
+                or time.monotonic() - last_checkpoint >= SYNC_CHECKPOINT_MAX_SECONDS
+            )
 
         broadcast({"status": "sync_started", "scope": scope})
         try:
@@ -1084,6 +1111,7 @@ class CrawlManager:
             wishlist_count = 0
             wishlist_seen: set = set()
             since_checkpoint = 0
+            last_checkpoint = time.monotonic()
 
             with user_scope(user_id) as conn:
                 if scope != "wishlist":
@@ -1129,7 +1157,7 @@ class CrawlManager:
                             enqueue_crawl_queue(conn, rid)
                             count += 1
                             since_checkpoint += 1
-                            if since_checkpoint >= CHECKPOINT_EVERY:
+                            if checkpoint_due(since_checkpoint):
                                 since_checkpoint = 0
                                 checkpoint(
                                     conn, page=page, total_pages=total_pages, synced=count,
@@ -1175,7 +1203,7 @@ class CrawlManager:
                         )
                         enqueue_crawl_queue(conn, rid)
                         wishlist_count += 1
-                        if since_checkpoint >= CHECKPOINT_EVERY:
+                        if checkpoint_due(since_checkpoint):
                             since_checkpoint = 0
                             checkpoint(conn, wishlist_synced=wishlist_count)
                     since_checkpoint = 0

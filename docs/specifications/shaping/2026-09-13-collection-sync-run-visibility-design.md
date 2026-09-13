@@ -207,9 +207,26 @@ releases, and a release can spend a 30-second request timeout on its barcode
 fetch before the pacing sleep, so a slow page can outlast fifteen minutes by
 itself and invite a takeover of a claim that is being worked. Each loop
 therefore checkpoints every twenty-fifth item — recording progress, proving
-the claim and committing — rather than only at the page boundary. Fifteen
-minutes is then far outside what either loop can go quiet for, and far inside
-"a human clicked the button again".
+the claim and committing — rather than only at the page boundary, and no less
+often than `crawl_manager.SYNC_CHECKPOINT_MAX_SECONDS` however slow the items
+are. Fifteen minutes is then far outside what either loop can go quiet for,
+and far inside "a human clicked the button again".
+
+**Amendment (2026-09-13, merging `main`):** that wall-clock ceiling is not
+how this shipped. The count alone bounded the gap, on the reasoning above
+that an item's worst case is one 30-second request timeout, so twenty-five of
+them stay inside the window. `2026-09-13-discogs-api-429-retry-design.md`
+landed on `main` in the meantime and ended that: `discogs._get_with_retry`
+waits out a rate limit *on top of* those timeouts, so under a sustained 429 a
+chunk of twenty-five items runs far past fifteen minutes while the sync is
+alive and committing the whole way. The count was measuring the wrong thing —
+items, when the window measures time — and it took a change in an unrelated
+module to expose it. A sync in that state would be read as stale, told the
+user it had stopped, and taken over by the next `start_sync`, at which point
+the fencing above stops the worker that was making progress. Nothing is
+corrupted; the sync just restarts having lied about why. Bounding the gap in
+the unit the window is expressed in is what makes it robust to whatever a
+request costs next.
 
 That checkpoint runs on the loop's own connection, which is the point of
 doing it this way rather than heartbeating from a second one. The app pool is
