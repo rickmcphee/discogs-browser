@@ -327,6 +327,15 @@ phase ends, on every exit including a cancelled one. The Plex loop heartbeats
 on its own commits for the same reason the sync's checkpoints do — a large
 library takes time to match, and an unfed claim goes stale.
 
+It carries the same wall-clock ceiling too, and the argument for it is
+sharper here than in the sync. `find_best_match` scans the entire Plex album
+list for every item, so what a chunk of items costs is set by the size of the
+user's Plex library — not by anything this loop controls, and not by anything
+visible at the point the cadence is chosen. A count is a proxy for elapsed
+time only while the per-item cost is roughly known; here it is a property of
+somebody else's media server. Bounding the gap in the unit the window is
+actually expressed in is the only version that holds for every library size.
+
 The two phases have separate closers, deliberately. The sync's
 `finally` backstop fires on the handoff path too, and a single closer
 that accepted both phases would let that backstop close the phase it had

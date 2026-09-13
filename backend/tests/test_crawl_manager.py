@@ -2065,6 +2065,85 @@ async def test_start_sync_returns_false_while_plex_match_running(pg_schema):
 # _run_plex_match (per-user Plex library matching, SSRF-guarded via plex_security)
 # ---------------------------------------------------------------------------
 
+async def test_a_slow_plex_chunk_heartbeats_before_its_25th_item(pg_schema, monkeypatch):
+    """The Plex phase holds the sync's claim, so its heartbeat needs the same
+    wall-clock bound the sync's own checkpoint has.
+
+    Counting items cannot bound the gap here either, and for a sharper reason:
+    find_best_match scans the whole Plex album list for every item, so what 25
+    of them cost is set by the size of the user's Plex library rather than by
+    anything this loop controls. A big enough library puts a healthy chunk past
+    the staleness window, and another Machine then takes over and starts a sync
+    while this phase is still writing matches."""
+    import plex
+    import crawl_manager as crawl_manager_module
+
+    class _Clock:
+        def __init__(self):
+            self.now = 0.0
+
+        def monotonic(self):
+            return self.now
+
+        def sleep(self, *a, **k):
+            pass
+
+    clock = _Clock()
+    monkeypatch.setattr(crawl_manager_module, "time", clock)
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        for n in range(1, 7):
+            db.upsert_catalog_release(conn, {
+                "discogs_id": f"r{n}", "artist": f"Artist {n}", "title": f"Album {n}",
+                "year": 1990, "label": "Label", "format": "Vinyl", "discogs_price": None,
+                "barcode": None, "cover_image_url": None, "discogs_url": None,
+            })
+            db.upsert_library_item(conn, user["id"], f"r{n}", in_collection=True)
+        conn.commit()
+
+    with db.user_scope(user["id"]) as conn:
+        run_token = db.claim_library_sync_run(conn, user["id"], "all", "all")
+        assert db.start_library_sync_plex_phase(conn, user["id"], run_token) is True
+        conn.commit()
+
+    with db.get_admin_pool().connection() as conn:
+        before = conn.execute(
+            "SELECT heartbeat_at FROM library_sync_runs WHERE user_id = %s", [user["id"]]
+        ).fetchone()["heartbeat_at"]
+
+    seen = {}
+    matched_count = {"n": 0}
+
+    def _match(artist, title, albums, threshold):
+        matched_count["n"] += 1
+        # The third item is the one that takes a long time -- a large library
+        # scanned for one release.
+        if matched_count["n"] == 3:
+            clock.now += crawl_manager_module.SYNC_CHECKPOINT_MAX_SECONDS + 1
+        # By the fifth, a heartbeat must already have landed: four items in,
+        # the every-25th-item boundary is nowhere near.
+        if matched_count["n"] == 5:
+            with db.get_admin_pool().connection() as conn:
+                seen["heartbeat"] = conn.execute(
+                    "SELECT heartbeat_at FROM library_sync_runs WHERE user_id = %s", [user["id"]]
+                ).fetchone()["heartbeat_at"]
+        return None
+
+    monkeypatch.setattr(plex, "get_music_section_key", lambda base_url, token: "2")
+    monkeypatch.setattr(plex, "fetch_albums", lambda base_url, token, key: [
+        {"artist": "Someone", "title": "Something", "rating_key": "500"},
+    ])
+    monkeypatch.setattr(plex, "get_machine_identifier", lambda base_url, token: "abc123")
+    monkeypatch.setattr(plex, "find_best_match", _match)
+
+    manager = CrawlManager()
+    await manager._run_plex_match(user["id"], "plex.local:32400", "tok", 90, run_token)
+
+    assert seen.get("heartbeat") is not None
+    assert seen["heartbeat"] > before
+
+
 async def test_run_plex_match_updates_matched_and_clears_unmatched(pg_schema, monkeypatch):
     import plex
 

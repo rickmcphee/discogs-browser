@@ -416,6 +416,39 @@ describe('following a collection sync without its events', () => {
     expect(screen.queryByText('Synced 25 records, 3 wantlist items')).toBeNull()
   })
 
+  it('still refetches when a refused start finds only a finished run', async () => {
+    // A sync on the other Machine can finish between the 409 and this poll's
+    // first read. The row it leaves behind is indistinguishable from one that
+    // ended last week — the refusal never named the run that caused it — so
+    // the banner cannot tell which, and says the click could not start a sync.
+    // The table must not also be left showing the library from before a sync
+    // that has just finished: that is the reported bug, reached down a
+    // different road. So the refetch happens regardless of what the banner
+    // decides.
+    const refused: any = new Error('{"detail":"Collection sync already running"}')
+    refused.status = 409
+    refreshCollection.mockRejectedValue(refused)
+    getCollectionStatus.mockResolvedValue({
+      total: 25, last_synced: null,
+      sync: run({ status: 'complete', running: false, synced: 25, wishlist_synced: 3 }),
+    })
+
+    render(<App />)
+    await screen.findAllByText('The Wall')
+    // Let mount settle: the initial loads must not be mistaken for the refetch
+    // this test is about. Stable across a full poll interval, then measured.
+    await vi.advanceTimersByTimeAsync(PAST_ONE_POLL)
+    const settled = getReleases.mock.calls.length
+    await vi.advanceTimersByTimeAsync(PAST_ONE_POLL)
+    expect(getReleases.mock.calls.length).toBe(settled)
+
+    fireEvent.click(screen.getByTitle('Sync collection from Discogs'))
+    fireEvent.click(await screen.findByRole('button', { name: /Refresh All/ }))
+    await screen.findByText(/Could not start a sync/)
+
+    await waitFor(() => expect(getReleases.mock.calls.length).toBeGreaterThan(settled))
+  })
+
   it('follows the running sync instead of reporting a failure when the refresh is refused', async () => {
     // 409: a sync is already running -- on this deployment, quite possibly on
     // the Machine this tab never talks to.

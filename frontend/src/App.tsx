@@ -870,7 +870,22 @@ export default function App() {
             // On a refused start that means the refusal was not a running
             // sync after all -- POST /collection/refresh answers 409 for any
             // reason start_sync declines, a Plex match for this user included.
-            if (idleMessage) setSyncStatus(idleMessage)
+            if (idleMessage) {
+              setSyncStatus(idleMessage)
+              // ...and refetch regardless. A sync on the other Machine can
+              // finish between the 409 and this first read, and a run that
+              // ended in that gap is indistinguishable here from one that
+              // ended last week -- nothing on the row says which, because the
+              // refusal never named the run that caused it. Being wrong about
+              // *why* a click was refused costs a banner line; being wrong
+              // about the data leaves the table showing the library from
+              // before a sync that has just finished, which is precisely the
+              // failure this change exists to remove. So the cheap half of the
+              // trade is taken every time: one collection read, which on the
+              // ordinary refusal (a Plex match, nothing having finished) is
+              // all it costs.
+              setSyncGeneration(g => g + 1)
+            }
             return
           }
         }

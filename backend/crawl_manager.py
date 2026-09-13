@@ -1919,6 +1919,7 @@ class CrawlManager:
             with user_scope(user_id) as conn:
                 items = get_library_items_for_plex_match(conn, user_id)
                 matched = 0
+                last_checkpoint = time.monotonic()
                 for i, item in enumerate(items, start=1):
                     # Fuzzy-matching one release against the full album list is CPU-bound
                     # and, at real collection/library sizes, expensive enough per item to
@@ -1932,7 +1933,11 @@ class CrawlManager:
                         matched += 1
                     else:
                         clear_plex_match(conn, user_id, item["discogs_id"])
-                    if i % 25 == 0 or i == len(items):
+                    if (
+                        i % 25 == 0
+                        or i == len(items)
+                        or time.monotonic() - last_checkpoint >= SYNC_CHECKPOINT_MAX_SECONDS
+                    ):
                         # When this phase follows a sync it is holding that
                         # run's claim, and a library large enough to match
                         # against can outlast the staleness window -- so the
@@ -1941,11 +1946,19 @@ class CrawlManager:
                         # And like the sync's, it is read rather than fired and
                         # forgotten: this chunk's matches must not commit
                         # alongside the sync that replaced this run.
+                        #
+                        # Bounded in wall-clock time as well as in items, for
+                        # the same reason the sync's checkpoint_due is: an item
+                        # here scans the whole album list, so the cost of 25 of
+                        # them is set by the Plex library's size rather than by
+                        # anything this loop controls, and a count alone cannot
+                        # keep the gap inside the window.
                         if run_token is not None and not record_library_sync_progress(
                             conn, user_id, run_token
                         ):
                             raise _ClaimLost()
                         conn.commit()
+                        last_checkpoint = time.monotonic()
                         # user_scope()'s set_config(..., true) is transaction-local and
                         # was just reverted by the commit above -- re-issue it so the
                         # remaining items in this same connection are still RLS-scoped
