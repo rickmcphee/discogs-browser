@@ -240,7 +240,7 @@ def test_the_comma_form_indexes_have_unescaped_like_pattern(admin_conn):
     # otherwise get baked into the index definition literally, so it could
     # never match the single-'%' expression the parameterized queries send at
     # runtime, and the index would silently never be chosen by the planner.
-    for idx in ("catalog_artist_the_lower_idx", "stock_items_artist_the_lower_idx"):
+    for idx in ("catalog_artist_the_fold_idx", "stock_items_artist_the_fold_idx"):
         indexdef = admin_conn.execute(
             "SELECT indexdef FROM pg_indexes WHERE indexname = %s", [idx]
         ).fetchone()["indexdef"]
@@ -253,7 +253,7 @@ def test_bare_form_indexes_have_unescaped_like_pattern(admin_conn):
     # for _artist_sort_sql's two LIKE guards (leading "the " and trailing
     # ", the") instead of _the_comma_form_sql's one -- see
     # docs/specifications/shaping/2026-08-22-bare-form-artist-fold-design.md.
-    for idx in ("catalog_artist_bare_lower_idx", "stock_items_artist_bare_lower_idx"):
+    for idx in ("catalog_artist_bare_fold_idx", "stock_items_artist_bare_fold_idx"):
         indexdef = admin_conn.execute(
             "SELECT indexdef FROM pg_indexes WHERE indexname = %s", [idx]
         ).fetchone()["indexdef"]
@@ -261,6 +261,42 @@ def test_bare_form_indexes_have_unescaped_like_pattern(admin_conn):
         assert "the %" in indexdef.lower()
         assert "%%, the" not in indexdef.lower()
         assert "%, the" in indexdef.lower()
+
+
+_ARTIST_FOLD_INDEXES = (
+    "catalog_artist_the_fold_idx",
+    "stock_items_artist_the_fold_idx",
+    "catalog_artist_bare_fold_idx",
+    "stock_items_artist_bare_fold_idx",
+    "stock_items_cheapest_fold_idx",
+)
+
+
+def test_artist_expression_indexes_carry_the_punctuation_fold(admin_conn):
+    # Every artist key expression folds "&"/"and" and "-"/" " now
+    # (2026-09-13-artist-punctuation-fold-design.md), and an index built from
+    # the pre-fold expression is not merely stale -- the planner matches an
+    # expression index by exact AST, so it would silently never be chosen and
+    # every artist-filtered page would go back to a sequential scan.
+    for idx in _ARTIST_FOLD_INDEXES:
+        indexdef = admin_conn.execute(
+            "SELECT indexdef FROM pg_indexes WHERE indexname = %s", [idx]
+        ).fetchone()["indexdef"]
+        assert "' and '" in indexdef
+        assert "btrim" in indexdef.lower()
+
+
+def test_superseded_artist_indexes_are_dropped(admin_conn):
+    # The rename is the migration: CREATE INDEX IF NOT EXISTS under the old
+    # name is a no-op against a database that already holds the old
+    # definition, so the old names have to go for the new expressions to be
+    # indexed at all on a deployment that has run before.
+    for idx in ("catalog_artist_the_lower_idx", "stock_items_artist_the_lower_idx",
+                "catalog_artist_bare_lower_idx", "stock_items_artist_bare_lower_idx",
+                "stock_items_cheapest_idx"):
+        assert admin_conn.execute(
+            "SELECT 1 FROM pg_indexes WHERE indexname = %s", [idx]
+        ).fetchone() is None
 
 
 def test_crawl_queue_unique_on_item_key(admin_conn):

@@ -899,3 +899,106 @@ def test_get_library_releases_artist_filter_matches_bare_form_row(admin_conn):
         result = db.get_library_releases(conn, alice["id"], artist="Beatles, The")
     assert result["total"] == 3
     assert {r["artist"] for r in result["releases"]} == {"Beatles, The"}
+
+
+def test_get_distinct_artists_folds_hyphen_and_space_variants(admin_conn):
+    # "Blink-182" and "Blink 182" are one band spelled two ways, and neither
+    # the casing rule nor either article fold sees that -- the punctuation
+    # fold does. Two rows to one so the frequency vote, not the byte-order
+    # tie-break, decides which spelling is displayed. See
+    # docs/specifications/shaping/2026-09-13-artist-punctuation-fold-design.md.
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    _catalog(admin_conn, "r1", "Blink-182", "Dude Ranch")
+    _catalog(admin_conn, "r2", "Blink-182", "Enema Of The State")
+    _catalog(admin_conn, "r3", "Blink 182", "Cheshire Cat")
+    for rid in ("r1", "r2", "r3"):
+        db.upsert_library_item(admin_conn, alice["id"], rid, in_collection=True)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        assert db.get_distinct_artists(conn, alice["id"]) == ["Blink-182"]
+
+
+def test_get_distinct_artists_folds_ampersand_onto_the_word_and(admin_conn):
+    # The other half of the fold, and the reason it is spelled as a character
+    # replacement rather than a whole-word one: the unspaced "Hall&Oates"
+    # groups with the rest without a word boundary having to be proven.
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    _catalog(admin_conn, "r1", "Hall and Oates", "Abandoned Luncheonette")
+    _catalog(admin_conn, "r2", "Hall and Oates", "Voices")
+    _catalog(admin_conn, "r3", "Hall & Oates", "Big Bam Boom")
+    _catalog(admin_conn, "r4", "Hall&Oates", "H2O")
+    for rid in ("r1", "r2", "r3", "r4"):
+        db.upsert_library_item(admin_conn, alice["id"], rid, in_collection=True)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        assert db.get_distinct_artists(conn, alice["id"]) == ["Hall and Oates"]
+
+
+def test_get_distinct_artists_punctuation_fold_composes_with_the_prefix_fold(admin_conn):
+    # The punctuation fold runs before the article strip, not after, so the
+    # two compose: an ampersand inside a "The X" name still folds, and the
+    # label is still formatted to comma-suffix form.
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    _catalog(admin_conn, "r1", "The Jesus & Mary Chain", "Psychocandy")
+    _catalog(admin_conn, "r2", "The Jesus & Mary Chain", "Darklands")
+    _catalog(admin_conn, "r3", "The Jesus and Mary Chain", "Automatic")
+    for rid in ("r1", "r2", "r3"):
+        db.upsert_library_item(admin_conn, alice["id"], rid, in_collection=True)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        assert db.get_distinct_artists(conn, alice["id"]) == ["Jesus & Mary Chain, The"]
+
+
+def test_get_distinct_artists_punctuation_fold_keeps_unrelated_names_apart(admin_conn):
+    # The guard on the character-level "&" -> " and " replacement: it pads
+    # with spaces, so it can only ever join words, never weld an ampersand
+    # into the middle of one. "S&wich" must not become "Sandwich".
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    _catalog(admin_conn, "r1", "Sandwich", "Grip Stand Throw")
+    _catalog(admin_conn, "r2", "S&wich", "Four Track Mind")
+    for rid in ("r1", "r2"):
+        db.upsert_library_item(admin_conn, alice["id"], rid, in_collection=True)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        assert db.get_distinct_artists(conn, alice["id"]) == ["S&wich", "Sandwich"]
+
+
+def test_get_library_releases_artist_filter_spans_hyphen_variants(admin_conn):
+    # A merged sidebar entry that filtered to one of its spellings would be
+    # cosmetic: the click has to return every release under the group. One row
+    # of each spelling, so the frequency rule ties and the byte-order
+    # tie-break decides the label -- a space (0x20) sorts before a hyphen, so
+    # both rows come back displayed as "Blink 182" whichever was clicked.
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    _catalog(admin_conn, "r1", "Blink-182", "Dude Ranch")
+    _catalog(admin_conn, "r2", "Blink 182", "Cheshire Cat")
+    for rid in ("r1", "r2"):
+        db.upsert_library_item(admin_conn, alice["id"], rid, in_collection=True)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_library_releases(conn, alice["id"], artist="Blink-182")
+    assert result["total"] == 2
+    assert {r["artist"] for r in result["releases"]} == {"Blink 182"}
+
+
+def test_get_library_releases_artist_filter_spans_ampersand_variants(admin_conn):
+    # The filter value is whichever spelling won the label vote, so the fold
+    # has to hold from either side: here the sidebar sends the spelled-out
+    # form and the ampersand row still has to come back. Tied on frequency
+    # again, so the label is the byte-order winner -- "&" (0x26) before "a".
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    _catalog(admin_conn, "r1", "Hall and Oates", "Voices")
+    _catalog(admin_conn, "r2", "Hall & Oates", "Big Bam Boom")
+    for rid in ("r1", "r2"):
+        db.upsert_library_item(admin_conn, alice["id"], rid, in_collection=True)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_library_releases(conn, alice["id"], artist="Hall and Oates")
+    assert result["total"] == 2
+    assert {r["artist"] for r in result["releases"]} == {"Hall & Oates"}
