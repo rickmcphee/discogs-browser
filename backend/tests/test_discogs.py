@@ -1,7 +1,10 @@
+import logging
+
 import pytest
 import respx
 import httpx
 import config
+import discogs
 from authlib.oauth1.rfc5849 import client_auth as oauth1_client_auth
 from discogs import (
     HTTPStatusError,
@@ -250,3 +253,172 @@ def test_fetch_release_barcode_returns_empty_when_absent():
 def test_fetch_release_barcode_returns_empty_when_no_identifiers():
     respx.get(_RELEASE_URL).mock(return_value=httpx.Response(200, json={}))
     assert fetch_release_barcode("user-token", "user-token-secret", 456) == ""
+
+
+# --- Rate-limit (HTTP 429) retry ------------------------------------------
+#
+# See docs/specifications/shaping/2026-09-13-discogs-api-429-retry-design.md.
+# A sync runs just under Discogs' 60 requests/minute, so a 429 is a matter of
+# timing rather than misbehaviour -- and before this, one on a page fetch ended
+# the whole sync and abandoned every page after it.
+
+
+@pytest.fixture
+def slept(monkeypatch):
+    """Records what _get_with_retry would have slept, without spending it.
+
+    Same module-local-`sleep` patch convention conftest.py uses to keep the
+    catalog-crawler tests off the wall clock.
+    """
+    waits = []
+    monkeypatch.setattr(discogs, "sleep", waits.append)
+    return waits
+
+
+def _collection_page(page=1, pages=1):
+    return httpx.Response(200, json={
+        "pagination": {"page": page, "pages": pages, "per_page": 100, "items": 1},
+        "releases": [_ITEM],
+    })
+
+
+def _rate_limited(retry_after=None):
+    headers = {} if retry_after is None else {"Retry-After": retry_after}
+    return httpx.Response(429, headers=headers, json={"message": "You are making requests too quickly."})
+
+
+@respx.mock
+def test_iter_collection_pages_retries_a_rate_limited_page_and_continues(slept):
+    # The failure this whole change exists for: a 429 mid-walk used to
+    # propagate out of the generator and end the sync, losing every page after
+    # this one -- not just the page that got the 429.
+    respx.get(_COLLECTION_URL).mock(side_effect=[
+        _collection_page(page=1, pages=2),
+        _rate_limited(),
+        _collection_page(page=2, pages=2),
+    ])
+    pages = list(iter_collection_pages("user-token", "user-token-secret", "testuser"))
+    assert [p[0] for p in pages] == [1, 2]
+    assert slept == [5.0]
+
+
+@respx.mock
+def test_iter_wantlist_pages_retries_a_rate_limited_page_and_continues(slept):
+    respx.get(_WANTLIST_URL).mock(side_effect=[
+        _rate_limited(),
+        httpx.Response(200, json={
+            "pagination": {"page": 1, "pages": 1, "per_page": 100, "items": 1},
+            "wants": [_ITEM],
+        }),
+    ])
+    pages = list(iter_wantlist_pages("user-token", "user-token-secret", "testuser"))
+    assert len(pages) == 1
+    assert slept == [5.0]
+
+
+@respx.mock
+def test_a_persistent_429_gives_up_after_the_capped_retries(slept):
+    route = respx.get(_COLLECTION_URL).mock(return_value=_rate_limited())
+    with pytest.raises(HTTPStatusError) as exc:
+        list(iter_collection_pages("user-token", "user-token-secret", "testuser"))
+    # Same exception type the caller saw before any of this: a page walk still
+    # reaches _sync_collection_blocking's handler, it just takes a bounded wait
+    # to get there.
+    assert exc.value.response.status_code == 429
+    assert len(route.calls) == 1 + discogs._MAX_RETRIES
+    assert slept == [5.0, 20.0, 60.0]
+
+
+@respx.mock
+def test_retry_after_header_is_honoured_in_place_of_the_backoff(slept):
+    respx.get(_COLLECTION_URL).mock(side_effect=[
+        _rate_limited(retry_after="7"),
+        _collection_page(),
+    ])
+    list(iter_collection_pages("user-token", "user-token-secret", "testuser"))
+    assert slept == [7.0]
+
+
+@respx.mock
+def test_retry_after_is_capped_at_one_rate_limit_window(slept):
+    # A stated wait far past the documented 60s window is describing something
+    # other than that window, and sleeping it would be indistinguishable from
+    # the hang this is meant to prevent.
+    respx.get(_COLLECTION_URL).mock(side_effect=[
+        _rate_limited(retry_after="99999"),
+        _collection_page(),
+    ])
+    list(iter_collection_pages("user-token", "user-token-secret", "testuser"))
+    assert slept == [discogs._MAX_RETRY_WAIT]
+
+
+@pytest.mark.parametrize("retry_after", ["soon", "-5", "Wed, 21 Oct 2026 07:28:00 GMT", ""])
+@respx.mock
+def test_an_unusable_retry_after_falls_back_to_the_backoff(slept, retry_after):
+    respx.get(_COLLECTION_URL).mock(side_effect=[
+        _rate_limited(retry_after=retry_after),
+        _collection_page(),
+    ])
+    list(iter_collection_pages("user-token", "user-token-secret", "testuser"))
+    assert slept == [5.0]
+
+
+@respx.mock
+def test_a_non_429_error_status_raises_immediately_without_retrying(slept):
+    # The caller-semantics guarantee: _sync_collection_blocking branches on
+    # HTTPStatusError around fetch_collection_fields, and a 500 must not be
+    # sat on for a minute and a half first.
+    route = respx.get(_COLLECTION_URL).mock(return_value=httpx.Response(500))
+    with pytest.raises(HTTPStatusError):
+        list(iter_collection_pages("user-token", "user-token-secret", "testuser"))
+    assert len(route.calls) == 1
+    assert slept == []
+
+
+@respx.mock
+def test_fetch_release_barcode_retries_a_rate_limited_request(slept):
+    respx.get(_RELEASE_URL).mock(side_effect=[
+        _rate_limited(retry_after="3"),
+        httpx.Response(200, json={"identifiers": [{"type": "Barcode", "value": "025218142526"}]}),
+    ])
+    assert fetch_release_barcode("user-token", "user-token-secret", 456) == "025218142526"
+    assert slept == [3.0]
+
+
+@respx.mock
+def test_get_identity_retries_a_rate_limited_request(slept):
+    respx.get("https://api.discogs.com/oauth/identity").mock(side_effect=[
+        _rate_limited(),
+        httpx.Response(200, json={"id": 1, "username": "alice"}),
+    ])
+    assert get_identity("user-token", "user-token-secret")["username"] == "alice"
+    assert slept == [5.0]
+
+
+@respx.mock
+def test_fetch_collection_fields_retries_a_rate_limited_request(slept):
+    respx.get("https://api.discogs.com/users/testuser/collection/fields").mock(side_effect=[
+        _rate_limited(),
+        httpx.Response(200, json={"fields": [{"id": 1, "name": "Price"}]}),
+    ])
+    assert fetch_collection_fields("user-token", "user-token-secret", "testuser") == {1: "Price"}
+    assert slept == [5.0]
+
+
+@respx.mock
+def test_a_retry_logs_at_warning_and_giving_up_logs_at_error(slept, caplog):
+    respx.get(_COLLECTION_URL).mock(return_value=_rate_limited(retry_after="7"))
+    with caplog.at_level(logging.WARNING, logger="discogs"):
+        with pytest.raises(HTTPStatusError):
+            list(iter_collection_pages("user-token", "user-token-secret", "testuser"))
+
+    warnings = [r for r in caplog.records
+                if r.name == "discogs" and r.levelno == logging.WARNING]
+    assert len(warnings) == discogs._MAX_RETRIES
+    first = warnings[0].getMessage()
+    assert "429" in first and "Retry-After: 7" in first and "retry 1/3" in first
+
+    errors = [r for r in caplog.records
+              if r.name == "discogs" and r.levelno == logging.ERROR]
+    assert len(errors) == 1
+    assert "giving up" in errors[0].getMessage()
