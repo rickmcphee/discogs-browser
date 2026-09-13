@@ -286,17 +286,55 @@ def test_artist_expression_indexes_carry_the_punctuation_fold(admin_conn):
         assert "btrim" in indexdef.lower()
 
 
+_SUPERSEDED_ARTIST_INDEXES = {
+    "catalog_artist_the_lower_idx": "catalog",
+    "stock_items_artist_the_lower_idx": "stock_items",
+    "catalog_artist_bare_lower_idx": "catalog",
+    "stock_items_artist_bare_lower_idx": "stock_items",
+    "stock_items_cheapest_idx": "stock_items",
+}
+
+
 def test_superseded_artist_indexes_are_dropped(admin_conn):
-    # The rename is the migration: CREATE INDEX IF NOT EXISTS under the old
-    # name is a no-op against a database that already holds the old
-    # definition, so the old names have to go for the new expressions to be
-    # indexed at all on a deployment that has run before.
-    for idx in ("catalog_artist_the_lower_idx", "stock_items_artist_the_lower_idx",
-                "catalog_artist_bare_lower_idx", "stock_items_artist_bare_lower_idx",
-                "stock_items_cheapest_idx"):
+    """The rename is the migration: CREATE INDEX IF NOT EXISTS under the old
+    name is a no-op against a database that already holds the old definition,
+    so the old names have to go for the new expressions to be indexed at all
+    on a deployment that has run before.
+
+    The upgrade is what's under test, so the old names are created here first.
+    Asserting their absence against the fresh `template0` database every run
+    starts from (see 2026-08-09-test-database-freshness-design.md) would pass
+    with every DROP statement deleted -- they were never there to drop.
+
+    The definitions below are deliberately not the superseded expressions:
+    what has to hold is that GLOBAL_SCHEMA removes those *names*, whatever an
+    older deployment happened to have built under them.
+    """
+    for idx, table in _SUPERSEDED_ARTIST_INDEXES.items():
+        admin_conn.execute(f"CREATE INDEX {idx} ON {table} (LOWER(artist))")
+    # Committed before the migration runs: init_global_schema takes its own
+    # connection, and its DROP INDEX wants a lock this one would still hold.
+    admin_conn.commit()
+    assert _existing_indexes(admin_conn) == set(_SUPERSEDED_ARTIST_INDEXES)
+    admin_conn.commit()
+
+    db.init_global_schema()
+
+    assert _existing_indexes(admin_conn) == set()
+    # The replacements are still there afterward -- a migration that dropped
+    # the old names and left nothing indexed would otherwise pass.
+    for idx in _ARTIST_FOLD_INDEXES:
         assert admin_conn.execute(
             "SELECT 1 FROM pg_indexes WHERE indexname = %s", [idx]
-        ).fetchone() is None
+        ).fetchone() is not None
+
+
+def _existing_indexes(conn) -> set:
+    rows = conn.execute(
+        "SELECT indexname FROM pg_indexes WHERE indexname = ANY(%s)",
+        [list(_SUPERSEDED_ARTIST_INDEXES)],
+    ).fetchall()
+    return {r["indexname"] for r in rows}
 
 
 def test_crawl_queue_unique_on_item_key(admin_conn):
