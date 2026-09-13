@@ -99,12 +99,17 @@ unchanged name would instead rebuild all of them on every boot.
 `LOWER(artist)` indexes are untouched — they serve `_library_match_fragment`,
 which takes neither this fold nor the article one (see "Out of scope").
 
-The first boot after this deploys therefore drops and rebuilds those indexes,
-under the `ACCESS EXCLUSIVE` lock a plain `CREATE INDEX` takes — the whole
-`GLOBAL_SCHEMA` script runs as one statement through `conn.execute`, so
-`CONCURRENTLY` is not available to it. A one-off stall at startup proportional
-to `catalog`/`stock_items`, and the same cost every index this schema has ever
-added already paid.
+The first boot after this deploys therefore drops and rebuilds those indexes
+inside one transaction — the whole `GLOBAL_SCHEMA` script runs as a single
+`conn.execute`, so `CONCURRENTLY`, which cannot run in a transaction block, is
+not available to it. The blocking level comes from the `DROP INDEX`es rather
+than the builds: each takes `ACCESS EXCLUSIVE` on its table (a plain
+`CREATE INDEX` takes only `SHARE`, which blocks writes but not reads), and the
+single transaction holds every one of them until it commits — so `catalog` and
+`stock_items` are locked against reads as well as writes for the whole rebuild,
+not just against writers. A one-off stall at startup proportional to those two
+tables; every index this schema has ever added paid the `SHARE` half of it
+already.
 
 `_artist_punct_fold_sql` needs no `escape_percent` twin of the parameter
 `_the_comma_form_sql` and `_artist_sort_sql` carry: it contains no `%` at all,

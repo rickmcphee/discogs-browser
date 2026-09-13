@@ -952,6 +952,27 @@ def test_get_distinct_artists_punctuation_fold_composes_with_the_prefix_fold(adm
         assert db.get_distinct_artists(conn, alice["id"]) == ["Jesus & Mary Chain, The"]
 
 
+def test_get_distinct_artists_folds_a_hyphenated_article_into_the_the_group(admin_conn):
+    # The composition read the other way round: the punctuation fold runs first,
+    # so "The-Beatles" is a The-prefixed name by the time the article is
+    # stripped and the two spellings are one group. The label, though, is
+    # formatted by _the_comma_form_sql, whose `LIKE 'the %'` guard the hyphen
+    # defeats -- so this group displays as the raw "The-Beatles" while that
+    # spelling leads the vote, and as "Beatles, The" once the spaced one does.
+    # frontend/src/views/artistSelection.ts folds both forms for that reason.
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    _catalog(admin_conn, "r1", "The-Beatles", "Abbey Road")
+    _catalog(admin_conn, "r2", "The-Beatles", "Let It Be")
+    _catalog(admin_conn, "r3", "The Beatles", "Revolver")
+    for rid in ("r1", "r2", "r3"):
+        db.upsert_library_item(admin_conn, alice["id"], rid, in_collection=True)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        assert db.get_distinct_artists(conn, alice["id"]) == ["The-Beatles"]
+        assert db.get_library_releases(conn, alice["id"], artist="The-Beatles")["total"] == 3
+
+
 def test_get_distinct_artists_punctuation_fold_keeps_unrelated_names_apart(admin_conn):
     # The guard on the character-level "&" -> " and " replacement: it pads
     # with spaces, so it can only ever join words, never weld an ampersand
