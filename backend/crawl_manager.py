@@ -918,18 +918,48 @@ class CrawlManager:
 
         # Deliberately on its own connection rather than the page loop's: this
         # one is called from paths where that connection is either not open yet
-        # or sitting in a failed transaction.
+        # or in the middle of a page's transaction.
+        #
+        # Returns True while the run is still ours, False once it demonstrably
+        # is not, and None when the question could not be asked -- a database
+        # blip is not evidence of a takeover and must never be read as one.
         def heartbeat_run():
+            if run_token is None:
+                return None
             try:
                 with user_scope(user_id) as conn:
-                    record_library_sync_progress(conn, user_id, run_token)
+                    ours = record_library_sync_progress(conn, user_id, run_token)
                     conn.commit()
+                return ours
             except Exception as e:
                 log.warning("Could not record user %d's collection sync heartbeat: %s", user_id, e)
+                return None
 
         def sync_error(message):
             broadcast({"status": "sync_error", "error": message})
             finish_run("error", error=message)
+
+        # Raised when the run this worker is writing is no longer the run in
+        # the row. Fencing the writes to library_sync_runs is not by itself
+        # enough: a dispossessed worker would go on committing library rows
+        # and then run the wantlist cleanup, which deletes -- against a
+        # `wishlist_seen` snapshot older than the sync that replaced it. So
+        # losing the claim has to stop the worker, not just its bookkeeping.
+        class _ClaimLost(Exception):
+            pass
+
+        def still_ours(conn, **progress):
+            """Record progress and assert the run is still this worker's. In
+            the caller's transaction, so the row lock also holds the claim
+            until that transaction commits.
+
+            No token means this sync never entered the claim protocol at all
+            (nothing in the app starts one that way -- start_sync always
+            claims first -- but the tests drive _sync_collection directly),
+            and a run that holds no claim cannot lose one."""
+            recorded = record_library_sync_progress(conn, user_id, run_token, **progress)
+            if run_token is not None and not recorded:
+                raise _ClaimLost()
 
         # The records a sync commits may match store items whose queue rows
         # the library-only sweep deleted, or that _sync_stock never inserted,
@@ -1032,14 +1062,20 @@ class CrawlManager:
                             # takeover of a claim that is being worked. This
                             # one rides its own connection so it lands while
                             # the page's transaction is still open.
-                            if count % 25 == 0:
-                                heartbeat_run()
+                            if count % 25 == 0 and heartbeat_run() is False:
+                                # Losing the claim mid-page is worth noticing
+                                # here rather than at the page's commit: the
+                                # rest of this page is another hundred requests
+                                # made on behalf of a run somebody else now owns.
+                                raise _ClaimLost()
                         # In the page's own transaction, so the row the other
                         # Machine reads advances exactly when the data it
-                        # describes does -- never ahead of it.
-                        record_library_sync_progress(
-                            conn, user_id, run_token, page=page,
-                            total_pages=total_pages, synced=count,
+                        # describes does -- never ahead of it, and so that a
+                        # claim lost mid-page takes this page's writes down
+                        # with it rather than committing them alongside the
+                        # sync that replaced this one.
+                        still_ours(
+                            conn, page=page, total_pages=total_pages, synced=count,
                         )
                         conn.commit()
                         # user_scope()'s set_config(..., true) is transaction-local and
@@ -1083,11 +1119,9 @@ class CrawlManager:
                         )
                         enqueue_crawl_queue(conn, rid)
                         wishlist_count += 1
-                        if wishlist_count % 25 == 0:
-                            heartbeat_run()
-                    record_library_sync_progress(
-                        conn, user_id, run_token, wishlist_synced=wishlist_count
-                    )
+                        if wishlist_count % 25 == 0 and heartbeat_run() is False:
+                            raise _ClaimLost()
+                    still_ours(conn, wishlist_synced=wishlist_count)
                     conn.commit()
                     # Same reasoning as the collection-loop commit above: re-scope
                     # app.user_id for this connection's next transaction, since the
@@ -1095,6 +1129,12 @@ class CrawlManager:
                     conn.execute("SELECT set_config('app.user_id', %s, true)", [str(user_id)])
                     log.info("Wishlist sync page %d/%d (%d items) for %s", page, total_pages, wishlist_count, username)
 
+                # Before the only destructive statements in the sync, and in
+                # their transaction: this both proves the claim is still ours
+                # and holds it (on the row lock) until the cleanup commits, so
+                # a takeover cannot land halfway through a delete driven by
+                # this worker's wishlist_seen.
+                still_ours(conn)
                 cleared = clear_wishlist_flags_not_in(conn, user_id, wishlist_seen)
                 deleted = delete_orphaned_releases(conn, user_id)
                 conn.commit()
@@ -1126,6 +1166,23 @@ class CrawlManager:
                 return (plex_base_url, plex_token, user["plex_match_threshold"])
             return None
 
+        except _ClaimLost:
+            # Another instance took this run over -- it is doing the work now.
+            # The uncommitted page goes with it: raising out of user_scope's
+            # `with` leaves psycopg's pool to roll the transaction back, so
+            # nothing half-done from this worker lands beside the replacement's
+            # writes. Said out loud rather than swallowed: a browser attached
+            # to *this* Machine watched this sync start, and the run row it
+            # polls now belongs to a sync this process cannot narrate.
+            log.warning(
+                "Collection sync for user %d was taken over by another instance; stopping",
+                user_id,
+            )
+            broadcast({
+                "status": "sync_error",
+                "error": "Sync was taken over by another instance",
+            })
+            return None
         except Exception as e:
             log.error("Collection sync failed: %s", e, exc_info=True)
             sync_error(str(e))

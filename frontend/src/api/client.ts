@@ -50,10 +50,12 @@ export async function getCollectionStatus(): Promise<CollectionStatus> {
   return r.json()
 }
 
-// Carries the HTTP status so the caller can tell a refused start from a
-// failed one. 409 is not a failure: it means a sync is already running --
-// possibly on the other Machine, where this browser could not have heard it
-// start -- which is a thing to follow, not an error to report.
+// Carries the HTTP status so the caller can tell a refused start from a failed
+// one. 409 is a refusal, not a failure, and says nothing more than that:
+// POST /collection/refresh answers it for every reason start_sync declines --
+// a sync already running (possibly on the other Machine, where this browser
+// could not have heard it start), or a Plex match for this user. Which of
+// those it was has to be read from the sync state itself; see App.tsx's poll.
 export class ApiError extends Error {
   status: number
   constructor(status: number, message: string) {

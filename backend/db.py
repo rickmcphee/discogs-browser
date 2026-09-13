@@ -4013,12 +4013,16 @@ def get_crawl_status_for_user(conn, user_id: int) -> dict:
 
 
 # How long a claimed sync run may go without a heartbeat before another
-# request may take it over. The heartbeat advances at every page commit, and a
-# page is bounded work -- at most one Discogs page of releases, each costing a
-# barcode fetch plus its 1.1s pacing sleep -- so a gap this long means the
-# process that claimed the run is gone (a Machine restart mid-sync), not slow.
-# Without a takeover the abandoned row would hold the claim forever and every
-# later refresh for that user would be refused.
+# request may take it over. Without a takeover an abandoned row would hold the
+# claim forever and every later refresh for that user would be refused.
+#
+# The window has to measure silence rather than slowness, and a page commit is
+# too coarse to do that: a page is a hundred releases, each able to spend a
+# 30-second request timeout on its barcode fetch before the 1.1s pacing sleep,
+# so a page doing exactly what it should can outlast this on its own. The sync
+# therefore also heartbeats every twenty-fifth item, on its own connection
+# (see crawl_manager._sync_collection_blocking), which is what makes a gap
+# this long mean the process that claimed the run is gone rather than busy.
 SYNC_RUN_STALE_MINUTES = 15
 
 # clock_timestamp(), not CURRENT_TIMESTAMP: the heartbeat is written inside the
@@ -4072,15 +4076,23 @@ def record_library_sync_progress(
     total_pages: Optional[int] = None,
     synced: Optional[int] = None,
     wishlist_synced: Optional[int] = None,
-):
+) -> bool:
     """Advance the run's counters and its heartbeat. COALESCE so a caller can
     move one field without restating the others -- the wantlist loop has no
     page numbers to report, and the heartbeat alone is a valid update.
 
     Fenced on `run_token`, so a worker whose claim was taken over while it was
     still alive cannot go on advancing (or heartbeating, which would hold the
-    claim open) a run that is no longer its own."""
-    conn.execute(
+    claim open) a run that is no longer its own.
+
+    Returns whether the run is still this caller's. That answer is what makes
+    ownership loss *observable* to the worker: fencing the row alone would
+    leave a dispossessed worker writing library rows and running destructive
+    wantlist cleanup alongside the sync that replaced it. Called inside a
+    transaction, the row lock it takes also holds the claim for the rest of
+    that transaction, so a competing claim waits rather than landing halfway
+    through."""
+    cursor = conn.execute(
         """
         UPDATE library_sync_runs SET
             page = COALESCE(%(page)s, page),
@@ -4097,6 +4109,7 @@ def record_library_sync_progress(
             "wishlist_synced": wishlist_synced,
         },
     )
+    return cursor.rowcount > 0
 
 
 def finish_library_sync_run(

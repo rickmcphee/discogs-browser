@@ -175,6 +175,21 @@ one's writes:
 Both are silent when they happen, and both produce exactly the symptom this
 change is fixing.
 
+Fencing the row is only half of it, though, because the row is not the only
+thing a dispossessed worker writes. It would go on committing library rows
+alongside its replacement, and then reach `clear_wishlist_flags_not_in` /
+`delete_orphaned_releases` — the sync's only destructive statements — driven
+by a `wishlist_seen` snapshot older than the sync that replaced it, which can
+delete a wantlist record the replacement has just written. So losing the claim
+has to stop the worker, not just its bookkeeping: the progress write reports
+whether the run is still this worker's, and a worker that finds it is not
+raises out of the page's transaction (rolling its uncommitted writes back with
+it) and stops. It is checked at every page commit, at every twenty-fifth item
+— the rest of a page is another hundred requests made on behalf of a run
+somebody else owns — and, decisively, in the cleanup's own transaction: the
+row lock that check takes holds the claim until the cleanup commits, so a
+takeover waits rather than landing halfway through a delete.
+
 ### Staleness, because a claim that cannot expire is a trap
 
 A Machine that restarts mid-sync leaves its row saying `running` for ever.
@@ -292,6 +307,10 @@ Backend:
 - A finished run's late backstop cannot close the claim taken after it, and a
   taken-over run's old owner can neither advance nor heartbeat the run that
   replaced it.
+- A worker whose claim is taken over mid-sync stops rather than running its
+  destructive cleanup: the wantlist record its stale snapshot would have
+  deleted survives, it broadcasts no completion, and the replacement's claim
+  is left running and intact.
 - A plex match cannot register itself while a sync is mid-claim.
 - `GET /api/collection/status` reports a running run, reports an abandoned one
   as stale rather than running, reports nothing before a user's first sync, and

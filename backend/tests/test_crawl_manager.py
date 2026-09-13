@@ -499,6 +499,85 @@ async def test_start_plex_match_cannot_slip_in_while_a_sync_is_claiming(pg_schem
     await asyncio.sleep(0.01)
 
 
+@respx.mock
+async def test_a_dispossessed_worker_stops_before_its_destructive_cleanup(pg_schema, monkeypatch):
+    """Fencing the run row is not enough on its own. A worker whose claim was
+    taken over mid-sync would otherwise keep committing library rows and go on
+    to clear_wishlist_flags_not_in / delete_orphaned_releases -- destructive
+    statements driven by a wishlist_seen snapshot older than the sync that
+    replaced it, which can delete a wantlist record the replacement had just
+    written. Losing the claim has to stop the worker, not just its
+    bookkeeping."""
+    import config
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "s")
+    monkeypatch.setattr(config, "TOKEN_ENCRYPTION_KEY", "kL8mN2pQ7rT5vX9yB3cF6hJ1kM4nP8sU2wZ5aD7eG0i=")
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute(
+            "UPDATE users SET discogs_oauth_token_encrypted = %s, discogs_oauth_secret_encrypted = %s WHERE id = %s",
+            [token_encryption.encrypt("tok"), token_encryption.encrypt("sec"), user["id"]],
+        )
+        conn.commit()
+
+    respx.get("https://api.discogs.com/users/alice/collection/fields").mock(
+        return_value=httpx.Response(200, json={"fields": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/collection/folders/0/releases").mock(
+        side_effect=[_collection_page(111, total_pages=2), _collection_page(222, total_pages=2)]
+    )
+    respx.get(url__regex=r"https://api\.discogs\.com/releases/\d+").mock(
+        return_value=httpx.Response(200, json={"identifiers": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/wants").mock(
+        return_value=httpx.Response(200, json={"pagination": {"pages": 1}, "wants": []})
+    )
+
+    # A wantlist record the replacement sync owns. The dispossessed worker
+    # sees an empty wantlist from Discogs, so if it reaches its cleanup it
+    # clears this flag and deletes the row.
+    with db.get_admin_pool().connection() as conn:
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r999", "artist": "A", "title": "T", "year": None,
+            "label": None, "format": None, "barcode": None,
+            "cover_image_url": None, "discogs_url": None,
+        })
+        db.upsert_library_item(conn, user["id"], "r999", in_wishlist=True)
+        conn.commit()
+
+    manager = CrawlManager()
+    assert await manager.start_sync(user["id"], "all") is True
+
+    # Somebody else claims the run out from under it, the way a takeover of a
+    # stale claim would.
+    with db.user_scope(user["id"]) as conn:
+        conn.execute(
+            "UPDATE library_sync_runs SET heartbeat_at = clock_timestamp() - INTERVAL '%s minutes' "
+            "WHERE user_id = %%s" % (db.SYNC_RUN_STALE_MINUTES + 1),
+            [user["id"]],
+        )
+        assert db.claim_library_sync_run(conn, user["id"], "all", "all") is not None
+        conn.commit()
+
+    await manager._sync_tasks[user["id"]]
+
+    with db.user_scope(user["id"]) as conn:
+        survived = conn.execute(
+            "SELECT in_wishlist FROM library_items WHERE user_id = %s AND discogs_id = 'r999'",
+            [user["id"]],
+        ).fetchone()
+    assert survived is not None and survived["in_wishlist"] is True
+
+    statuses = [e["status"] for e in manager.recent_events()]
+    assert "sync_complete" not in statuses
+
+    # And the replacement's claim is untouched -- still running, still its own.
+    with db.user_scope(user["id"]) as conn:
+        run = db.get_library_sync_run(conn, user["id"])
+    assert (run["status"], run["running"]) == ("running", True)
+
+
 @pytest.fixture
 def library_only_on(pg_schema):
     """The sync's restoration of store-item rows runs only under
