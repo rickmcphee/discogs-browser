@@ -111,7 +111,7 @@ class CrawlManager:
         self._stock_start_lock: Optional[asyncio.Lock] = None
         # The same job for start_sync and start_plex_match, which exclude each
         # other and so have to share one. Lazily created for the same reason.
-        self._sync_start_lock: Optional[asyncio.Lock] = None
+        self._sync_start_locks: dict[int, asyncio.Lock] = {}
         self._judgment_tasks: dict[int, asyncio.Task] = {}
         self._plex_match_tasks: dict[int, asyncio.Task] = {}
         self._worker_tasks: list[asyncio.Task] = []
@@ -876,9 +876,9 @@ class CrawlManager:
             conn.commit()
         return run_token
 
-    def _start_lock(self) -> asyncio.Lock:
-        """Serializes the per-user guard, claim and task registration in
-        start_sync and start_plex_match against each other.
+    def _start_lock(self, user_id: int) -> asyncio.Lock:
+        """Serializes the guard, claim and task registration in start_sync and
+        start_plex_match against each other, for one user.
 
         Those two refuse to overlap, and used to get that for free: each
         checked both task maps and registered its own with no await in
@@ -886,14 +886,24 @@ class CrawlManager:
         cross-Machine claim adds an await inside start_sync's half, so without
         this a plex match starting during that claim sees both maps idle,
         registers itself, and the collection task is created on top of it.
+
+        Keyed by user because that is the scope of the exclusion it enforces,
+        and because it is held across a blocking database call: the claim can
+        wait on the row lock a checkpoint or cleanup transaction holds, and one
+        manager-wide lock would make one account's refresh block every other
+        account's sync and Plex starts on this Machine. Building the entry is
+        safe unlocked -- there is no await between the read and the write, so
+        the event loop cannot interleave another start in between.
+
         Lazily built, like _stock_start_lock, because the manager is
         constructed at import time with no running loop to bind to."""
-        if self._sync_start_lock is None:
-            self._sync_start_lock = asyncio.Lock()
-        return self._sync_start_lock
+        lock = self._sync_start_locks.get(user_id)
+        if lock is None:
+            lock = self._sync_start_locks[user_id] = asyncio.Lock()
+        return lock
 
     async def start_sync(self, user_id: int, mode: str = "all", scope: str = "all") -> bool:
-        async with self._start_lock():
+        async with self._start_lock(user_id):
             if self.sync_running(user_id) or self.plex_match_running(user_id):
                 log.warning("Collection sync already running for %s, ignoring start request", self._username_for_log(user_id))
                 return False
@@ -925,7 +935,7 @@ class CrawlManager:
         # Under the same lock as start_sync: the mutual exclusion these two
         # guards declare is only real if neither can register a task while the
         # other is between its check and its own registration. See _start_lock.
-        async with self._start_lock():
+        async with self._start_lock(user_id):
             if self.plex_match_running(user_id) or self.sync_running(user_id):
                 log.warning("Plex match already running or sync in progress for %s, ignoring start request", self._username_for_log(user_id))
                 return False

@@ -290,9 +290,18 @@ free: each checked both task maps and registered its own with no `await` in
 between, which asyncio's single-threaded scheduling makes atomic. The claim
 puts an await inside `start_sync`'s half of that, so a plex match starting
 during the claim would see both maps idle, register itself, and have the
-collection task created on top of it. Both now hold one lazily-created
+collection task created on top of it. Both now hold a lazily-created
 `asyncio.Lock` across guard, claim and registration — the same shape
 `start_stock_sync` already uses for its own guard-acquire-assign sequence.
+
+Keyed by user, because that is the scope of the exclusion and because the
+lock is held across a blocking database call. The claim can wait on the row
+lock a checkpoint or cleanup transaction holds, and a single manager-wide
+lock would spend that wait blocking every *other* account's sync and Plex
+starts on this Machine — coupling users the rest of the manager keeps
+independent, in a section whose own purpose is per-user. Building the entry
+needs no lock of its own: there is no `await` between reading the dict and
+writing it, so the event loop cannot interleave another start in between.
 
 ### The claim outlives the sync, by one phase
 

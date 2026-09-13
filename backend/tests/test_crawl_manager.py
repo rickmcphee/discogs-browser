@@ -452,6 +452,48 @@ async def test_a_taken_over_run_cannot_be_advanced_by_its_old_owner(pg_schema):
     assert (run["status"], run["mode"], run["synced"], run["page"]) == ("running", "new", 0, None)
 
 
+async def test_one_users_claim_does_not_block_another_users_start(pg_schema, monkeypatch):
+    """The exclusion the start lock enforces is per user, so the lock is too.
+
+    It is held across the blocking claim, which can wait on the row lock a
+    checkpoint or cleanup transaction holds. One manager-wide lock would make
+    Alice's refresh block Bob's sync and Plex starts on this Machine, against
+    the per-user concurrency the rest of the manager keeps."""
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        bob = db.create_user(conn, discogs_user_id=2, discogs_username="bob")
+        conn.commit()
+
+    manager = CrawlManager()
+    claiming = asyncio.Event()
+    release = asyncio.Event()
+    real_claim = manager._claim_sync_run
+
+    async def _claim(func, *args):
+        # Alice's claim hangs; Bob's must not queue behind it.
+        if args and args[0] == alice["id"]:
+            claiming.set()
+            await release.wait()
+        return real_claim(*args)
+
+    monkeypatch.setattr("crawl_manager.run_in_threadpool", _claim)
+
+    async def _fake_sync(user_id, mode, scope="all", run_token=None):
+        await asyncio.sleep(0)
+
+    manager._sync_collection = _fake_sync  # type: ignore
+
+    stuck = asyncio.create_task(manager.start_sync(alice["id"], "all"))
+    await claiming.wait()
+
+    # Bob's start runs to completion while Alice's is still inside its claim.
+    assert await asyncio.wait_for(manager.start_sync(bob["id"], "all"), timeout=2) is True
+
+    release.set()
+    assert await stuck is True
+    await asyncio.sleep(0.01)
+
+
 async def test_start_plex_match_cannot_slip_in_while_a_sync_is_claiming(pg_schema, monkeypatch):
     """start_sync and start_plex_match refuse to overlap. The cross-Machine
     claim puts an await inside start_sync's guard, so without a shared lock a
