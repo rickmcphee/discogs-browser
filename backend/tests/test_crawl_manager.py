@@ -785,6 +785,77 @@ async def test_a_rate_limited_page_still_heartbeats_before_its_25th_item(pg_sche
 
 
 @respx.mock
+async def test_a_dispossessed_plex_phase_does_not_restore_stock_rows(pg_schema, monkeypatch):
+    """Losing the claim during the Plex phase has to stop the follow-on work
+    too, not just the phase.
+
+    _run_plex_match handles _ClaimLost itself and returns normally, so the
+    release in _sync_collection's `finally` runs either way -- and it answers
+    False when the run has been taken over. Restoring stock rows on that answer
+    scans and enqueues against the very library_items the replacement sync is
+    rewriting, which is the overlap the claim exists to prevent. The non-Plex
+    close path already refuses to restore on a definite False; this is the same
+    refusal on the path that holds the claim one phase longer."""
+    import config
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "s")
+    monkeypatch.setattr(config, "TOKEN_ENCRYPTION_KEY", "kL8mN2pQ7rT5vX9yB3cF6hJ1kM4nP8sU2wZ5aD7eG0i=")
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute(
+            "UPDATE users SET discogs_oauth_token_encrypted = %s, discogs_oauth_secret_encrypted = %s, "
+            "plex_base_url = %s, plex_token = %s WHERE id = %s",
+            [
+                token_encryption.encrypt("tok"), token_encryption.encrypt("sec"),
+                "http://plex.local:32400", "ptok", user["id"],
+            ],
+        )
+        conn.commit()
+
+    respx.get("https://api.discogs.com/users/alice/collection/fields").mock(
+        return_value=httpx.Response(200, json={"fields": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/collection/folders/0/releases").mock(
+        return_value=_collection_page(111, total_pages=1)
+    )
+    respx.get(url__regex=r"https://api\.discogs\.com/releases/\d+").mock(
+        return_value=httpx.Response(200, json={"identifiers": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/wants").mock(
+        return_value=httpx.Response(200, json={"pagination": {"pages": 1}, "wants": []})
+    )
+
+    restored = []
+
+    async def _fake_plex(user_id, base_url, token, threshold, run_token=None):
+        # Stands in for a Plex phase that ran, found its run taken over, logged
+        # it and returned -- exactly what _run_plex_match's own _ClaimLost
+        # handler does.
+        with db.user_scope(user_id) as other:
+            other.execute(
+                "UPDATE library_sync_runs SET heartbeat_at = clock_timestamp() - INTERVAL '%s minutes' "
+                "WHERE user_id = %%s" % (db.SYNC_RUN_STALE_MINUTES + 1),
+                [user_id],
+            )
+            db.claim_library_sync_run(other, user_id, "all", "all")
+            other.commit()
+
+    manager = CrawlManager()
+    manager._run_plex_match = _fake_plex  # type: ignore
+    manager._restore_library_stock_rows = lambda uid: restored.append(uid)  # type: ignore
+    assert await manager.start_sync(user["id"], "all") is True
+    await manager._sync_tasks[user["id"]]
+
+    assert restored == []
+
+    # The replacement's claim is untouched by the old worker's release.
+    with db.user_scope(user["id"]) as conn:
+        run = db.get_library_sync_run(conn, user["id"])
+    assert (run["status"], run["running"]) == ("running", True)
+
+
+@respx.mock
 async def test_the_claim_is_held_across_the_plex_phase(pg_schema, monkeypatch):
     """_sync_collection runs a Plex match straight after the sync, and this
     Machine's _sync_tasks entry stays occupied for its duration -- so a local

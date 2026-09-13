@@ -323,6 +323,18 @@ follow-on work for the crawl queue rather than part of the sync, and it is the
 one step here with no bound worth leasing against: inside the claim, a long
 enough run of it lets the lease lapse under a worker that is still working.
 
+"Outside the claim" means *after the release*, not *regardless of how the
+release answered*. A release refused is a takeover, and the paragraph above
+applies unchanged: this worker restores nothing. The distinction is easy to
+lose on the Plex path, because `_run_plex_match` handles its own `_ClaimLost`
+and returns normally, so the release in the `finally` runs on the dispossessed
+path exactly as on the healthy one and only its answer tells the two apart.
+Restoring on a refusal would scan and enqueue against the very `library_items`
+the replacement sync is rewriting — and the replacement runs its own
+restoration when it ends, so nothing is lost by declining. A release that
+could not be attempted at all is not evidence of a takeover, and still
+restores.
+
 Still open, and pre-existing: `start_plex_match`'s own guard remains
 in-process only, so a Plex match started on another Machine can still overlap
 a sync. Closing that means giving the Plex match a claim of its own, which is

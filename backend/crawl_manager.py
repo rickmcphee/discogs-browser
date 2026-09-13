@@ -851,13 +851,22 @@ class CrawlManager:
 
     @staticmethod
     def _release_plex_phase(user_id: int, run_token: Optional[str]):
+        """Release the claim the Plex phase held, and say whether this call is
+        what released it.
+
+        Same three-valued answer as _finish_sync_run, for the same reason: True
+        that the phase was this caller's and is now closed, False that it
+        demonstrably was not, None that the question could not be asked -- which
+        a caller must not read as a takeover."""
         from db import user_scope, finish_library_sync_plex_phase
         try:
             with user_scope(user_id) as conn:
-                finish_library_sync_plex_phase(conn, user_id, run_token)
+                released = finish_library_sync_plex_phase(conn, user_id, run_token)
                 conn.commit()
+            return released
         except Exception as e:
             log.warning("Could not release user %d's collection sync claim: %s", user_id, e)
+            return None
 
     @staticmethod
     def _claim_sync_run(user_id: int, mode: str, scope: str) -> Optional[str]:
@@ -955,14 +964,32 @@ class CrawlManager:
                 # on every exit, including a cancelled Plex match. The stock-row
                 # restoration the sync deferred runs after that release, so it
                 # never has a lease to overrun.
-                await run_in_threadpool(self._release_plex_phase, user_id, run_token)
-                try:
-                    await run_in_threadpool(self._restore_library_stock_rows, user_id)
-                except Exception as restore_error:
+                #
+                # Fenced on the way out, like the non-Plex close: the release
+                # answers False when this phase was taken over, which is
+                # reachable because _run_plex_match handles _ClaimLost itself
+                # and returns normally. Restoring rows for a run somebody else
+                # owns is the overlap the claim exists to prevent -- the
+                # replacement sync is rewriting the very library_items this
+                # would scan, and it runs its own restoration when it ends. A
+                # None means the release could not be attempted at all, which
+                # is not evidence of a takeover, so it still restores.
+                released = await run_in_threadpool(
+                    self._release_plex_phase, user_id, run_token
+                )
+                if run_token is not None and released is False:
                     log.warning(
-                        "Could not queue store items for user %d's library after the sync: %s",
-                        user_id, restore_error,
+                        "Not queueing store items for user %d's library: this sync's run was taken over",
+                        user_id,
                     )
+                else:
+                    try:
+                        await run_in_threadpool(self._restore_library_stock_rows, user_id)
+                    except Exception as restore_error:
+                        log.warning(
+                            "Could not queue store items for user %d's library after the sync: %s",
+                            user_id, restore_error,
+                        )
 
     def _broadcast_threadsafe(self, event: dict, loop: asyncio.AbstractEventLoop):
         asyncio.run_coroutine_threadsafe(self._broadcast(event), loop)
