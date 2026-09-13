@@ -66,6 +66,17 @@ index definitions that keep those conditions off a sequential scan. The
 function also moved to just after `_the_comma_form_sql`, near the top of
 `db.py`, because `GLOBAL_SCHEMA` calls it at module-import time.
 
+**Amendment (2026-09-13, branch `claude/friendly-hamilton-vymyyk`):** those two
+indexes are now `catalog_artist_bare_fold_idx`/`stock_items_artist_bare_fold_idx`,
+and `_artist_sort_sql` applies `_artist_punct_fold_sql` to its column before
+either `LIKE` guard, so "Blink-182" and "Blink 182" produce one key. The sort
+key described here is unaffected in shape — it is still the bare,
+article-stripped, lowercased core — but it is now computed from a
+punctuation-folded name, which is also why the indexes had to be renamed
+rather than redefined in place. `_artist_sort_key` folds the same way, for
+the same parity reason it already mirrored the SQL. See
+`2026-09-13-artist-punctuation-fold-design.md`.
+
 ## Out of scope
 
 - Display text — "The Beatles" keeps rendering as "The Beatles" everywhere.
