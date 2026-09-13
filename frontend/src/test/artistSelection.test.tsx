@@ -54,6 +54,35 @@ describe('reconcileSelectedArtist', () => {
   it('leaves an empty selection empty rather than inventing one', () => {
     expect(reconcileSelectedArtist(['Nails'], '')).toBe('')
   })
+
+  it('follows the selected artist across a hyphen/space respelling', () => {
+    // The label is whichever spelling won the backend's vote, and the two are
+    // one artist there, so a flip is a rename of the selection rather than
+    // its disappearance.
+    expect(reconcileSelectedArtist(['Blink 182'], 'Blink-182')).toBe('Blink 182')
+  })
+
+  it('follows the selected artist across an ampersand/and respelling', () => {
+    // Unequal length, which the pre-fold rule would have read as a different
+    // artist and cleared the filter for.
+    expect(reconcileSelectedArtist(['Hall and Oates'], 'Hall & Oates')).toBe('Hall and Oates')
+  })
+
+  it('follows the selected artist across a hyphen-article label flip', () => {
+    // One group: the backend folds the hyphen to a space before stripping the
+    // article, but formats the winning label through a fold whose own "the "
+    // guard the hyphen defeats -- so the same group reads "The-Beatles" while
+    // that spelling leads the vote and "Beatles, The" once the spaced one does.
+    expect(reconcileSelectedArtist(['Beatles, The'], 'The-Beatles')).toBe('Beatles, The')
+    expect(reconcileSelectedArtist(['The-Beatles'], 'Beatles, The')).toBe('The-Beatles')
+  })
+
+  it('still clears a JS-only fold once punctuation is accounted for', () => {
+    // The length guard now applies to the punctuation-folded strings, so the
+    // İsis case it exists for is unaffected: folding punctuation changes
+    // neither spelling.
+    expect(reconcileSelectedArtist(['i\u0307sis'], '\u0130sis')).toBe('')
+  })
 })
 
 describe('canonical label changing while an artist is selected', () => {

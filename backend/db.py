@@ -1,4 +1,5 @@
 import hashlib
+import re
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Optional
@@ -81,6 +82,49 @@ _ARTIST_SORT_ARTICLE = "the "
 _ARTIST_SORT_SUFFIX = ", the"
 
 
+def _artist_punct_fold_sql(column: str) -> str:
+    """SQL fragment: fold the punctuation two sources spell differently for
+    one band -- "&" against "and", and "-" against " " -- so "Blink-182" and
+    "Blink 182", or "Hall & Oates" and "Hall and Oates", produce one key.
+
+    "&" becomes " and " rather than "and" becoming "&" because that direction
+    is a plain character replacement needing no word boundary: it folds
+    "Hall&Oates" onto the spaced spelling just as readily, where an
+    and-to-ampersand rule would first have to prove "and" is a whole word
+    ("Sandwich" is not "S&wich"). The whitespace that introduces is then
+    collapsed and trimmed, which is the same step that makes "-" -> " " hold
+    for a name written "Blink - 182".
+
+    Case is deliberately left alone. Every key this composes into lowers
+    already (the grouping key wraps this in LOWER(), _artist_sort_sql lowers
+    inside each branch of its CASE), and _the_comma_form_sql -- which wraps
+    this at its key call sites -- has to see the original casing to keep the
+    display label intact.
+
+    Applied to *keys* only, never to a label: which raw spelling a user sees
+    stays canonical_artist_labels' vote to decide, so the sidebar reads
+    "Blink-182" rather than a normalized form nobody wrote. See
+    docs/specifications/shaping/2026-09-13-artist-punctuation-fold-design.md.
+
+    No `%` appears anywhere in the expression, so -- unlike _the_comma_form_sql
+    and _artist_sort_sql -- this needs no escape_percent: one text serves both
+    the parameterized queries and the unparameterized GLOBAL_SCHEMA DDL.
+    """
+    return (
+        f"BTRIM(regexp_replace(REPLACE(REPLACE({column}, '&', ' and '), '-', ' '), "
+        "'\\s+', ' ', 'g'))"
+    )
+
+
+def _artist_punct_fold(name: str) -> str:
+    r"""Python equivalent of _artist_punct_fold_sql, for the Python-side key
+    functions (_artist_sort_key, _is_bare_artist_input). Parity is exact for
+    the ASCII names this is about and approximate beyond it -- Python's `\s`
+    matches every Unicode space where Postgres' matches its own class -- the
+    same order of divergence str.lower()/LOWER() already carries here."""
+    return re.sub(r"\s+", " ", name.replace("&", " and ").replace("-", " ")).strip()
+
+
 def _the_comma_form_sql(column: str, *, escape_percent: bool = True) -> str:
     """SQL fragment: fold a leading "The " (any case) to a trailing ", The"
     -- "The Beatles" becomes "Beatles, The", the library-catalog convention
@@ -93,6 +137,12 @@ def _the_comma_form_sql(column: str, *, escape_percent: bool = True) -> str:
     Not the artist-equality filters: those compare _artist_sort_sql's
     article-stripped key, which also matches a bare-spelled row (see
     docs/specifications/shaping/2026-08-22-bare-form-artist-fold-design.md).
+
+    The key call sites pass `_artist_punct_fold_sql(column)` rather than the
+    column itself, so a hyphen or an ampersand cannot split one artist across
+    two groups; the display call site (canonical_artist_labels' winner label)
+    passes the raw column, because the label is a spelling a source actually
+    wrote and normalizing it would show the user a name nobody chose.
 
     escape_percent doubles the LIKE pattern's `%` to `%%`, which psycopg's
     pyformat layer collapses back to a literal `%` -- required by every call
@@ -144,15 +194,26 @@ def _artist_sort_sql(column: str, *, escape_percent: bool = True) -> str:
     identical key "beatles", so a filter click matches all three raw
     spellings, not just the two _the_comma_form_sql folds together.
 
+    Every branch reads `_artist_punct_fold_sql(column)` rather than the raw
+    column, so "Blink-182" and "Blink 182" key alike -- this is the whole of
+    the artist-identity key, and a filter click that matched one spelling and
+    not the other would leave half a sidebar entry's records behind. The fold
+    runs *before* the article strip, not after: "The-Beatles" only reaches the
+    `LIKE 'the %'` guard as "The Beatles" once the hyphen is a space, and a
+    key stripped first would have kept the article that a key folded first
+    drops.
+
     escape_percent mirrors _the_comma_form_sql's parameter and exists for the
     same reason: doubled `%%` is required by every call site that executes
     with a non-empty params dict (both ORDER BY call sites, the two artist
     filters), but the unparameterized GLOBAL_SCHEMA index DDL needs the
     single, unescaped `%` Postgres actually sees, or the index bakes in a
     different string literal than the query compares against and is never
-    chosen by the planner."""
+    chosen by the planner. _artist_punct_fold_sql carries no `%` of its own,
+    so it needs no such parameter to stay in step with either."""
     percent = "%%" if escape_percent else "%"
     suffix_len = len(_ARTIST_SORT_SUFFIX)
+    column = _artist_punct_fold_sql(column)
     return (
         f"(CASE "
         f"WHEN LOWER({column}) LIKE '{_ARTIST_SORT_ARTICLE}{percent}' "
@@ -531,19 +592,29 @@ CREATE INDEX IF NOT EXISTS catalog_artist_lower_idx ON catalog (LOWER(artist));
 CREATE INDEX IF NOT EXISTS stock_items_artist_lower_idx ON stock_items (LOWER(artist));
 """ + f"""
 -- Same reasoning as the two indexes above, for the "The X" -> "X, The"
--- comma-suffix fold layered on top. These serve canonical_artist_labels'
--- grouping WHERE; the artist filters moved to _artist_sort_sql's bare key
--- and are covered by the two bare-form indexes below. The plain
--- LOWER(artist) indexes above still serve _library_match_fragment's
--- owned-artist join, which doesn't use this fold -- see
+-- comma-suffix fold layered on top, over the punctuation fold layered under
+-- it (2026-09-13-artist-punctuation-fold-design.md). These serve
+-- canonical_artist_labels' grouping WHERE; the artist filters moved to
+-- _artist_sort_sql's bare key and are covered by the two bare-form indexes
+-- below. The plain LOWER(artist) indexes above still serve
+-- _library_match_fragment's owned-artist join, which uses neither fold -- see
 -- docs/specifications/shaping/2026-08-16-the-suffix-artist-display-design.md.
 -- escape_percent=False: this DDL runs with no params (see init_global_schema),
 -- so the expression must match, character for character, what the query
 -- sites see after psycopg's own substitution -- see _the_comma_form_sql.
-CREATE INDEX IF NOT EXISTS catalog_artist_the_lower_idx
-    ON catalog (LOWER({_the_comma_form_sql("artist", escape_percent=False)}));
-CREATE INDEX IF NOT EXISTS stock_items_artist_the_lower_idx
-    ON stock_items (LOWER({_the_comma_form_sql("artist", escape_percent=False)}));
+-- Named differently from the catalog_artist_the_lower_idx/
+-- stock_items_artist_the_lower_idx they replace for the reason
+-- crawl_queue_claimable_idx above records: CREATE INDEX IF NOT EXISTS under an
+-- unchanged name is a no-op against a database that already holds the old
+-- expression, so a rename is what actually gets the punctuation fold indexed
+-- on a deployment that has run before. Drop-and-recreate under the old name
+-- would instead rebuild both indexes on every boot.
+DROP INDEX IF EXISTS catalog_artist_the_lower_idx;
+DROP INDEX IF EXISTS stock_items_artist_the_lower_idx;
+CREATE INDEX IF NOT EXISTS catalog_artist_the_fold_idx
+    ON catalog (LOWER({_the_comma_form_sql(_artist_punct_fold_sql("artist"), escape_percent=False)}));
+CREATE INDEX IF NOT EXISTS stock_items_artist_the_fold_idx
+    ON stock_items (LOWER({_the_comma_form_sql(_artist_punct_fold_sql("artist"), escape_percent=False)}));
 """ + f"""
 -- Bare-form artist fold (2026-08-22-bare-form-artist-fold-design.md): the
 -- artist filters in get_library_releases/get_stock_items now compare
@@ -554,18 +625,27 @@ CREATE INDEX IF NOT EXISTS stock_items_artist_the_lower_idx
 -- listing page. _artist_sort_sql already lowers every branch of its own
 -- CASE expression, so -- unlike the _the_comma_form_sql indexes above --
 -- this isn't wrapped in an extra LOWER(). escape_percent=False for the same
--- reason as the comma-form indexes: this DDL runs with no params.
-CREATE INDEX IF NOT EXISTS catalog_artist_bare_lower_idx
+-- reason as the comma-form indexes: this DDL runs with no params. Renamed off
+-- catalog_artist_bare_lower_idx/stock_items_artist_bare_lower_idx for the
+-- reason given with the comma-form indexes above: _artist_sort_sql now folds
+-- punctuation too, and an existing database keeps the old expression under an
+-- unchanged name.
+DROP INDEX IF EXISTS catalog_artist_bare_lower_idx;
+DROP INDEX IF EXISTS stock_items_artist_bare_lower_idx;
+CREATE INDEX IF NOT EXISTS catalog_artist_bare_fold_idx
     ON catalog ({_artist_sort_sql("artist", escape_percent=False)});
-CREATE INDEX IF NOT EXISTS stock_items_artist_bare_lower_idx
+CREATE INDEX IF NOT EXISTS stock_items_artist_bare_fold_idx
     ON stock_items ({_artist_sort_sql("artist", escape_percent=False)});
 
 -- The Cheapest filter's partition key, in the order _cheapest_clause writes
 -- it, so the window can read stock_items in key order instead of sorting
 -- the whole filtered set first. Measured on 60k synthetic rows: the
 -- unfiltered cheapest page dropped from ~440 ms to ~330 ms, and under a
--- Cost sort from ~590 ms to ~370 ms. escape_percent=False as above.
-CREATE INDEX IF NOT EXISTS stock_items_cheapest_idx
+-- Cost sort from ~590 ms to ~370 ms. escape_percent=False as above, and
+-- renamed off stock_items_cheapest_idx for the same reason as the two bare-form
+-- indexes: its leading key is _artist_sort_sql, which now folds punctuation.
+DROP INDEX IF EXISTS stock_items_cheapest_idx;
+CREATE INDEX IF NOT EXISTS stock_items_cheapest_fold_idx
     ON stock_items ({_artist_sort_sql("artist", escape_percent=False)},
                     COALESCE(title_key, title), COALESCE(UPPER(currency), 'USD'));
 
@@ -2844,8 +2924,12 @@ def _is_bare_artist_input(name: str) -> bool:
     tell it apart from an artist genuinely named without an article -- the
     case its bare-form lookup phase exists to resolve via a data lookup
     instead. See
-    docs/specifications/shaping/2026-08-22-bare-form-artist-fold-design.md."""
-    lower = name.lower()
+    docs/specifications/shaping/2026-08-22-bare-form-artist-fold-design.md.
+
+    Punctuation-folded first, for parity with the SQL key the answer feeds:
+    "The-Beatles" is a The-prefixed input there, so it must not be read as a
+    bare one here."""
+    lower = _artist_punct_fold(name).lower()
     return not lower.startswith(_ARTIST_SORT_ARTICLE) and not lower.endswith(_ARTIST_SORT_SUFFIX)
 
 
@@ -2863,7 +2947,7 @@ _CANONICAL_ARTIST_BARE_SQL = """
     grouped AS (
         SELECT LOWER({the_bare}) AS key, artist AS label, COUNT(*) AS n
         FROM {table}
-        WHERE LOWER({the_bare}) = ANY (ARRAY(SELECT LOWER(wanted.artist) || ', the' FROM wanted))
+        WHERE LOWER({the_bare}) = ANY (ARRAY(SELECT LOWER({fold_wanted}) || ', the' FROM wanted))
         GROUP BY LOWER({the_bare}), artist
     ),
     winner AS (
@@ -2871,7 +2955,7 @@ _CANONICAL_ARTIST_BARE_SQL = """
         ORDER BY key, n DESC, label COLLATE "C"
     )
     SELECT w.artist AS input, {the_label} AS label
-    FROM wanted w JOIN winner ON winner.key = LOWER(w.artist) || ', the'
+    FROM wanted w JOIN winner ON winner.key = LOWER({fold_w}) || ', the'
 """
 
 
@@ -2917,7 +3001,9 @@ def canonical_artist_labels(conn, artists) -> dict:
             break
         sql_text = _CANONICAL_ARTIST_BARE_SQL.format(
             table=table,
-            the_bare=_the_comma_form_sql("artist"),
+            the_bare=_the_comma_form_sql(_artist_punct_fold_sql("artist")),
+            fold_wanted=_artist_punct_fold_sql("wanted.artist"),
+            fold_w=_artist_punct_fold_sql("w.artist"),
             the_label=_the_comma_form_sql("winner.label"),
         )
         rows = conn.execute(sql_text, {"artists": remaining}).fetchall()
@@ -2930,8 +3016,8 @@ def canonical_artist_labels(conn, artists) -> dict:
             break
         sql_text = _CANONICAL_ARTIST_SQL.format(
             table=table,
-            the_bare=_the_comma_form_sql("artist"),
-            the_w=_the_comma_form_sql("w.artist"),
+            the_bare=_the_comma_form_sql(_artist_punct_fold_sql("artist")),
+            the_w=_the_comma_form_sql(_artist_punct_fold_sql("w.artist")),
             the_label=_the_comma_form_sql("winner.label"),
         )
         rows = conn.execute(sql_text, {"artists": remaining}).fetchall()
@@ -2946,8 +3032,9 @@ def _artist_sort_key(name: str) -> str:
     always sees already-comma-folded input (canonical_artist_labels' output),
     so only the suffix branch normally fires -- the prefix branch stays for
     parity with the SQL version and the defensive `labels.get(a, a)` fallback
-    in _canonical_artist_list."""
-    lower = name.lower()
+    in _canonical_artist_list. Folds punctuation first for the same reason
+    _artist_sort_sql does, so the two keys agree on "Blink-182"."""
+    lower = _artist_punct_fold(name).lower()
     if lower.startswith(_ARTIST_SORT_ARTICLE):
         return lower[len(_ARTIST_SORT_ARTICLE):]
     if lower.endswith(_ARTIST_SORT_SUFFIX):
@@ -3128,8 +3215,8 @@ def _collection_artist_clause(user_id_param: str) -> str:
     whether the artist appears at all rather than merely which of their
     records match. It also keeps this filter agreeing with the artist sidebar
     beside it, whose own equality filter compares the same key. Both sides
-    have an expression index on exactly that key (`catalog_artist_bare_lower_idx`,
-    `stock_items_artist_bare_lower_idx`).
+    have an expression index on exactly that key (`catalog_artist_bare_fold_idx`,
+    `stock_items_artist_bare_fold_idx`).
     """
     return f"""EXISTS (
             SELECT 1
