@@ -2379,3 +2379,52 @@ def test_get_stock_items_sort_by_price_rows_carry_the_names_their_sources_gave(a
     assert by_source["Amazon"]["is_own"] and by_source["Amazon"]["listing_title"] == "SAW 85-92 [Amazon name]"
     assert not by_source["eBay"]["is_own"] and by_source["eBay"]["listing_title"] == "SAW 85-92 [eBay name]"
     assert all(r["title"] == "Selected Ambient Works" for r in result["items"])
+
+
+def test_get_distinct_stock_artists_folds_punctuation_variants(admin_conn):
+    # Two stores spelling one band differently is the ordinary case for this
+    # fold -- neither spelling is wrong, and before it each got its own
+    # sidebar entry holding half the records. See
+    # docs/specifications/shaping/2026-09-13-artist-punctuation-fold-design.md.
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    amazon = _register(admin_conn, "Amazon")
+    amoeba = _register(admin_conn, "Amoeba")
+    db.replace_stock_items(admin_conn, amazon, [
+        {"artist": "Blink-182", "title": "Dude Ranch", "url": "https://x/1",
+         "price": 20.0, "currency": "USD"},
+        {"artist": "Blink-182", "title": "Enema Of The State", "url": "https://x/2",
+         "price": 21.0, "currency": "USD"},
+    ])
+    db.replace_stock_items(admin_conn, amoeba, [
+        {"artist": "Blink 182", "title": "Cheshire Cat", "url": "https://x/3",
+         "price": 22.0, "currency": "USD"},
+    ])
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        assert db.get_distinct_stock_artists(conn, alice["id"]) == ["Blink-182"]
+
+
+def test_get_stock_items_artist_filter_spans_punctuation_variants(admin_conn):
+    # The Store tab's half of the filter parity the sidebar entry implies:
+    # clicking the merged entry has to return both stores' rows, and they have
+    # to arrive under the one label the sidebar showed.
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    amazon = _register(admin_conn, "Amazon")
+    amoeba = _register(admin_conn, "Amoeba")
+    db.replace_stock_items(admin_conn, amazon, [
+        {"artist": "Hall & Oates", "title": "Big Bam Boom", "url": "https://x/1",
+         "price": 20.0, "currency": "USD"},
+        {"artist": "Hall & Oates", "title": "H2O", "url": "https://x/2",
+         "price": 21.0, "currency": "USD"},
+    ])
+    db.replace_stock_items(admin_conn, amoeba, [
+        {"artist": "Hall and Oates", "title": "Voices", "url": "https://x/3",
+         "price": 22.0, "currency": "USD"},
+    ])
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_stock_items(conn, alice["id"], artist="Hall & Oates")
+    assert result["total"] == 3
+    assert {i["artist"] for i in result["items"]} == {"Hall & Oates"}

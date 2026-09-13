@@ -100,6 +100,17 @@ grouping WHERE only — the equality filters moved off `LOWER(the_form(...))`
 `catalog_artist_bare_lower_idx`/`stock_items_artist_bare_lower_idx`, built
 from `_artist_sort_sql` for the same query-and-index-can't-drift reason.
 
+**Amended 2026-09-13** (branch `claude/friendly-hamilton-vymyyk`,
+`2026-09-13-artist-punctuation-fold-design.md`): all four of those indexes are
+renamed — `catalog_artist_the_fold_idx`, `stock_items_artist_the_fold_idx`,
+`catalog_artist_bare_fold_idx`, `stock_items_artist_bare_fold_idx` — because
+both expressions now wrap the column in `_artist_punct_fold_sql` ("&" against
+"and", "-" against " ") before `the_form`/`_artist_sort_sql` sees it. The
+rename is the migration: `CREATE INDEX IF NOT EXISTS` under an unchanged name
+leaves an existing database holding the pre-fold expression, which the planner
+then never matches. Everything else in this section holds unchanged, the
+`LOWER(artist)` indexes included.
+
 **These two index definitions execute with no query parameters** (`GLOBAL_SCHEMA`
 runs as a bare `conn.execute(GLOBAL_SCHEMA)`, no params dict), unlike every
 other `the_form` call site. `_the_comma_form_sql`'s `LIKE` guard embeds a `%`

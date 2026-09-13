@@ -155,6 +155,16 @@ moves the `artist=` equality filter in the table below off
 `_artist_sort_sql`'s article-stripped key, which matches all three
 spellings.
 
+A fourth branch (`2026-09-13-artist-punctuation-fold-design.md`, 2026-09-13)
+folds the punctuation two sources disagree on — "&" against "and", "-"
+against " " — under all of the above, by wrapping the column in
+`_artist_punct_fold_sql` before either the grouping key or
+`_artist_sort_sql` computes anything. The casing rule is once again
+unchanged; it simply votes within a wider group. The expression indexes named
+below are renamed with it (`*_the_fold_idx`, `*_bare_fold_idx`,
+`stock_items_cheapest_fold_idx`), since an expression index cannot be
+redefined under its existing name.
+
 Sidebar ordering moves from the database collation to Python's case-folded
 ordering (`key=lambda a: (_artist_sort_key(a), a.lower(), a)`), because the
 label is chosen after the rows come back. The two orderings differ only for
@@ -183,7 +193,11 @@ filter `changeFilter` already goes out of its way to avoid.
 after each list refetch in both views: it keeps the selection when the list
 still offers it, follows it to the re-cased label when only the casing moved
 (current sort and page preserved — it's still the same artist), and otherwise
-delegates to `selectArtist('')`, the existing full "back to All" transition. It
+delegates to `selectArtist('')`, the existing full "back to All" transition.
+(Since 2026-09-13 it follows a re-*spelling* too — the label can now move
+between "Blink-182" and "Blink 182", or "Hall & Oates" and "Hall and Oates",
+because those are one artist to the backend; see
+`2026-09-13-artist-punctuation-fold-design.md`.) It
 also closes a pre-existing hole of the same shape — hiding a crawler could
 already drop the selected artist out of the sidebar and leave the filter applied
 but unattributable.
