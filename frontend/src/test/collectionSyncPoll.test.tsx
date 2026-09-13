@@ -204,6 +204,37 @@ describe('following a collection sync without its events', () => {
     expect(screen.queryByText(/Sync stopped before it finished/)).toBeNull()
   })
 
+  it('leaves the outcome to the stream when the stream delivered it', async () => {
+    // Same Machine: the SSE handlers report the sync themselves, and the Plex
+    // phase that follows speaks next. A poll that still considered the run
+    // its own would republish the sync's outcome over that newer line.
+    getCollectionStatus
+      .mockResolvedValueOnce({
+        total: 5, last_synced: null, sync: run({ page: 1, total_pages: 2, synced: 10 }),
+      })
+      .mockResolvedValue({
+        total: 25, last_synced: null,
+        sync: run({
+          status: 'plex_matching', running: false, synced: 25, wishlist_synced: 3,
+        }),
+      })
+
+    render(<App />)
+    await screen.findByText('Syncing collection… 10 records (page 1/2)')
+
+    const stream = SilentEventSource.instances[0]
+    stream.emit({
+      status: 'sync_complete', synced: 25, wishlist_synced: 3, username: 'alice', id: 1,
+    })
+    await screen.findByText('Synced 25 records for alice, 3 wantlist items')
+    stream.emit({ status: 'plex_match_started', id: 2 })
+    await screen.findByText('Matching collection against Plex…')
+
+    await vi.advanceTimersByTimeAsync(PAST_ONE_POLL * 2)
+
+    expect(screen.getByText('Matching collection against Plex…')).toBeTruthy()
+  })
+
   it('does not talk over another job while the run sits unchanged', async () => {
     // The banner is shared with the stock sync, the judgment run and the price
     // refresh, any of which can run alongside a collection sync. Repeating an

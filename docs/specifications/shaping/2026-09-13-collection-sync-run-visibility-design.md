@@ -290,11 +290,13 @@ The two phases have separate closers, deliberately. The sync's
 that accepted both phases would let that backstop close the phase it had
 just handed off to.
 
-The handoff is fenced like every other write, and its answer is read: the
+The close is fenced like every other write, and its answer is read: the
 cleanup transaction releases the run row's lock when it commits, and a Machine
 that was waiting on that lock can take the claim in the moment after. A worker
-that finds the handoff refused stops there rather than broadcasting completion
-and starting a Plex match against the sync that replaced it. The Plex loop's
+that finds its close refused stops there rather than restoring crawl rows and
+announcing a completed sync on the run that replaced it — on both paths, the
+handoff to the Plex phase and the plain completion alike. A close that could
+not be attempted at all is not read as a takeover. The Plex loop's
 own heartbeat is read the same way, and for the same reason its chunk must not
 commit beside that sync.
 
@@ -360,6 +362,13 @@ this change's own failure reached by another road. The effect is also keyed on
 whether the user is signed in rather than on the `authState` object, so a
 revalidation that changes nothing restarts nothing.
 
+The follow is released as soon as the run is accounted for — by the poll's own
+terminal tick, or by the SSE handlers when this is the Machine running the
+sync and the stream got there first. Left held in that second case, the next
+poll would republish the outcome over whatever had spoken since, which on this
+path is immediate: the Plex phase that follows a sync announces itself a beat
+later.
+
 Only a run the loop has watched *running* may write an outcome to the status
 bar. Without that rule, every page load would re-announce the last sync,
 however old — the row is the most recent run, not a fresh event. A refresh this
@@ -391,6 +400,8 @@ Backend:
 - A finished run's late backstop cannot close the claim taken after it, and a
   taken-over run's old owner can neither advance nor heartbeat the run that
   replaced it.
+- A worker whose close is refused stops before restoring crawl rows or
+  announcing a completed sync, on the plain path as on the Plex one.
 - A worker whose claim is taken over mid-sync stops rather than running its
   destructive cleanup: the wantlist record its stale snapshot would have
   deleted survives, it broadcasts no completion, and the replacement's claim
@@ -420,7 +431,9 @@ emits — the cross-Machine case reproduced directly:
 - a sync followed across a backend outage still reports its outcome and
   refetches, with the run having finished while nobody could see it;
 - a Plex phase that goes stale reports the sync's outcome rather than claiming
-  the sync stopped.
+  the sync stopped;
+- an outcome the stream delivered is not republished by the poll over the Plex
+  phase's own line.
 
 Each was confirmed to fail against a build with the poll disabled.
 

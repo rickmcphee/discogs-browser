@@ -806,6 +806,7 @@ async def test_a_lost_handoff_stops_the_sync_before_the_plex_phase(pg_schema, mo
     # the handoff.
     real_handoff = db_module.start_library_sync_plex_phase
 
+
     def _stolen(conn, user_id, run_token, **kwargs):
         with db.user_scope(user_id) as other:
             other.execute(
@@ -834,6 +835,67 @@ async def test_a_lost_handoff_stops_the_sync_before_the_plex_phase(pg_schema, mo
     assert "sync_complete" not in statuses
 
     # The replacement's claim is untouched.
+    with db.user_scope(user["id"]) as conn:
+        run = db.get_library_sync_run(conn, user["id"])
+    assert (run["status"], run["running"]) == ("running", True)
+
+
+@respx.mock
+async def test_a_lost_close_stops_the_sync_before_it_announces_completion(pg_schema, monkeypatch):
+    """The same window as the Plex handoff, on the path without Plex. The
+    cleanup transaction releases the run row's lock when it commits; a Machine
+    waiting on it can take the claim before the close lands. A worker that
+    ignored the refused close would restore crawl rows and announce a
+    completed sync while the replacement's run is the live one."""
+    import config
+    import db as db_module
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "s")
+    monkeypatch.setattr(config, "TOKEN_ENCRYPTION_KEY", "kL8mN2pQ7rT5vX9yB3cF6hJ1kM4nP8sU2wZ5aD7eG0i=")
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute(
+            "UPDATE users SET discogs_oauth_token_encrypted = %s, discogs_oauth_secret_encrypted = %s WHERE id = %s",
+            [token_encryption.encrypt("tok"), token_encryption.encrypt("sec"), user["id"]],
+        )
+        conn.commit()
+
+    respx.get("https://api.discogs.com/users/alice/collection/fields").mock(
+        return_value=httpx.Response(200, json={"fields": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/collection/folders/0/releases").mock(
+        return_value=_collection_page(111, total_pages=1)
+    )
+    respx.get(url__regex=r"https://api\.discogs\.com/releases/\d+").mock(
+        return_value=httpx.Response(200, json={"identifiers": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/wants").mock(
+        return_value=httpx.Response(200, json={"pagination": {"pages": 1}, "wants": []})
+    )
+
+    real_finish = db_module.finish_library_sync_run
+
+    def _stolen(conn, user_id, run_token, status, **kwargs):
+        with db.user_scope(user_id) as other:
+            other.execute(
+                "UPDATE library_sync_runs SET heartbeat_at = clock_timestamp() - INTERVAL '%s minutes' "
+                "WHERE user_id = %%s" % (db.SYNC_RUN_STALE_MINUTES + 1),
+                [user_id],
+            )
+            db.claim_library_sync_run(other, user_id, "all", "all")
+            other.commit()
+        return real_finish(conn, user_id, run_token, status, **kwargs)
+
+    monkeypatch.setattr(db_module, "finish_library_sync_run", _stolen)
+
+    manager = CrawlManager()
+    assert await manager.start_sync(user["id"], "all") is True
+    await manager._sync_tasks[user["id"]]
+
+    statuses = [e["status"] for e in manager.recent_events()]
+    assert "sync_complete" not in statuses
+
     with db.user_scope(user["id"]) as conn:
         run = db.get_library_sync_run(conn, user["id"])
     assert (run["status"], run["running"]) == ("running", True)

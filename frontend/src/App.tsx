@@ -506,6 +506,11 @@ export default function App() {
         return
       }
       if (event.status === 'sync_complete') {
+        // This tab has heard the outcome, so the poll must not announce it a
+        // second time. Left followed, its next tick would republish this same
+        // line over whatever has spoken since -- a plex_match_started from the
+        // phase that follows a sync, most immediately.
+        releaseSyncFollow()
         setSyncing(false)
         if (event.scope === 'wishlist') {
           setSyncStatus(`Synced ${event.wishlist_synced} wantlist items for ${event.username}`, event.id ?? null)
@@ -518,6 +523,7 @@ export default function App() {
         return
       }
       if (event.status === 'sync_error') {
+        releaseSyncFollow()
         setSyncing(false)
         setSyncStatus(`Sync failed: ${event.error}`, event.id ?? null)
         // Each page's writes (including price_paid) commit before the next page
@@ -758,6 +764,13 @@ export default function App() {
   const followingSyncRef = useRef(false)
   const lastSyncProgressRef = useRef('')
 
+  // The run has been accounted for -- by the poll, or by the SSE handlers on
+  // the Machine running it. Either way it is no longer this tab's to report.
+  const releaseSyncFollow = useCallback(() => {
+    followingSyncRef.current = false
+    lastSyncProgressRef.current = ''
+  }, [])
+
   useEffect(() => {
     if (!authed) return
     let cancelled = false
@@ -821,8 +834,7 @@ export default function App() {
               setSyncGeneration(g => g + 1)
             }
           } else if (followingSyncRef.current) {
-            followingSyncRef.current = false
-            lastSyncProgressRef.current = ''
+            releaseSyncFollow()
             setSyncing(false)
             setSyncStatus(collectionSyncOutcomeMessage(run))
             // Unconditional, not gated on the counters having moved: this is

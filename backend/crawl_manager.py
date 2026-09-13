@@ -805,15 +805,22 @@ class CrawlManager:
 
     @staticmethod
     def _finish_sync_run(user_id: int, run_token: Optional[str], status: str, **fields):
-        """Close a run from either of its phases. Best effort throughout:
-        failing to record how a sync ended must never be what ends one."""
+        """Close a run, and say whether this call is what closed it.
+
+        True means the run was this caller's and is now closed; False that it
+        demonstrably was not (taken over, or expired); None that the question
+        could not be asked, which a caller must not read as a takeover. Best
+        effort on that last point deliberately: failing to record how a sync
+        ended must never be what ends one."""
         from db import user_scope, finish_library_sync_run
         try:
             with user_scope(user_id) as conn:
-                finish_library_sync_run(conn, user_id, run_token, status, **fields)
+                closed = finish_library_sync_run(conn, user_id, run_token, status, **fields)
                 conn.commit()
+            return closed
         except Exception as e:
             log.warning("Could not record the end of user %d's collection sync: %s", user_id, e)
+            return None
 
     @staticmethod
     def _restore_library_stock_rows(user_id: int):
@@ -974,7 +981,7 @@ class CrawlManager:
         # same run to library_sync_runs, which it can read. Both are best
         # effort: failing to narrate a sync must never be what ends one.
         def finish_run(status, synced=None, wishlist_synced=None, error=None):
-            self._finish_sync_run(
+            return self._finish_sync_run(
                 user_id, run_token, status, synced=synced,
                 wishlist_synced=wishlist_synced, error=error,
             )
@@ -1225,7 +1232,16 @@ class CrawlManager:
                 if run_token is not None and not handed_over:
                     raise _ClaimLost()
             else:
-                finish_run("complete", synced=count, wishlist_synced=wishlist_count)
+                # Fenced, and read for the same reason the handoff is: the
+                # cleanup transaction released the run row's lock when it
+                # committed, so a Machine waiting on it can have taken the
+                # claim in between. Restoring rows and announcing a completed
+                # sync on somebody else's run is the overlap the claim exists
+                # to prevent. A None means the close could not be attempted at
+                # all, which is not evidence of a takeover.
+                closed = finish_run("complete", synced=count, wishlist_synced=wishlist_count)
+                if run_token is not None and closed is False:
+                    raise _ClaimLost()
             # Only when nothing else holds the claim. On the Plex path the
             # run is still claimed, and this statement -- a scan of the stock
             # inventory against this library, under the reconciliation lock --
