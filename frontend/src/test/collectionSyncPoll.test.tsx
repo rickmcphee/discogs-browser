@@ -169,6 +169,27 @@ describe('following a collection sync without its events', () => {
     expect(screen.queryByText('Synced 25 records, 3 wantlist items')).toBeNull()
   })
 
+  it('still reports a refused start when the first status reads fail', async () => {
+    // The refusal has said nothing yet at this point: whether it was a running
+    // sync or another job is exactly what the poll is there to find out. Going
+    // quiet on a transient read failure puts the click back to looking like a
+    // no-op.
+    const refused: any = new Error('{"detail":"Collection sync already running"}')
+    refused.status = 409
+    refreshCollection.mockRejectedValue(refused)
+    getCollectionStatus
+      .mockResolvedValueOnce({ total: 5, last_synced: null, sync: null })
+      .mockResolvedValueOnce({ total: 5, last_synced: null, sync: null })
+      .mockRejectedValue(new Error('network'))
+
+    render(<App />)
+    fireEvent.click(await screen.findByTitle('Sync collection from Discogs'))
+    fireEvent.click(await screen.findByRole('button', { name: /Refresh All/ }))
+
+    await vi.advanceTimersByTimeAsync(PAST_ONE_POLL * 4)
+    await screen.findByText(/Could not start a sync/)
+  })
+
   it('shows the running sync instead of asking which kind of refresh to start', async () => {
     // Neither of the modal's two choices could start anything while a sync
     // holds the claim, so asking is a question already answered.

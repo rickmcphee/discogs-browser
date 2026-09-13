@@ -263,6 +263,32 @@ collection task created on top of it. Both now hold one lazily-created
 `asyncio.Lock` across guard, claim and registration — the same shape
 `start_stock_sync` already uses for its own guard-acquire-assign sequence.
 
+### The claim outlives the sync, by one phase
+
+`_sync_collection` runs a Plex match straight after the sync when the user has
+Plex configured, and this Machine's `_sync_tasks` entry stays occupied for its
+duration — so `start_sync` and `start_plex_match` both refuse locally
+throughout. Releasing the claim when the sync's own work ended would therefore
+leave the *other* Machine free to start exactly the sync the local guard
+refuses.
+
+So the run moves to `plex_matching` rather than closing: the claim still
+covers it, while `running` is already false, so the client reads the sync as
+finished with its counts final and stops polling. It is released when the Plex
+phase ends, on every exit including a cancelled one. The Plex loop heartbeats
+on its own commits for the same reason the sync's checkpoints do — a large
+library takes time to match, and an unfed claim goes stale.
+
+The two phases have separate closers, deliberately. The sync's
+`finally` backstop fires on the handoff path too, and a single closer
+that accepted both phases would let that backstop close the phase it had
+just handed off to.
+
+Still open, and pre-existing: `start_plex_match`'s own guard remains
+in-process only, so a Plex match started on another Machine can still overlap
+a sync. Closing that means giving the Plex match a claim of its own, which is
+its own piece of work; this change covers the direction it created.
+
 ### `GET /api/collection/status` carries the run
 
 Rather than a new endpoint. The client already calls this one (it drives the
@@ -305,8 +331,12 @@ tab just requested counts as watched, since the claim is taken by the request
 itself.
 
 A failed poll retries only while there is something to wait for: a network blip
-during a sync being followed must not abandon it, but a failed poll on a tab
-that was merely checking has nothing to retry for.
+must not abandon a sync being followed, nor a refused start that has not yet
+been resolved — that click has said nothing yet, and going quiet on it puts it
+back to looking like a no-op. A refused start gives up after a few failed
+reads and reports the refusal on its own; a sync being followed keeps waiting,
+because it is running and its outcome is worth having. A failed poll on a tab
+that was merely checking has nothing to retry for and stops.
 
 ## Testing
 
@@ -333,6 +363,8 @@ Backend:
   it, even with nobody else having claimed it.
 - Progress lands a quarter of the way through a page, against an app pool of
   one connection — so the checkpoint demonstrably needs no second one.
+- The claim is refused for another Machine throughout the Plex phase, and
+  released once it ends.
 - A plex match cannot register itself while a sync is mid-claim.
 - `GET /api/collection/status` reports a running run, reports an abandoned one
   as stale rather than running, reports nothing before a user's first sync, and

@@ -91,6 +91,11 @@ const COLLECTION_SYNC_POLL_MS = 3000
 // answers 409 for every reason start_sync declines, and a Plex match for this
 // user is one of them -- in which case there is no collection sync to follow
 // and the click would otherwise pass in silence.
+// How many failed status reads a refused start will sit through before it
+// gives up and reports the refusal on its own. A sync being followed retries
+// indefinitely instead -- it is running, and its outcome is worth waiting for.
+const REFUSED_START_READ_ATTEMPTS = 3
+
 const REFUSED_START_MESSAGE =
   'Could not start a sync — another job is running for your account. Try again shortly.'
 
@@ -748,6 +753,7 @@ export default function App() {
     // request itself, so the run is already there to find.
     let following = intent?.adoptTerminal ?? false
     const idleMessage = intent?.idleMessage ?? null
+    let failedReads = 0
     let lastProgress = ''
 
     async function poll() {
@@ -755,11 +761,22 @@ export default function App() {
         let status: CollectionStatus | null = null
         try {
           status = await getCollectionStatus()
+          failedReads = 0
         } catch {
-          // Keep waiting only while there is something to wait for: a blip
-          // during a sync we are following must not abandon it, but a failed
-          // poll on a tab that was only checking has nothing to retry for.
-          if (!following) return
+          // Keep waiting only while there is something to wait for. A blip
+          // during a sync we are following must not abandon it, and neither
+          // must one before a refused start has been resolved -- that click
+          // has said nothing yet, and giving up here is the silent refresh
+          // this whole change exists to remove. A failed poll on a tab that
+          // was only checking has nothing to retry for.
+          if (!following && !idleMessage) return
+          failedReads += 1
+          if (!following && idleMessage && failedReads >= REFUSED_START_READ_ATTEMPTS) {
+            // Still unresolved, and out of tries: say what the server already
+            // told us with its 409 rather than nothing at all.
+            setSyncStatus(idleMessage)
+            return
+          }
         }
         if (cancelled) return
         if (status) {

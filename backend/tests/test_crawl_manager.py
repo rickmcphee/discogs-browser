@@ -482,7 +482,7 @@ async def test_start_plex_match_cannot_slip_in_while_a_sync_is_claiming(pg_schem
     async def _fake_sync(user_id, mode, scope="all", run_token=None):
         await asyncio.sleep(0)
 
-    async def _fake_plex(user_id, base_url, token, threshold):
+    async def _fake_plex(user_id, base_url, token, threshold, run_token=None):
         await asyncio.sleep(0)
 
     manager._sync_collection = _fake_sync  # type: ignore
@@ -690,6 +690,77 @@ async def test_progress_lands_mid_page_without_a_second_pooled_connection(pg_sch
     with db.user_scope(user["id"]) as conn:
         run = db.get_library_sync_run(conn, user["id"])
     assert (run["status"], run["synced"]) == ("complete", 30)
+
+
+@respx.mock
+async def test_the_claim_is_held_across_the_plex_phase(pg_schema, monkeypatch):
+    """_sync_collection runs a Plex match straight after the sync, and this
+    Machine's _sync_tasks entry stays occupied for its duration -- so a local
+    sync is refused throughout. Releasing the cross-Machine claim when the sync
+    itself ended would let the *other* Machine start exactly the sync the local
+    guard refuses, against the declared sync/Plex exclusion."""
+    import config
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "s")
+    monkeypatch.setattr(config, "TOKEN_ENCRYPTION_KEY", "kL8mN2pQ7rT5vX9yB3cF6hJ1kM4nP8sU2wZ5aD7eG0i=")
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute(
+            "UPDATE users SET discogs_oauth_token_encrypted = %s, discogs_oauth_secret_encrypted = %s, "
+            "plex_base_url = %s, plex_token = %s WHERE id = %s",
+            [
+                token_encryption.encrypt("tok"), token_encryption.encrypt("sec"),
+                "http://plex.local:32400", "ptok", user["id"],
+            ],
+        )
+        conn.commit()
+
+    respx.get("https://api.discogs.com/users/alice/collection/fields").mock(
+        return_value=httpx.Response(200, json={"fields": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/collection/folders/0/releases").mock(
+        return_value=_collection_page(111, total_pages=1)
+    )
+    respx.get(url__regex=r"https://api\.discogs\.com/releases/\d+").mock(
+        return_value=httpx.Response(200, json={"identifiers": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/wants").mock(
+        return_value=httpx.Response(200, json={"pagination": {"pages": 1}, "wants": []})
+    )
+
+    matching = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _fake_plex(user_id, base_url, token, threshold, run_token=None):
+        matching.set()
+        await release.wait()
+
+    manager = CrawlManager()
+    manager._run_plex_match = _fake_plex  # type: ignore
+    assert await manager.start_sync(user["id"], "all") is True
+    await matching.wait()
+
+    # Mid-Plex-phase: the sync reads as finished, with its counts final...
+    with db.user_scope(user["id"]) as conn:
+        run = db.get_library_sync_run(conn, user["id"])
+    assert run["status"] == "plex_matching"
+    assert (run["running"], run["stale"], run["synced"]) == (False, False, 1)
+
+    # ...but the claim is still held, so no other Machine can start a sync.
+    other_machine = CrawlManager()
+    assert await other_machine.start_sync(user["id"], "all") is False
+
+    release.set()
+    await manager._sync_tasks[user["id"]]
+
+    with db.user_scope(user["id"]) as conn:
+        run = db.get_library_sync_run(conn, user["id"])
+    assert run["status"] == "complete"
+
+    # And released once the Plex phase is over.
+    assert await other_machine.start_sync(user["id"], "all") is True
+    await asyncio.sleep(0.01)
 
 
 @pytest.fixture
@@ -1347,7 +1418,7 @@ async def test_sync_collection_calls_plex_match_when_configured(pg_schema, monke
     manager = CrawlManager()
     calls = []
 
-    async def _fake_plex_match(user_id, base_url, token, threshold):
+    async def _fake_plex_match(user_id, base_url, token, threshold, run_token=None):
         calls.append((user_id, base_url, token, threshold))
 
     manager._run_plex_match = _fake_plex_match
@@ -1389,7 +1460,7 @@ async def test_sync_collection_skips_plex_match_when_unconfigured(pg_schema, mon
     manager = CrawlManager()
     calls = []
 
-    async def _fake_plex_match(user_id, base_url, token, threshold):
+    async def _fake_plex_match(user_id, base_url, token, threshold, run_token=None):
         calls.append((user_id, base_url, token, threshold))
 
     manager._run_plex_match = _fake_plex_match
@@ -1412,7 +1483,7 @@ async def test_start_plex_match_runs_when_configured(pg_schema):
     manager = CrawlManager()
     calls = []
 
-    async def _fake_plex_match(user_id, base_url, token, threshold):
+    async def _fake_plex_match(user_id, base_url, token, threshold, run_token=None):
         calls.append((user_id, base_url, token, threshold))
 
     manager._run_plex_match = _fake_plex_match

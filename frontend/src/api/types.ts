@@ -99,7 +99,10 @@ export interface CrawlEvent {
 // Machine died mid-sync keeps that status forever, and the server reports it
 // as stale instead (see backend/db.py's get_library_sync_run).
 export interface CollectionSyncRun {
-  status: 'running' | 'complete' | 'error'
+  // 'plex_matching' is the sync finished and the Plex phase that follows it
+  // still holding the run's cross-Machine claim; `running` is already false by
+  // then, so the client reads it as the sync having ended.
+  status: 'running' | 'plex_matching' | 'complete' | 'error'
   running: boolean
   stale: boolean
   mode: string

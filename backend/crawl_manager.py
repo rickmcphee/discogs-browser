@@ -792,6 +792,28 @@ class CrawlManager:
         return task is not None and not task.done()
 
     @staticmethod
+    def _finish_sync_run(user_id: int, run_token: Optional[str], status: str, **fields):
+        """Close a run from either of its phases. Best effort throughout:
+        failing to record how a sync ended must never be what ends one."""
+        from db import user_scope, finish_library_sync_run
+        try:
+            with user_scope(user_id) as conn:
+                finish_library_sync_run(conn, user_id, run_token, status, **fields)
+                conn.commit()
+        except Exception as e:
+            log.warning("Could not record the end of user %d's collection sync: %s", user_id, e)
+
+    @staticmethod
+    def _release_plex_phase(user_id: int, run_token: Optional[str]):
+        from db import user_scope, finish_library_sync_plex_phase
+        try:
+            with user_scope(user_id) as conn:
+                finish_library_sync_plex_phase(conn, user_id, run_token)
+                conn.commit()
+        except Exception as e:
+            log.warning("Could not release user %d's collection sync claim: %s", user_id, e)
+
+    @staticmethod
     def _claim_sync_run(user_id: int, mode: str, scope: str) -> Optional[str]:
         from db import user_scope, claim_library_sync_run
         with user_scope(user_id) as conn:
@@ -879,7 +901,13 @@ class CrawlManager:
         )
         if plex_params:
             base_url, token, threshold = plex_params
-            await self._run_plex_match(user_id, base_url, token, threshold)
+            try:
+                await self._run_plex_match(user_id, base_url, token, threshold, run_token)
+            finally:
+                # The run has been holding the claim across the Plex phase (see
+                # start_library_sync_plex_phase); this is where it is released,
+                # on every exit, including a cancelled Plex match.
+                await run_in_threadpool(self._release_plex_phase, user_id, run_token)
 
     def _broadcast_threadsafe(self, event: dict, loop: asyncio.AbstractEventLoop):
         asyncio.run_coroutine_threadsafe(self._broadcast(event), loop)
@@ -894,7 +922,7 @@ class CrawlManager:
             get_identity_pool, user_scope, upsert_catalog_release, upsert_library_item,
             clear_wishlist_flags_not_in, delete_orphaned_releases, enqueue_crawl_queue,
             enqueue_crawl_queue_for_library_stock_items, record_library_sync_progress,
-            finish_library_sync_run,
+            start_library_sync_plex_phase,
         )
         from config import crawl_library_only
         import httpx
@@ -906,15 +934,10 @@ class CrawlManager:
         # same run to library_sync_runs, which it can read. Both are best
         # effort: failing to narrate a sync must never be what ends one.
         def finish_run(status, synced=None, wishlist_synced=None, error=None):
-            try:
-                with user_scope(user_id) as conn:
-                    finish_library_sync_run(
-                        conn, user_id, run_token, status, synced=synced,
-                        wishlist_synced=wishlist_synced, error=error,
-                    )
-                    conn.commit()
-            except Exception as e:
-                log.warning("Could not record the end of user %d's collection sync: %s", user_id, e)
+            self._finish_sync_run(
+                user_id, run_token, status, synced=synced,
+                wishlist_synced=wishlist_synced, error=error,
+            )
 
 
         def sync_error(message):
@@ -1137,12 +1160,34 @@ class CrawlManager:
                     username, wishlist_count, cleared, len(deleted),
                 )
 
-            # Closed before the stock-row restoration rather than after it.
-            # That statement is follow-on work for the crawl queue, not part of
-            # the sync the client is watching, and it is the one step here with
-            # no bound on how long it can take -- long enough, and the run
-            # would go stale before it could be closed at all.
-            finish_run("complete", synced=count, wishlist_synced=wishlist_count)
+            # Plex matching needs a real event loop (it awaits asyncio.to_thread
+            # internally) and this function runs inside run_in_threadpool, so it
+            # can't be awaited here -- _sync_collection runs it after this
+            # thread-pool call returns, and closes the run when it is done.
+            plex_base_url = user["plex_base_url"] or ""
+            plex_token = user["plex_token"] or ""
+            plex_follows = bool(plex_base_url and plex_token)
+
+            # Closed (or handed to the Plex phase) before the stock-row
+            # restoration rather than after it. That statement is follow-on
+            # work for the crawl queue, not part of the sync the client is
+            # watching, and it is the one step here with no bound on how long
+            # it can take -- long enough, and the run would go stale before it
+            # could be closed at all.
+            #
+            # The Plex phase keeps the claim: this Machine's _sync_tasks entry
+            # stays occupied for its duration and refuses a local sync, so
+            # releasing the claim here would let the *other* Machine start one
+            # the local guard would have refused.
+            if plex_follows:
+                with user_scope(user_id) as conn:
+                    start_library_sync_plex_phase(
+                        conn, user_id, run_token,
+                        synced=count, wishlist_synced=wishlist_count,
+                    )
+                    conn.commit()
+            else:
+                finish_run("complete", synced=count, wishlist_synced=wishlist_count)
             try:
                 restore_library_stock_rows()
             except Exception as restore_error:
@@ -1159,13 +1204,7 @@ class CrawlManager:
             })
             log.info("Collection sync complete: %d releases, %d wishlist items for %s", count, wishlist_count, username)
 
-            # Plex matching needs a real event loop (it awaits asyncio.to_thread
-            # internally) and this function runs inside run_in_threadpool, so it
-            # can't be awaited here -- return the params and let _sync_collection
-            # run it after this thread-pool call returns.
-            plex_base_url = user["plex_base_url"] or ""
-            plex_token = user["plex_token"] or ""
-            if plex_base_url and plex_token:
+            if plex_follows:
                 return (plex_base_url, plex_token, user["plex_match_threshold"])
             return None
 
@@ -1687,11 +1726,15 @@ class CrawlManager:
             log.error("Judgment phase failed for %s: %s", username, e, exc_info=True)
             await broadcast({"status": "stock_judgment_error", "error": str(e)})
 
-    async def _run_plex_match(self, user_id: int, base_url: str, token: str, threshold: int):
+    async def _run_plex_match(
+        self, user_id: int, base_url: str, token: str, threshold: int,
+        run_token: Optional[str] = None,
+    ):
         import plex
         import plex_security
         from db import (
             user_scope, get_library_items_for_plex_match, set_plex_match, clear_plex_match,
+            record_library_sync_progress,
         )
 
         username = self._username_for_log(user_id)
@@ -1728,6 +1771,13 @@ class CrawlManager:
                     else:
                         clear_plex_match(conn, user_id, item["discogs_id"])
                     if i % 25 == 0 or i == len(items):
+                        # When this phase follows a sync it is holding that
+                        # run's claim, and a library large enough to match
+                        # against can outlast the staleness window -- so the
+                        # heartbeat rides these commits, on this connection,
+                        # for the same reasons the sync's own checkpoint does.
+                        if run_token is not None:
+                            record_library_sync_progress(conn, user_id, run_token)
                         conn.commit()
                         # user_scope()'s set_config(..., true) is transaction-local and
                         # was just reverted by the commit above -- re-issue it so the

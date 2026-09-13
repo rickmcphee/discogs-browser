@@ -4029,6 +4029,19 @@ SYNC_RUN_STALE_MINUTES = 15
 # page's own transaction, and CURRENT_TIMESTAMP there is the time that
 # transaction *began* -- one page's work before the row actually lands. The
 # staleness window would silently shrink by that much.
+# The statuses that hold the claim. 'plex_matching' is the sync's own work
+# finished but the user's library still being written, by the Plex phase
+# _sync_collection runs straight afterwards. Both start paths refuse to overlap
+# with that phase in process memory (CrawlManager._sync_tasks stays occupied
+# for its duration), so the claim -- which is the same refusal made where the
+# other Machine can see it -- has to cover it too, or a remote sync starts on
+# top of a Plex match the local guard would have refused.
+#
+# It is deliberately not "running": the client reads `running` to decide
+# whether a sync is still under way, and by this point the sync it asked for is
+# done and its counts are final.
+_SYNC_RUN_CLAIMED_SQL = "library_sync_runs.status IN ('running', 'plex_matching')"
+
 _SYNC_RUN_STALE_SQL = (
     "library_sync_runs.heartbeat_at < clock_timestamp() "
     f"- INTERVAL '{SYNC_RUN_STALE_MINUTES} minutes'"
@@ -4060,7 +4073,7 @@ def claim_library_sync_run(conn, user_id: int, mode: str, scope: str) -> Optiona
             page = NULL, total_pages = NULL, synced = 0, wishlist_synced = NULL,
             error = NULL, started_at = CURRENT_TIMESTAMP,
             heartbeat_at = clock_timestamp(), finished_at = NULL
-        WHERE library_sync_runs.status <> 'running' OR {_SYNC_RUN_STALE_SQL}
+        WHERE NOT ({_SYNC_RUN_CLAIMED_SQL}) OR {_SYNC_RUN_STALE_SQL}
         RETURNING run_token
         """,
         {"user_id": user_id, "mode": mode, "scope": scope, "run_token": run_token},
@@ -4106,10 +4119,10 @@ def record_library_sync_progress(
             synced = COALESCE(%(synced)s, synced),
             wishlist_synced = COALESCE(%(wishlist_synced)s, wishlist_synced),
             heartbeat_at = clock_timestamp()
-        WHERE user_id = %(user_id)s AND status = 'running'
+        WHERE user_id = %(user_id)s AND {claimed}
               AND run_token = %(run_token)s
               AND NOT ({stale})
-        """.format(stale=_SYNC_RUN_STALE_SQL),
+        """.format(claimed=_SYNC_RUN_CLAIMED_SQL, stale=_SYNC_RUN_STALE_SQL),
         {
             "user_id": user_id, "run_token": run_token, "page": page,
             "total_pages": total_pages, "synced": synced,
@@ -4137,7 +4150,12 @@ def finish_library_sync_run(
     completion and its backstop, and without the token that backstop would
     match the new run and mark a sync that is only just starting as failed. A
     run already past the staleness window cannot be closed either, for the
-    same reason it cannot be advanced -- see record_library_sync_progress."""
+    same reason it cannot be advanced -- see record_library_sync_progress.
+
+    Closes a run from the sync phase only. The Plex phase that can follow it
+    has its own release (finish_library_sync_plex_phase) so that this one,
+    which the sync's `finally` backstop calls unconditionally, cannot reach
+    past its own phase."""
     cursor = conn.execute(
         """
         UPDATE library_sync_runs SET
@@ -4159,6 +4177,59 @@ def finish_library_sync_run(
     return cursor.rowcount > 0
 
 
+def start_library_sync_plex_phase(
+    conn,
+    user_id: int,
+    run_token: Optional[str],
+    synced: Optional[int] = None,
+    wishlist_synced: Optional[int] = None,
+) -> bool:
+    """Hand the run from the sync to the Plex phase that follows it, keeping
+    the claim. The sync's counts are final at this point, so the client reads
+    this as the sync having finished; what stays held is the exclusion against
+    another Machine starting a sync on top of the Plex match."""
+    cursor = conn.execute(
+        """
+        UPDATE library_sync_runs SET
+            status = 'plex_matching',
+            synced = COALESCE(%(synced)s, synced),
+            wishlist_synced = COALESCE(%(wishlist_synced)s, wishlist_synced),
+            error = NULL,
+            heartbeat_at = clock_timestamp(),
+            finished_at = CURRENT_TIMESTAMP
+        WHERE user_id = %(user_id)s AND status = 'running'
+              AND run_token = %(run_token)s
+              AND NOT ({stale})
+        """.format(stale=_SYNC_RUN_STALE_SQL),
+        {
+            "user_id": user_id, "run_token": run_token,
+            "synced": synced, "wishlist_synced": wishlist_synced,
+        },
+    )
+    return cursor.rowcount > 0
+
+
+def finish_library_sync_plex_phase(conn, user_id: int, run_token: Optional[str]) -> bool:
+    """Release the claim the Plex phase has been holding.
+
+    Separate from finish_library_sync_run rather than a flag on it, because the
+    two close from different phases and conflating them is what lets
+    _sync_collection_blocking's `finally` backstop -- which fires on the handoff
+    path too -- close the Plex phase it just handed off to."""
+    cursor = conn.execute(
+        """
+        UPDATE library_sync_runs SET
+            status = 'complete',
+            heartbeat_at = clock_timestamp(),
+            finished_at = CURRENT_TIMESTAMP
+        WHERE user_id = %(user_id)s AND status = 'plex_matching'
+              AND run_token = %(run_token)s
+        """,
+        {"user_id": user_id, "run_token": run_token},
+    )
+    return cursor.rowcount > 0
+
+
 def get_library_sync_run(conn, user_id: int) -> Optional[dict]:
     """The user's current or most recent sync run, or None if they have never
     run one.
@@ -4171,7 +4242,7 @@ def get_library_sync_run(conn, user_id: int) -> Optional[dict]:
         f"""
         SELECT *,
                (status = 'running' AND NOT ({_SYNC_RUN_STALE_SQL})) AS running,
-               (status = 'running' AND {_SYNC_RUN_STALE_SQL}) AS stale
+               ({_SYNC_RUN_CLAIMED_SQL} AND {_SYNC_RUN_STALE_SQL}) AS stale
         FROM library_sync_runs WHERE user_id = %s
         """,
         [user_id],
