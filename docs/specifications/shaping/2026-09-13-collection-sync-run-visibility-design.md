@@ -393,8 +393,13 @@ Rather than a new endpoint. The client already calls this one (it drives the
 "Collection already loaded" modal), so no new function joins the API surface
 that every App-rendering test has to double, and "the state of my collection"
 is what this endpoint is already for. `sync` is `null` when the user has never
-synced, and the field is optional on the client so a reply without it reads the
-same way.
+synced, and the field is **required** on the client (`CollectionSyncRun | null`)
+rather than optional: the backend sends it on every reply, and "absent" must not
+be allowed to read as "never synced". Those are the same shape to a client that
+only checks falsiness, and different facts — the second is an answer, the first
+is a reply that has lost a field. It was briefly optional here, to spare the
+test doubles that predate it; that is the contract bent to fit the mocks, and
+the doubles now say `sync: null` instead.
 
 ### The client follows the run
 
