@@ -114,7 +114,15 @@ function collectionSyncOutcomeMessage(run: CollectionSyncRun): string {
   // A run whose Machine restarted mid-sync stops heartbeating and never
   // finishes. Saying so is the whole recovery -- the click that follows is
   // no longer refused, because the claim has gone stale with it.
-  if (run.stale) return 'Sync stopped before it finished — sync again to pick up where it left off.'
+  //
+  // Only while the *sync* is the phase that went quiet, though. A stale
+  // `plex_matching` row is a Plex match that died after the sync itself
+  // committed its rows and its final counts, and reporting that as an
+  // unfinished sync would send the user back to redo work that is already
+  // done. The sync's own outcome is the honest line there.
+  if (run.stale && run.status === 'running') {
+    return 'Sync stopped before it finished — sync again to pick up where it left off.'
+  }
   if (run.status === 'error') return `Sync failed: ${run.error ?? 'unknown error'}`
   if (run.scope === 'wishlist') return `Synced ${run.wishlist_synced ?? 0} wantlist items`
   const wantlistPart = run.wishlist_synced != null ? `, ${run.wishlist_synced} wantlist items` : ''
@@ -740,9 +748,18 @@ export default function App() {
   // silent no-op this whole change exists to remove.
   const [syncPollNonce, setSyncPollNonce] = useState(0)
   const syncPollIntentRef = useRef<{ adoptTerminal: boolean; idleMessage: string | null } | null>(null)
+  const authed = authState?.state === 'authenticated'
+  // Outside the effect, because the effect restarts and the follow must not.
+  // `authState` is replaced with a fresh object after every backend down/up
+  // transition, so a blip mid-sync would otherwise reset these: the restarted
+  // loop would find a run that finished during the outage, take it for an old
+  // one, and return without refetching -- the stale collection this whole
+  // change exists to prevent, reached by a different road.
+  const followingSyncRef = useRef(false)
+  const lastSyncProgressRef = useRef('')
 
   useEffect(() => {
-    if (authState?.state !== 'authenticated') return
+    if (!authed) return
     let cancelled = false
     const intent = syncPollIntentRef.current
     syncPollIntentRef.current = null
@@ -751,10 +768,9 @@ export default function App() {
     // however old -- the row is the most recent run, not a fresh event. A
     // refresh the server accepted counts as watched: the claim is taken by the
     // request itself, so the run is already there to find.
-    let following = intent?.adoptTerminal ?? false
+    if (intent?.adoptTerminal) followingSyncRef.current = true
     const idleMessage = intent?.idleMessage ?? null
     let failedReads = 0
-    let lastProgress = ''
 
     async function poll() {
       while (!cancelled) {
@@ -769,9 +785,9 @@ export default function App() {
           // has said nothing yet, and giving up here is the silent refresh
           // this whole change exists to remove. A failed poll on a tab that
           // was only checking has nothing to retry for.
-          if (!following && !idleMessage) return
+          if (!followingSyncRef.current && !idleMessage) return
           failedReads += 1
-          if (!following && idleMessage && failedReads >= REFUSED_START_READ_ATTEMPTS) {
+          if (!followingSyncRef.current && idleMessage && failedReads >= REFUSED_START_READ_ATTEMPTS) {
             // Still unresolved, and out of tries: say what the server already
             // told us with its 409 rather than nothing at all.
             setSyncStatus(idleMessage)
@@ -788,11 +804,11 @@ export default function App() {
             return
           }
           if (run.running) {
-            following = true
+            followingSyncRef.current = true
             setSyncing(true)
             const progress = `${run.page}/${run.total_pages}/${run.synced}/${run.wishlist_synced}`
-            if (progress !== lastProgress) {
-              lastProgress = progress
+            if (progress !== lastSyncProgressRef.current) {
+              lastSyncProgressRef.current = progress
               // Both writes are gated on the run having actually advanced, not
               // just on having been asked again. The banner is shared with the
               // stock sync, the judgment run and the price refresh, any of
@@ -804,7 +820,9 @@ export default function App() {
               setSyncStatus(collectionSyncProgressMessage(run))
               setSyncGeneration(g => g + 1)
             }
-          } else if (following) {
+          } else if (followingSyncRef.current) {
+            followingSyncRef.current = false
+            lastSyncProgressRef.current = ''
             setSyncing(false)
             setSyncStatus(collectionSyncOutcomeMessage(run))
             // Unconditional, not gated on the counters having moved: this is
@@ -828,7 +846,10 @@ export default function App() {
     }
     poll()
     return () => { cancelled = true }
-  }, [authState, syncPollNonce, setSyncStatus, fetchPriceStatus])
+    // Keyed on whether the user is signed in, not on the authState object:
+    // that object is replaced on every revalidation, and restarting the poll
+    // for one costs nothing but risks everything above.
+  }, [authed, syncPollNonce, setSyncStatus, fetchPriceStatus])
 
   const followSyncRun = useCallback((intent: { adoptTerminal: boolean; idleMessage: string | null }) => {
     syncPollIntentRef.current = intent

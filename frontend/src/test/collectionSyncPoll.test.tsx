@@ -19,10 +19,17 @@ class SilentEventSource {
   }
 }
 
-const { getCollectionStatus, getReleases, refreshCollection } = vi.hoisted(() => ({
+const { getCollectionStatus, getReleases, refreshCollection, checkHealth, getAuthStatus } = vi.hoisted(() => ({
   getCollectionStatus: vi.fn(),
   getReleases: vi.fn(),
   refreshCollection: vi.fn(),
+  checkHealth: vi.fn(),
+  // A fresh object per call, as the real one returns: App revalidates auth on
+  // every backend down/up transition, and it is that new identity -- not any
+  // change of state -- that restarts effects keyed on authState.
+  getAuthStatus: vi.fn(async () => ({
+    state: 'authenticated', user: { discogs_username: 'test', is_admin: false },
+  })),
 }))
 
 const release: Release = {
@@ -51,8 +58,8 @@ function run(overrides: Partial<CollectionSyncRun>): CollectionSyncRun {
 }
 
 vi.mock('../api/client', () => ({
-  checkHealth: vi.fn().mockResolvedValue(true),
-  getAuthStatus: vi.fn().mockResolvedValue({ state: 'authenticated', user: { discogs_username: 'test', is_admin: false } }),
+  checkHealth,
+  getAuthStatus,
   setUnauthorizedHandler: vi.fn(),
   getUserHiddenCrawlers: vi.fn().mockResolvedValue([]),
   postUserHiddenCrawlers: vi.fn().mockResolvedValue(undefined),
@@ -102,6 +109,8 @@ beforeEach(() => {
   SilentEventSource.instances = []
   vi.clearAllMocks()
   localStorage.clear()
+  checkHealth.mockResolvedValue(true)
+  getCollectionStatus.mockReset()
   getReleases.mockResolvedValue({ total: 1, page: 1, per_page: 250, releases: [release] })
   refreshCollection.mockResolvedValue({ started: true, running: true })
   vi.useFakeTimers({ shouldAdvanceTime: true })
@@ -130,6 +139,69 @@ describe('following a collection sync without its events', () => {
     // The point of the whole exercise: the table goes back for the records the
     // sync just wrote, with nothing having told it to but this poll.
     await waitFor(() => expect(getReleases.mock.calls.length).toBeGreaterThan(whileRunning))
+  })
+
+  it('keeps following a sync across a backend blip', async () => {
+    // The app replaces authState after every backend down/up transition. The
+    // follow has to survive that: a sync that finishes during the outage is
+    // still this click's answer, and a restarted poll that took it for an old
+    // run would leave the collection stale -- the very failure this change
+    // exists to remove, reached by a different road.
+    let blipped = false
+    let finished = false
+    getCollectionStatus.mockImplementation(async () => {
+      if (blipped && !finished) throw new Error('network')
+      return finished
+        ? {
+            total: 25, last_synced: null,
+            sync: run({ status: 'complete', running: false, synced: 25, wishlist_synced: 3 }),
+          }
+        : { total: 5, last_synced: null, sync: run({ page: 1, total_pages: 2, synced: 10 }) }
+    })
+
+    render(<App />)
+    await screen.findByText('Syncing collection… 10 records (page 1/2)')
+    const whileRunning = getReleases.mock.calls.length
+
+    // Backend goes away: two failed health polls flip the app to its
+    // down screen, and the recovery replaces authState.
+    blipped = true
+    checkHealth.mockResolvedValue(false)
+    await vi.advanceTimersByTimeAsync(6000)
+    checkHealth.mockResolvedValue(true)
+    await vi.advanceTimersByTimeAsync(4000)
+
+    // The sync finished while nobody could see it.
+    finished = true
+    await vi.advanceTimersByTimeAsync(PAST_ONE_POLL * 2)
+
+    await screen.findByText('Synced 25 records, 3 wantlist items')
+    await waitFor(() => expect(getReleases.mock.calls.length).toBeGreaterThan(whileRunning))
+  })
+
+  it('reports the sync outcome when it is the Plex phase that went quiet', async () => {
+    // `stale` covers both phases that hold the claim, but only one of them is
+    // the sync. A Plex match that dies after the sync committed its rows and
+    // its counts must not send the user back to redo work that is done.
+    getCollectionStatus
+      .mockResolvedValueOnce({
+        total: 5, last_synced: null, sync: run({ page: 1, total_pages: 2, synced: 10 }),
+      })
+      .mockResolvedValue({
+        total: 25, last_synced: null,
+        sync: run({
+          status: 'plex_matching', running: false, stale: true,
+          synced: 25, wishlist_synced: 3,
+        }),
+      })
+
+    render(<App />)
+    await screen.findByText('Syncing collection… 10 records (page 1/2)')
+
+    await vi.advanceTimersByTimeAsync(PAST_ONE_POLL)
+
+    await screen.findByText('Synced 25 records, 3 wantlist items')
+    expect(screen.queryByText(/Sync stopped before it finished/)).toBeNull()
   })
 
   it('does not talk over another job while the run sits unchanged', async () => {

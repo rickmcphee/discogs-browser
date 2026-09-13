@@ -184,12 +184,13 @@ by a `wishlist_seen` snapshot older than the sync that replaced it, which can
 delete a wantlist record the replacement has just written. So losing the claim
 has to stop the worker, not just its bookkeeping: the progress write reports
 whether the run is still this worker's, and a worker that finds it is not
-raises out of the page's transaction (rolling its uncommitted writes back with
-it) and stops. It is checked at every page commit, at every twenty-fifth item
-— the rest of a page is another hundred requests made on behalf of a run
-somebody else owns — and, decisively, in the cleanup's own transaction: the
-row lock that check takes holds the claim until the cleanup commits, so a
-takeover waits rather than landing halfway through a delete.
+raises out of the chunk's transaction (rolling its uncommitted writes back
+with it) and stops. It is checked at every checkpoint — which is what bounds
+the damage: a worker carries on for at most one more chunk's worth of requests
+on behalf of a run somebody else owns, rather than the rest of a page — and,
+decisively, in the cleanup's own transaction, where the row lock that check
+takes holds the claim until the cleanup commits, so a takeover waits rather
+than landing halfway through a delete.
 
 ### Staleness, because a claim that cannot expire is a trap
 
@@ -234,7 +235,11 @@ page's work before the row actually lands — which would silently shorten the
 window by that much on exactly the slowest syncs.
 
 A stale run is reported as `running: false` **and** `stale: true`, separately
-from its `status`. Reported as running, the client would spin for ever on a
+from its `status`. The client reads that as "the sync stopped" only while the
+sync is the phase that went quiet: a stale `plex_matching` row is a Plex match
+that died *after* the sync committed its rows and its final counts, and
+reporting it as an unfinished sync would send the user back to redo work that
+is done. Reported as running, the client would spin for ever on a
 sync nothing is doing; reported as merely finished, the user would never learn
 why their refresh stopped. It gets its own line in the status bar, and the
 next click is no longer refused.
@@ -346,6 +351,15 @@ have written to it since the last poll; repeating an unchanged line every
 three seconds would talk over all of them. The SSE path has that restraint for
 free, since it only fires when something happened.
 
+The follow itself lives outside the poll's effect, in a ref. The effect
+restarts — `authState` is replaced after every backend down/up transition, and
+a nonce bump restarts it deliberately — and a follow that reset with it would
+lose a sync that finished during the outage: the restarted loop would find a
+terminal row, take it for an old run, and return without refetching. That is
+this change's own failure reached by another road. The effect is also keyed on
+whether the user is signed in rather than on the `authState` object, so a
+revalidation that changes nothing restarts nothing.
+
 Only a run the loop has watched *running* may write an outcome to the status
 bar. Without that rule, every page load would re-announce the last sync,
 however old — the row is the most recent run, not a fresh event. A refresh this
@@ -402,7 +416,11 @@ emits — the cross-Machine case reproduced directly:
   failure, and says the sync could not start when the refusal turns out not to
   be one;
 - a message another job put on the banner survives a poll that finds the run
-  unchanged.
+  unchanged;
+- a sync followed across a backend outage still reports its outcome and
+  refetches, with the run having finished while nobody could see it;
+- a Plex phase that goes stale reports the sync's outcome rather than claiming
+  the sync stopped.
 
 Each was confirmed to fail against a build with the poll disabled.
 
