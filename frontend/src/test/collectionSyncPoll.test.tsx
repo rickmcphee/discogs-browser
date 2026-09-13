@@ -235,6 +235,43 @@ describe('following a collection sync without its events', () => {
     expect(screen.getByText('Matching collection against Plex…')).toBeTruthy()
   })
 
+  it('still refetches when a replayed terminal event arrives for an older sync', async () => {
+    // routers/crawl.py replays the whole retained buffer on reconnect, so a
+    // sync_complete from an earlier sync can land while this one is running on
+    // the other Machine. Treating it as this run's ending drops the follow,
+    // and if this run then finishes before the next tick can re-adopt it, its
+    // terminal row reads as an old one and the collection is never refetched
+    // -- the original failure, by a new road. The banner line may be skipped
+    // in that window, since the stream has just spoken one; the refetch may
+    // not be.
+    getCollectionStatus
+      .mockResolvedValueOnce({
+        total: 5, last_synced: null, sync: run({ page: 1, total_pages: 2, synced: 10 }),
+      })
+      .mockResolvedValue({
+        total: 25, last_synced: null,
+        sync: run({ status: 'complete', running: false, synced: 25, wishlist_synced: 3 }),
+      })
+
+    render(<App />)
+    await screen.findByText('Syncing collection… 10 records (page 1/2)')
+
+    // A stale completion, replayed on reconnect, for a sync that ended earlier.
+    // It refetches on its own account, so let that settle before counting.
+    SilentEventSource.instances[0].emit({
+      status: 'sync_complete', synced: 7, wishlist_synced: 0, username: 'alice', id: 1,
+    })
+    await screen.findByText('Synced 7 records for alice, 0 wantlist items')
+    await waitFor(() => expect(getReleases.mock.calls.length).toBeGreaterThan(1))
+    const afterStaleEvent = getReleases.mock.calls.length
+
+    // The run this tab was actually following ends on the very next tick,
+    // with no chance to re-adopt in between.
+    await vi.advanceTimersByTimeAsync(PAST_ONE_POLL)
+
+    await waitFor(() => expect(getReleases.mock.calls.length).toBeGreaterThan(afterStaleEvent))
+  })
+
   it('does not talk over another job while the run sits unchanged', async () => {
     // The banner is shared with the stock sync, the judgment run and the price
     // refresh, any of which can run alongside a collection sync. Repeating an
@@ -287,6 +324,24 @@ describe('following a collection sync without its events', () => {
     await vi.advanceTimersByTimeAsync(PAST_ONE_POLL)
 
     await screen.findByText('Sync stopped before it finished — sync again to pick up where it left off.')
+  })
+
+  it('retries the mount read that discovers a sync already under way', async () => {
+    // The effect no longer restarts on a backend revalidation, so giving up on
+    // the first failed discovery read is giving up for good: a tab loaded
+    // while the other Machine is mid-sync would never find it.
+    getCollectionStatus
+      .mockRejectedValueOnce(new Error('network'))
+      .mockResolvedValue({
+        total: 5, last_synced: null, sync: run({ page: 3, total_pages: 9, synced: 210 }),
+      })
+
+    render(<App />)
+    // Long enough to cover the first read landing, its retry, and the sleep
+    // between them, wherever in the mount sequence the loop actually starts.
+    await vi.advanceTimersByTimeAsync(PAST_ONE_POLL * 3)
+
+    await screen.findByText('Syncing collection… 210 records (page 3/9)')
   })
 
   it('does not re-announce a run that had already finished before this page loaded', async () => {

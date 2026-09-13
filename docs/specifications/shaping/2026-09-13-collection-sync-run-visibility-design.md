@@ -362,12 +362,18 @@ this change's own failure reached by another road. The effect is also keyed on
 whether the user is signed in rather than on the `authState` object, so a
 revalidation that changes nothing restarts nothing.
 
-The follow is released as soon as the run is accounted for — by the poll's own
-terminal tick, or by the SSE handlers when this is the Machine running the
-sync and the stream got there first. Left held in that second case, the next
-poll would republish the outcome over whatever had spoken since, which on this
-path is immediate: the Plex phase that follows a sync announces itself a beat
-later.
+The follow is released by the poll's own terminal tick and by nothing else.
+When this is the Machine running the sync, the stream reports the outcome
+first and the poll must not repeat it over whatever has spoken since — the
+Plex phase that follows a sync announces itself a beat later — so a terminal
+SSE event records that *an* outcome has just been published, and the poll
+skips its own line when it finds that flag set. It is deliberately not taken
+as evidence that the followed run has ended: `_events_to_replay` replays the
+whole retained buffer on reconnect, so the event may belong to an earlier sync
+entirely, and dropping the follow on it would lose the refetch for the run
+actually in flight — the original failure, by a new road. The poll clears the
+flag the moment it sees the run still running, and refetches on its terminal
+tick whether or not it says anything.
 
 Only a run the loop has watched *running* may write an outcome to the status
 bar. Without that rule, every page load would re-announce the last sync,
@@ -375,13 +381,13 @@ however old — the row is the most recent run, not a fresh event. A refresh thi
 tab just requested counts as watched, since the claim is taken by the request
 itself.
 
-A failed poll retries only while there is something to wait for: a network blip
-must not abandon a sync being followed, nor a refused start that has not yet
-been resolved — that click has said nothing yet, and going quiet on it puts it
-back to looking like a no-op. A refused start gives up after a few failed
-reads and reports the refusal on its own; a sync being followed keeps waiting,
-because it is running and its outcome is worth having. A failed poll on a tab
-that was merely checking has nothing to retry for and stops.
+A failed read is retried. A sync being followed is waited on indefinitely: it
+is running, and its outcome is worth having. Everything else gets a bounded
+number of tries — a refused start, which has said nothing yet and would
+otherwise be back to looking like a no-op, and the mount-time read that
+discovers a sync already under way, which since the effect stopped restarting
+on revalidation has no second chance of its own. Out of tries, a refused start
+reports the refusal; a discovery read has nothing to report and stops.
 
 ## Testing
 
@@ -433,7 +439,11 @@ emits — the cross-Machine case reproduced directly:
 - a Plex phase that goes stale reports the sync's outcome rather than claiming
   the sync stopped;
 - an outcome the stream delivered is not republished by the poll over the Plex
-  phase's own line.
+  phase's own line;
+- a stale terminal event replayed from another Machine's buffer does not cost
+  the run in flight its refetch;
+- a failed mount-time read is retried, so a tab that loads mid-sync still
+  finds it.
 
 Each was confirmed to fail against a build with the poll disabled.
 

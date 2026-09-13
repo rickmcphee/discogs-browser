@@ -91,10 +91,12 @@ const COLLECTION_SYNC_POLL_MS = 3000
 // answers 409 for every reason start_sync declines, and a Plex match for this
 // user is one of them -- in which case there is no collection sync to follow
 // and the click would otherwise pass in silence.
-// How many failed status reads a refused start will sit through before it
-// gives up and reports the refusal on its own. A sync being followed retries
-// indefinitely instead -- it is running, and its outcome is worth waiting for.
-const REFUSED_START_READ_ATTEMPTS = 3
+// How many failed status reads the poll sits through before giving up, when
+// it is not yet following anything -- a refused start waiting to learn what
+// refused it, or the mount-time read looking for a sync already under way. A
+// sync being followed retries indefinitely instead: it is running, and its
+// outcome is worth waiting for.
+const POLL_READ_ATTEMPTS = 3
 
 const REFUSED_START_MESSAGE =
   'Could not start a sync — another job is running for your account. Try again shortly.'
@@ -506,11 +508,15 @@ export default function App() {
         return
       }
       if (event.status === 'sync_complete') {
-        // This tab has heard the outcome, so the poll must not announce it a
-        // second time. Left followed, its next tick would republish this same
-        // line over whatever has spoken since -- a plex_match_started from the
-        // phase that follows a sync, most immediately.
-        releaseSyncFollow()
+        // Noted, not acted on: the stream has spoken an outcome, so the poll
+        // should not repeat it over whatever comes next (a plex_match_started
+        // from the phase that follows a sync, most immediately). Deliberately
+        // not a release of the follow -- routers/crawl.py replays this
+        // process's whole retained buffer on reconnect, so this event may
+        // belong to an earlier sync entirely, and dropping the follow on it
+        // would lose the refetch for the run actually in flight. The poll
+        // clears this again the moment it sees the run still running.
+        sseAnnouncedOutcomeRef.current = true
         setSyncing(false)
         if (event.scope === 'wishlist') {
           setSyncStatus(`Synced ${event.wishlist_synced} wantlist items for ${event.username}`, event.id ?? null)
@@ -523,7 +529,7 @@ export default function App() {
         return
       }
       if (event.status === 'sync_error') {
-        releaseSyncFollow()
+        sseAnnouncedOutcomeRef.current = true
         setSyncing(false)
         setSyncStatus(`Sync failed: ${event.error}`, event.id ?? null)
         // Each page's writes (including price_paid) commit before the next page
@@ -764,11 +770,19 @@ export default function App() {
   const followingSyncRef = useRef(false)
   const lastSyncProgressRef = useRef('')
 
-  // The run has been accounted for -- by the poll, or by the SSE handlers on
-  // the Machine running it. Either way it is no longer this tab's to report.
+  // Set when the stream speaks a terminal sync event, cleared the moment the
+  // poll sees a run still running. It says only "an outcome has just been
+  // published", which is all the poll needs to know not to publish it again;
+  // it is not evidence about *which* run ended, because a replayed event
+  // carries none.
+  const sseAnnouncedOutcomeRef = useRef(false)
+
+  // The run has been accounted for. Only the poll says this, and only about
+  // the row it just read.
   const releaseSyncFollow = useCallback(() => {
     followingSyncRef.current = false
     lastSyncProgressRef.current = ''
+    sseAnnouncedOutcomeRef.current = false
   }, [])
 
   useEffect(() => {
@@ -792,18 +806,18 @@ export default function App() {
           status = await getCollectionStatus()
           failedReads = 0
         } catch {
-          // Keep waiting only while there is something to wait for. A blip
-          // during a sync we are following must not abandon it, and neither
-          // must one before a refused start has been resolved -- that click
-          // has said nothing yet, and giving up here is the silent refresh
-          // this whole change exists to remove. A failed poll on a tab that
-          // was only checking has nothing to retry for.
-          if (!followingSyncRef.current && !idleMessage) return
+          // A sync being followed is waited on for as long as it takes: it is
+          // running, and its outcome is worth having. Everything else gets a
+          // bounded number of tries -- a refused start, which has said nothing
+          // yet and would otherwise be the silent refresh this whole change
+          // exists to remove, and the mount-time read that discovers a sync
+          // already under way, which since this effect stopped restarting on
+          // revalidation has no second chance of its own.
           failedReads += 1
-          if (!followingSyncRef.current && idleMessage && failedReads >= REFUSED_START_READ_ATTEMPTS) {
-            // Still unresolved, and out of tries: say what the server already
-            // told us with its 409 rather than nothing at all.
-            setSyncStatus(idleMessage)
+          if (!followingSyncRef.current && failedReads >= POLL_READ_ATTEMPTS) {
+            // Out of tries. Say what the server already told us with its 409,
+            // if it told us anything; a discovery read has nothing to report.
+            if (idleMessage) setSyncStatus(idleMessage)
             return
           }
         }
@@ -818,6 +832,9 @@ export default function App() {
           }
           if (run.running) {
             followingSyncRef.current = true
+            // Whatever outcome the stream announced, it was not this run's --
+            // this one is still going.
+            sseAnnouncedOutcomeRef.current = false
             setSyncing(true)
             const progress = `${run.page}/${run.total_pages}/${run.synced}/${run.wishlist_synced}`
             if (progress !== lastSyncProgressRef.current) {
@@ -834,9 +851,13 @@ export default function App() {
               setSyncGeneration(g => g + 1)
             }
           } else if (followingSyncRef.current) {
+            const alreadySpoken = sseAnnouncedOutcomeRef.current
             releaseSyncFollow()
             setSyncing(false)
-            setSyncStatus(collectionSyncOutcomeMessage(run))
+            // The refetch happens either way -- it is the whole point, and the
+            // one thing that must not be lost. The line is skipped only when
+            // the stream has just said the same thing.
+            if (!alreadySpoken) setSyncStatus(collectionSyncOutcomeMessage(run))
             // Unconditional, not gated on the counters having moved: this is
             // the tick that pulls in everything the last page committed, and
             // on a sync whose pages all landed between two polls it is the
@@ -861,7 +882,7 @@ export default function App() {
     // Keyed on whether the user is signed in, not on the authState object:
     // that object is replaced on every revalidation, and restarting the poll
     // for one costs nothing but risks everything above.
-  }, [authed, syncPollNonce, setSyncStatus, fetchPriceStatus])
+  }, [authed, syncPollNonce, setSyncStatus, fetchPriceStatus, releaseSyncFollow])
 
   const followSyncRun = useCallback((intent: { adoptTerminal: boolean; idleMessage: string | null }) => {
     syncPollIntentRef.current = intent
