@@ -517,6 +517,7 @@ export default function App() {
         // would lose the refetch for the run actually in flight. The poll
         // clears this again the moment it sees the run still running.
         sseAnnouncedOutcomeRef.current = true
+        sseTerminalSeqRef.current += 1
         setSyncing(false)
         if (event.scope === 'wishlist') {
           setSyncStatus(`Synced ${event.wishlist_synced} wantlist items for ${event.username}`, event.id ?? null)
@@ -530,6 +531,7 @@ export default function App() {
       }
       if (event.status === 'sync_error') {
         sseAnnouncedOutcomeRef.current = true
+        sseTerminalSeqRef.current += 1
         setSyncing(false)
         setSyncStatus(`Sync failed: ${event.error}`, event.id ?? null)
         // Each page's writes (including price_paid) commit before the next page
@@ -776,6 +778,12 @@ export default function App() {
   // it is not evidence about *which* run ended, because a replayed event
   // carries none.
   const sseAnnouncedOutcomeRef = useRef(false)
+  // Bumped by the same terminal events. The flag says "an outcome was just
+  // published"; this says *when*, which is what a poll response needs in order
+  // to know whether it is still current. A status request reads the row before
+  // the sync closes and can resolve after the stream has already reported the
+  // ending -- and then the `running` it is holding is simply out of date.
+  const sseTerminalSeqRef = useRef(0)
 
   // The run has been accounted for. Only the poll says this, and only about
   // the row it just read.
@@ -802,6 +810,10 @@ export default function App() {
     async function poll() {
       while (!cancelled) {
         let status: CollectionStatus | null = null
+        // Read before the request goes out: if a terminal event arrives while
+        // it is in flight, the reply is describing a moment before that ending
+        // and its `running` is stale, however fresh the response looks.
+        const terminalSeqAtRequest = sseTerminalSeqRef.current
         try {
           status = await getCollectionStatus()
           failedReads = 0
@@ -823,14 +835,21 @@ export default function App() {
         }
         if (cancelled) return
         if (status) {
-          const run: CollectionSyncRun | null | undefined = status.sync
-          // No run at all -- this user has never synced, or the reply predates
-          // the field. Either way there is nothing here to follow.
+          const run: CollectionSyncRun | null = status.sync
+          // No run at all: this user has never synced. Nothing here to follow.
           if (!run) {
             if (idleMessage) setSyncStatus(idleMessage)
             return
           }
-          if (run.running) {
+          if (run.running && sseTerminalSeqRef.current !== terminalSeqAtRequest) {
+            // The stream reported an ending while this request was in flight,
+            // so the row was read before the sync closed. Acting on it would
+            // undo the report: clearing the flag lets the next tick republish
+            // the outcome over whatever came after it (the Plex phase
+            // announces itself a beat later), and the progress line would talk
+            // over that same newer status. Wait for a reply that was issued
+            // after the ending instead -- the next tick's.
+          } else if (run.running) {
             followingSyncRef.current = true
             // Whatever outcome the stream announced, it was not this run's --
             // this one is still going.

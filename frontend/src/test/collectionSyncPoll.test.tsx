@@ -235,6 +235,53 @@ describe('following a collection sync without its events', () => {
     expect(screen.getByText('Matching collection against Plex…')).toBeTruthy()
   })
 
+  it('ignores a running reply that was read before the stream reported the ending', async () => {
+    // The request goes out while the sync is still running and resolves after
+    // sync_complete — and plex_match_started — have already landed. Its
+    // `running: true` describes a moment before the ending, so acting on it
+    // clears the "outcome already published" flag and lets the next tick
+    // republish the sync's outcome over the newer Plex line.
+    // A no-op rather than null: it is only ever assigned inside the promise
+    // executor, which TypeScript cannot see as having run.
+    let holdRunning: () => void = () => {}
+    getCollectionStatus
+      .mockResolvedValueOnce({
+        total: 5, last_synced: null, sync: run({ page: 1, total_pages: 2, synced: 10 }),
+      })
+      // The in-flight one: resolved by hand, after the stream has spoken.
+      .mockImplementationOnce(() => new Promise(resolve => {
+        holdRunning = () => resolve({
+          total: 5, last_synced: null,
+          sync: run({ page: 2, total_pages: 2, synced: 20 }),
+        })
+      }))
+      .mockResolvedValue({
+        total: 25, last_synced: null,
+        sync: run({ status: 'plex_matching', running: false, synced: 25, wishlist_synced: 3 }),
+      })
+
+    render(<App />)
+    await screen.findByText('Syncing collection… 10 records (page 1/2)')
+
+    // Let the second read start, then finish the sync on the stream while it
+    // is still outstanding.
+    await vi.advanceTimersByTimeAsync(PAST_ONE_POLL)
+    const stream = SilentEventSource.instances[0]
+    stream.emit({
+      status: 'sync_complete', synced: 25, wishlist_synced: 3, username: 'alice', id: 1,
+    })
+    await screen.findByText('Synced 25 records for alice, 3 wantlist items')
+    stream.emit({ status: 'plex_match_started', id: 2 })
+    await screen.findByText('Matching collection against Plex…')
+
+    // Only now does the stale read land.
+    holdRunning()
+    await vi.advanceTimersByTimeAsync(PAST_ONE_POLL * 2)
+
+    // The Plex line is still the newest thing said.
+    expect(screen.getByText('Matching collection against Plex…')).toBeTruthy()
+  })
+
   it('still refetches when a replayed terminal event arrives for an older sync', async () => {
     // routers/crawl.py replays the whole retained buffer on reconnect, so a
     // sync_complete from an earlier sync can land while this one is running on

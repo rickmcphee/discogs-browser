@@ -119,9 +119,11 @@ export interface CollectionSyncRun {
 export interface CollectionStatus {
   total: number
   last_synced: string | null
-  // Optional because every test double for this endpoint predates it; absent
-  // reads the same as "no sync has ever run".
-  sync?: CollectionSyncRun | null
+  // Always present: the backend sends it on every reply, null when the user
+  // has never synced. Required rather than optional so a reply that loses the
+  // field fails to type-check instead of reading as "never synced" -- the
+  // distinction the whole poll hangs on.
+  sync: CollectionSyncRun | null
 }
 
 export interface CrawlStatus {
