@@ -169,6 +169,54 @@ async def test_start_sync_is_refused_while_another_instance_holds_the_run(manage
     assert manager.sync_running(synced_user) is False
 
 
+async def test_this_machine_can_take_over_its_own_stalled_worker(manager, synced_user, monkeypatch):
+    """A stalled worker must not make its own Machine the one place its run
+    cannot be recovered.
+
+    sync_running() answers "is this task object still pending", which a worker
+    wedged in a blocking call says for ever. Refusing on it before consulting
+    the row meant the row's expired heartbeat -- which exists precisely to say
+    the worker is gone -- was never reached here, while the other Machine read
+    it and took over. The same click then succeeded or failed by load
+    balancing."""
+    started = asyncio.Event()
+
+    async def _wedged(user_id, mode, scope="all", run_token=None):
+        started.set()
+        await asyncio.sleep(3600)
+
+    manager._sync_collection = _wedged  # type: ignore
+    assert await manager.start_sync(synced_user, "all") is True
+    await started.wait()
+    stalled = manager._sync_tasks[synced_user]
+
+    # While its run is fresh, the claim refuses a second start as firmly as
+    # the local guard did -- nothing is being loosened here.
+    assert await manager.start_sync(synced_user, "all") is False
+
+    # The worker goes quiet past the window, but its task never finishes.
+    with db.user_scope(synced_user) as conn:
+        conn.execute(
+            "UPDATE library_sync_runs SET heartbeat_at = clock_timestamp() - INTERVAL '%s minutes' "
+            "WHERE user_id = %%s" % (db.SYNC_RUN_STALE_MINUTES + 1),
+            [synced_user],
+        )
+        conn.commit()
+    assert manager.sync_running(synced_user) is True
+
+    async def _instant(user_id, mode, scope="all", run_token=None):
+        await asyncio.sleep(0)
+
+    manager._sync_collection = _instant  # type: ignore
+    assert await manager.start_sync(synced_user, "all") is True
+    # And the worker that was holding the slot is retired rather than left to
+    # notice at a checkpoint it may never reach. cancel() only requests it, so
+    # give the loop the tick it needs to deliver.
+    await asyncio.sleep(0)
+    assert stalled.cancelled()
+    await manager._sync_tasks[synced_user]
+
+
 async def test_start_sync_takes_over_a_run_whose_machine_died(manager, synced_user, monkeypatch):
     """A run abandoned mid-sync (its Machine restarted) stops heartbeating and
     never finishes, so without a takeover its claim would refuse every later

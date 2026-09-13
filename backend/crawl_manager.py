@@ -904,24 +904,51 @@ class CrawlManager:
 
     async def start_sync(self, user_id: int, mode: str = "all", scope: str = "all") -> bool:
         async with self._start_lock(user_id):
-            if self.sync_running(user_id) or self.plex_match_running(user_id):
-                log.warning("Collection sync already running for %s, ignoring start request", self._username_for_log(user_id))
+            # The Plex match still has no claim of its own, so this local guard
+            # is the only thing that refuses an overlap with one.
+            if self.plex_match_running(user_id):
+                log.warning("Plex match in progress for %s, ignoring sync request", self._username_for_log(user_id))
                 return False
-            # _sync_tasks above is this process's memory, and the deployment
-            # runs more than one Machine behind one hostname -- so the guard it
-            # provides covers only the half of the requests that happen to land
-            # here. The claim below is the same refusal made in Postgres, where
-            # the other Machine's run is visible; it doubles as the row that
-            # tells the browser its sync is under way at all (see
-            # library_sync_runs). Blocking psycopg calls, so off the event
-            # loop, same as start_stock_sync's advisory lock.
+            # Deliberately *not* also guarded on sync_running(). _sync_tasks is
+            # this process's memory, and the deployment runs more than one
+            # Machine behind one hostname, so it covers only the half of the
+            # requests that land here -- but the worse half is that it answers
+            # "is a task object still pending", which a worker wedged in a
+            # blocking call says for ever. Refusing on that alone made this
+            # Machine the one place a run it had abandoned could never be taken
+            # over, while the other Machine took it happily: the same click
+            # succeeded or failed by load balancing, which is the silent,
+            # inexplicable refusal this change exists to remove, wearing a
+            # different hat.
+            #
+            # So the row decides. It is the same refusal made in Postgres,
+            # where the other Machine's run is visible and where a heartbeat
+            # that stopped fifteen minutes ago says the worker is gone whatever
+            # its task object claims -- and it doubles as the row that tells
+            # the browser its sync is under way at all (see library_sync_runs).
+            # A healthy local run is refused by it just as firmly, because that
+            # run's own heartbeat is keeping the row fresh. Blocking psycopg
+            # calls, so off the event loop, same as start_stock_sync's advisory
+            # lock.
             run_token = await run_in_threadpool(self._claim_sync_run, user_id, mode, scope)
             if run_token is None:
                 log.warning(
-                    "Collection sync already running on another instance for %s, ignoring start request",
+                    "Collection sync already running for %s, ignoring start request",
                     self._username_for_log(user_id),
                 )
                 return False
+            # The claim was granted, so whatever this Machine still has running
+            # for this user is working a run that is no longer its own. Its
+            # fencing stops it at the next checkpoint -- but a worker that never
+            # reaches one is exactly the case that got us here, so it is
+            # cancelled rather than left to notice.
+            previous = self._sync_tasks.get(user_id)
+            if previous is not None and not previous.done():
+                log.warning(
+                    "Taking over %s's abandoned collection sync from this instance's own stalled worker",
+                    self._username_for_log(user_id),
+                )
+                previous.cancel()
             self._sync_tasks[user_id] = asyncio.create_task(
                 self._sync_collection(user_id, mode, scope, run_token)
             )

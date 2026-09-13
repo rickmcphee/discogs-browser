@@ -129,10 +129,29 @@ is claimed, advanced and closed in place, and the next run overwrites it.
 
 ### The claim replaces the per-process guard
 
-`start_sync` keeps its in-process check (it is free, and it catches this
-Machine's own duplicate before a round trip) and then claims the run in
-Postgres, off the event loop via `run_in_threadpool` — the same treatment
-`start_stock_sync` gives its advisory lock, for the same reason.
+`start_sync` claims the run in Postgres, off the event loop via
+`run_in_threadpool` — the same treatment `start_stock_sync` gives its advisory
+lock, for the same reason — and the row, not `_sync_tasks`, is what decides.
+The in-process check is *not* kept in front of it as a free early-out, and the
+reason is worth stating because "it costs nothing and catches the local
+duplicate" is the obvious argument for keeping it: `sync_running()` answers
+"is this task object still pending", which a worker wedged in a blocking call
+says for ever. Refusing on that before reading the row made this Machine the
+one place a run it had itself abandoned could never be recovered — the row's
+expired heartbeat, which exists precisely to say the worker is gone, was never
+reached — while the other Machine read it and took the claim. The same click
+then succeeded or failed according to load balancing.
+
+Nothing is loosened by dropping it. A healthy local run is refused by the
+claim just as firmly, because that run's own heartbeat is keeping its row
+fresh; the check was only ever redundant with the row, except in the one case
+where it was wrong. When the claim *is* granted and this Machine still has a
+task for that user, the task is working a run that is no longer its own: its
+fencing would stop it at the next checkpoint, but a worker that never reaches
+one is exactly the case in hand, so it is cancelled outright.
+
+`start_plex_match`'s guard stays in front, because the Plex match still has no
+claim of its own — see the open item at the end of this document.
 
 ```sql
 INSERT INTO library_sync_runs (user_id, status, mode, scope, run_token)

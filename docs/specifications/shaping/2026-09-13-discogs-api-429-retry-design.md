@@ -166,8 +166,8 @@ The arithmetic is chosen for these properties:
    deliberate waiting is cheap next to abandoning half a collection.
 
    **Amendment (2026-09-13, merging into `claude/practical-cerf-kvjwbf`):**
-   bounded per *request*, which is the bound this section argues for and it
-   still holds. What it cannot see from here is that
+   The worst case above is bounded per *request*, which is the bound this
+   section argues for, and it still holds. What it cannot see from here is that
    `2026-09-13-collection-sync-run-visibility-design.md` was in flight on a
    branch, giving the sync a claim that expires if it stops heartbeating for
    `db.SYNC_RUN_STALE_MINUTES`. Waits that are individually cheap accumulate
