@@ -179,3 +179,26 @@ implemented here — a separate change if it's ever warranted.
   stock sync for a crawler that happens to be the sole source of a marked
   spelling. Accepted, not addressed here.
 - **Articles other than "The"** — unchanged from both prior branches' scope.
+
+## Amendment (2026-09-13, branch `claude/friendly-hamilton-vymyyk`)
+
+`2026-09-13-artist-punctuation-fold-design.md` layers a punctuation fold
+("&" against "and", "-" against " ") under everything described here, which
+touches three of its statements:
+
+- **Index names.** `catalog_artist_bare_lower_idx`/`stock_items_artist_bare_lower_idx`
+  are now `catalog_artist_bare_fold_idx`/`stock_items_artist_bare_fold_idx`,
+  and the comma-form pair named above is now
+  `catalog_artist_the_fold_idx`/`stock_items_artist_the_fold_idx`. All four
+  hold the same expressions with `_artist_punct_fold_sql(artist)` in place of
+  the raw column; the rename is what gets that onto a database that already
+  ran the old DDL.
+- **The equality filter** still compares `_artist_sort_sql` on both sides, and
+  that fragment now folds punctuation internally — so the "strict
+  generalization" claim above still holds, with one more class of spelling
+  folded in.
+- **The sidebar-selection reset** documented in the last bullet of "Out of
+  scope" is narrower than it was. `reconcileSelectedArtist`'s equal-length
+  rule now applies to the punctuation-folded strings, so a label flipping
+  "Hall & Oates" → "Hall and Oates" is followed rather than reset. A
+  bare→comma-form flip still resets, exactly as described.

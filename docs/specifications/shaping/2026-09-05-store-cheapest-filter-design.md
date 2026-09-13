@@ -252,9 +252,17 @@ dropdown.
 - **A record the stores spell as two different artists does not merge.**
   Same ceiling as every artist-matching path here — see
   `2026-08-22-bare-form-artist-fold-design.md`.
+  **Amended 2026-09-13** (`2026-09-13-artist-punctuation-fold-design.md`): the
+  ceiling moved in by one class of spelling. The partition's artist half is
+  `_artist_sort_sql`, which now folds "&"/"and" and "-"/" ", so one store's
+  "Blink-182" and another's "Blink 182" compete for the same floor instead of
+  each being the only row for its record.
 - **Cost.** On 60k synthetic rows the unfiltered cheapest page takes
   roughly 330 ms against 120 ms plain, and 370 ms under a Cost sort, with
-  `stock_items_cheapest_idx` in place (440 and 590 ms without it). Two
+  `stock_items_cheapest_idx` in place (440 and 590 ms without it; the index
+  is `stock_items_cheapest_fold_idx` since 2026-09-13, renamed with the
+  partition key's punctuation fold — the measurements predate the rename and
+  were not re-run). Two
   passes over the window per request — one for `total`, one for the page —
   are most of it. Acceptable for an on-demand toggle; if it ever is not,
   computing the winners once into a temp table per request is the next
