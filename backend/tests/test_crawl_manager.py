@@ -2114,6 +2114,58 @@ async def test_start_sync_returns_false_while_plex_match_running(pg_schema):
 # ---------------------------------------------------------------------------
 
 @respx.mock
+async def test_an_unresolved_close_does_not_start_the_unbounded_restoration(pg_schema, monkeypatch):
+    """A close that never reached the row leaves the claim held, and that is
+    the expensive answer rather than the reassuring one.
+
+    "Not a takeover" was the only thing being read off a None, so the worker
+    went on to the stock-row restoration -- explicitly the one step with no
+    bound worth leasing against. Running it under a claim nobody has released
+    is how the lease lapses mid-scan and a replacement sync starts on top of
+    a worker still enqueueing against the same library."""
+    import config
+    import db as db_module
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "s")
+    monkeypatch.setattr(config, "TOKEN_ENCRYPTION_KEY", "kL8mN2pQ7rT5vX9yB3cF6hJ1kM4nP8sU2wZ5aD7eG0i=")
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute(
+            "UPDATE users SET discogs_oauth_token_encrypted = %s, discogs_oauth_secret_encrypted = %s WHERE id = %s",
+            [token_encryption.encrypt("tok"), token_encryption.encrypt("sec"), user["id"]],
+        )
+        conn.commit()
+
+    respx.get("https://api.discogs.com/users/alice/collection/fields").mock(
+        return_value=httpx.Response(200, json={"fields": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/collection/folders/0/releases").mock(
+        return_value=_collection_page(111, total_pages=1)
+    )
+    respx.get(url__regex=r"https://api\.discogs\.com/releases/\d+").mock(
+        return_value=httpx.Response(200, json={"identifiers": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/wants").mock(
+        return_value=httpx.Response(200, json={"pagination": {"pages": 1}, "wants": []})
+    )
+
+    # Every close fails, so the answer stays unresolved through the retry too.
+    def _always_fails(conn, user_id, run_token, status, **fields):
+        raise RuntimeError("connection reset during close")
+
+    monkeypatch.setattr(db_module, "finish_library_sync_run", _always_fails)
+
+    restored = []
+    manager = CrawlManager()
+    manager._restore_library_stock_rows = lambda uid: restored.append(uid)  # type: ignore
+    assert await manager.start_sync(user["id"], "all") is True
+    await manager._sync_tasks[user["id"]]
+
+    assert restored == []
+
+
+@respx.mock
 async def test_a_transient_release_failure_does_not_strand_the_claim(pg_schema, monkeypatch):
     """The Plex release is the only thing that hands the claim back.
 

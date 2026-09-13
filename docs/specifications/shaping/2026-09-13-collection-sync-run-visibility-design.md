@@ -157,9 +157,15 @@ claim of its own — see the open item at the end of this document.
 INSERT INTO library_sync_runs (user_id, status, mode, scope, run_token)
 VALUES (..., 'running', ..., ..., ...)
 ON CONFLICT (user_id) DO UPDATE SET status = 'running', run_token = EXCLUDED.run_token, ...
-WHERE library_sync_runs.status <> 'running' OR <heartbeat is stale>
+WHERE NOT (library_sync_runs.status IN ('running', 'plex_matching'))
+      OR <heartbeat is stale>
 RETURNING run_token
 ```
+
+Both claimed statuses, not just `'running'`. `plex_matching` holds the claim
+too — that is the whole point of the phase handoff described further down, and
+a predicate naming only `'running'` would hand out a claim during the Plex
+phase, which is the overlap the handoff exists to prevent.
 
 No row returned means a live run already holds the claim, and `start_sync`
 returns `False` — which the router already turns into the `409` it always

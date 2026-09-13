@@ -1085,6 +1085,16 @@ class CrawlManager:
                 user_id, run_token, status, synced=synced,
                 wishlist_synced=wishlist_synced, error=error,
             )
+            if closed is None:
+                # Unresolved, not refused -- and unresolved is the expensive
+                # answer here, because the row is still 'running' and the claim
+                # still held. One retry on a fresh connection, so ownership is
+                # settled before the caller decides whether to do the follow-on
+                # work the claim must not be held across.
+                closed = self._finish_sync_run(
+                    user_id, run_token, status, synced=synced,
+                    wishlist_synced=wishlist_synced, error=error,
+                )
             if closed is not None:
                 # Answered either way: this call closed the run, or the run
                 # demonstrably was not ours and retrying would refuse again.
@@ -1361,6 +1371,11 @@ class CrawlManager:
             # stays occupied for its duration and refuses a local sync, so
             # releasing the claim here would let the *other* Machine start one
             # the local guard would have refused.
+            # Bound on both branches: the Plex path never reaches the
+            # restoration here (it runs after the phase releases the claim), but
+            # leaving this unset there makes the guard below a NameError rather
+            # than a decision.
+            claim_unresolved = False
             if plex_follows:
                 with user_scope(user_id) as conn:
                     handed_over = start_library_sync_plex_phase(
@@ -1387,14 +1402,29 @@ class CrawlManager:
                 closed = finish_run("complete", synced=count, wishlist_synced=wishlist_count)
                 if run_token is not None and closed is False:
                     raise _ClaimLost()
+                # A None has survived the retry inside finish_run, so the close
+                # never reached the row and the claim is still this worker's --
+                # which is the problem, not the reassurance it sounds like. The
+                # restoration below is the one step with no bound worth leasing
+                # against, and running it under a claim nobody has released is
+                # how the lease lapses mid-scan and a replacement sync starts
+                # on top of it. Skipped rather than risked: it is
+                # insert-if-absent follow-on work, the next sync does it, and a
+                # replacement that takes over runs its own.
+                claim_unresolved = run_token is not None and closed is None
             # Only when nothing else holds the claim. On the Plex path the
             # run is still claimed, and this statement -- a scan of the stock
             # inventory against this library, under the reconciliation lock --
             # has no bound worth leasing against: long enough and the claim
             # lapses under a sync that is still working. _sync_collection runs
             # it there instead, once the claim has been released.
-            if not plex_follows:
+            if not plex_follows and not claim_unresolved:
                 restore_library_stock_rows()
+            elif claim_unresolved:
+                log.warning(
+                    "Not queueing store items for user %d's library: this sync's run could not be closed",
+                    user_id,
+                )
             broadcast({
                 "status": "sync_complete",
                 "synced": count,
@@ -1432,12 +1462,18 @@ class CrawlManager:
             # not the same as still owning the run: an expired or dispossessed
             # worker can reach an ordinary exception, and restoring rows from
             # here would scan and enqueue against the library the replacement
-            # sync is rewriting. A None means the close could not be attempted
-            # at all, which is not evidence of a takeover.
-            if run_token is not None and closed is False:
+            # sync is rewriting.
+            #
+            # A None is not a takeover, but it is not permission either: the
+            # close never reached the row, so the claim is still held, and the
+            # restoration is the one step long enough to let that claim lapse
+            # under it. Both answers stop it here, for different reasons --
+            # refused because the work is somebody else's, unresolved because
+            # nobody has said it is ours to finish.
+            if run_token is not None and closed is not True:
                 log.warning(
-                    "Not queueing store items for user %d's library: this sync's run was taken over",
-                    user_id,
+                    "Not queueing store items for user %d's library: this sync's run was %s",
+                    user_id, "taken over" if closed is False else "not closed",
                 )
             else:
                 # Best effort: a second failure here must not replace the one
