@@ -99,8 +99,8 @@ unchanged name would instead rebuild all of them on every boot.
 `LOWER(artist)` indexes are untouched — they serve `_library_match_fragment`,
 which takes neither this fold nor the article one (see "Out of scope").
 
-The first boot after this deploys therefore drops and rebuilds those indexes
-inside one transaction — the whole `GLOBAL_SCHEMA` script runs as a single
+The first boot after this change deploys therefore drops and rebuilds those
+indexes inside one transaction — the whole `GLOBAL_SCHEMA` script runs as a single
 `conn.execute`, so `CONCURRENTLY`, which cannot run in a transaction block, is
 not available to it. The blocking level comes from the `DROP INDEX`es rather
 than the builds: each takes `ACCESS EXCLUSIVE` on its table (a plain
