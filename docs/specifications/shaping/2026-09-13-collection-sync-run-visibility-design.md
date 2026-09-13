@@ -246,6 +246,14 @@ to. With it, a worker that went quiet that long is out of the protocol, its
 next checkpoint fails, and it stops — which is what the client was already
 told.
 
+*Every* writer, and the Plex closer is the one easiest to leave out — it
+closes a phase rather than a sync, so it reads as bookkeeping rather than as a
+lease write. It is not: a Plex batch that crosses the window has already lost
+the claim, its next heartbeat raises, and an unfenced closer would revive the
+row as `complete` and answer `True` to a caller that takes that answer as
+permission to restore stock rows. The fence and the answer are one mechanism,
+not two.
+
 It is written with `clock_timestamp()`, not `CURRENT_TIMESTAMP`. Inside the
 page's transaction the latter is the time that transaction *began* — one
 page's work before the row actually lands — which would silently shorten the
@@ -436,7 +444,8 @@ Backend:
   taken-over run's old owner can neither advance nor heartbeat the run that
   replaced it.
 - A worker whose close is refused stops before restoring crawl rows or
-  announcing a completed sync, on the plain path as on the Plex one.
+  announcing a completed sync, on the plain path as on the Plex one — and on
+  the error path too, where failing is not the same as still owning the run.
 - A worker whose claim is taken over mid-sync stops rather than running its
   destructive cleanup: the wantlist record its stale snapshot would have
   deleted survives, it broadcasts no completion, and the replacement's claim

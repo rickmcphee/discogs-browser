@@ -1020,8 +1020,11 @@ class CrawlManager:
             )
 
         def sync_error(message):
+            """Report a failure, and hand back what the close did -- callers
+            that go on to do follow-on work have to know whether this run was
+            still theirs."""
             broadcast({"status": "sync_error", "error": message})
-            finish_run("error", error=message)
+            return finish_run("error", error=message)
 
         def still_ours(conn, **progress):
             """Record progress and assert the run is still this worker's. In
@@ -1337,13 +1340,25 @@ class CrawlManager:
             return None
         except Exception as e:
             log.error("Collection sync failed: %s", e, exc_info=True)
-            sync_error(str(e))
-            # Best effort: a second failure here must not replace the one
-            # already reported.
-            try:
-                restore_library_stock_rows()
-            except Exception as restore_error:
-                log.warning("Could not queue store items for user %d's library after the failed sync: %s", user_id, restore_error)
+            closed = sync_error(str(e))
+            # Fenced like the successful close and the Plex release. Failing is
+            # not the same as still owning the run: an expired or dispossessed
+            # worker can reach an ordinary exception, and restoring rows from
+            # here would scan and enqueue against the library the replacement
+            # sync is rewriting. A None means the close could not be attempted
+            # at all, which is not evidence of a takeover.
+            if run_token is not None and closed is False:
+                log.warning(
+                    "Not queueing store items for user %d's library: this sync's run was taken over",
+                    user_id,
+                )
+            else:
+                # Best effort: a second failure here must not replace the one
+                # already reported.
+                try:
+                    restore_library_stock_rows()
+                except Exception as restore_error:
+                    log.warning("Could not queue store items for user %d's library after the failed sync: %s", user_id, restore_error)
             return None
         finally:
             # Backstop for an exit neither branch above covered -- a

@@ -855,6 +855,96 @@ async def test_a_dispossessed_plex_phase_does_not_restore_stock_rows(pg_schema, 
     assert (run["status"], run["running"]) == ("running", True)
 
 
+async def test_an_expired_plex_phase_cannot_close_its_own_run(pg_schema):
+    """Expiry is irreversible for every writer, the Plex closer included.
+
+    A Plex batch that crosses the staleness window has already lost the claim
+    -- its next heartbeat raises -- but nobody need have claimed the row yet.
+    A closer that still matched would revive it as 'complete' and answer True,
+    which is what now decides whether the stock-row restoration runs, so the
+    expired worker would go on to enqueue against a library it no longer
+    owns."""
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+
+    with db.user_scope(user["id"]) as conn:
+        run_token = db.claim_library_sync_run(conn, user["id"], "all", "all")
+        assert db.start_library_sync_plex_phase(conn, user["id"], run_token) is True
+        conn.execute(
+            "UPDATE library_sync_runs SET heartbeat_at = clock_timestamp() - INTERVAL '%s minutes' "
+            "WHERE user_id = %%s" % (db.SYNC_RUN_STALE_MINUTES + 1),
+            [user["id"]],
+        )
+        conn.commit()
+
+    # Nobody has taken it over -- expiry alone has to be enough.
+    with db.user_scope(user["id"]) as conn:
+        assert db.finish_library_sync_plex_phase(conn, user["id"], run_token) is False
+        conn.commit()
+
+    with db.user_scope(user["id"]) as conn:
+        run = db.get_library_sync_run(conn, user["id"])
+    assert run["status"] == "plex_matching"
+    assert (run["running"], run["stale"]) == (False, True)
+
+
+@respx.mock
+async def test_a_dispossessed_worker_does_not_restore_stock_rows_when_it_fails(pg_schema, monkeypatch):
+    """Failing is not the same as still owning the run.
+
+    An expired or dispossessed worker can reach an ordinary exception, and the
+    error path went on to restore crawl rows regardless -- scanning and
+    enqueueing against the library the replacement sync is rewriting, which is
+    what the successful close and the Plex release already refuse to do."""
+    import config
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "s")
+    monkeypatch.setattr(config, "TOKEN_ENCRYPTION_KEY", "kL8mN2pQ7rT5vX9yB3cF6hJ1kM4nP8sU2wZ5aD7eG0i=")
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute(
+            "UPDATE users SET discogs_oauth_token_encrypted = %s, discogs_oauth_secret_encrypted = %s WHERE id = %s",
+            [token_encryption.encrypt("tok"), token_encryption.encrypt("sec"), user["id"]],
+        )
+        conn.commit()
+
+    respx.get("https://api.discogs.com/users/alice/collection/fields").mock(
+        return_value=httpx.Response(200, json={"fields": []})
+    )
+
+    # The claim is taken while the first page is being fetched, and that fetch
+    # then fails -- so the worker reaches its error path already dispossessed.
+    def _pages(*args, **kwargs):
+        with db.user_scope(user["id"]) as other:
+            other.execute(
+                "UPDATE library_sync_runs SET heartbeat_at = clock_timestamp() - INTERVAL '%s minutes' "
+                "WHERE user_id = %%s" % (db.SYNC_RUN_STALE_MINUTES + 1),
+                [user["id"]],
+            )
+            db.claim_library_sync_run(other, user["id"], "all", "all")
+            other.commit()
+        raise RuntimeError("collection page fetch exploded")
+
+    import discogs
+    monkeypatch.setattr(discogs, "iter_collection_pages", _pages)
+
+    restored = []
+
+    manager = CrawlManager()
+    manager._restore_library_stock_rows = lambda uid: restored.append(uid)  # type: ignore
+    assert await manager.start_sync(user["id"], "all") is True
+    await manager._sync_tasks[user["id"]]
+
+    assert restored == []
+
+    # The replacement's claim is untouched by the failing worker's close.
+    with db.user_scope(user["id"]) as conn:
+        run = db.get_library_sync_run(conn, user["id"])
+    assert (run["status"], run["running"]) == ("running", True)
+
+
 @respx.mock
 async def test_the_claim_is_held_across_the_plex_phase(pg_schema, monkeypatch):
     """_sync_collection runs a Plex match straight after the sync, and this

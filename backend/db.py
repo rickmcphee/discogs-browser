@@ -4302,7 +4302,14 @@ def finish_library_sync_plex_phase(conn, user_id: int, run_token: Optional[str])
     Separate from finish_library_sync_run rather than a flag on it, because the
     two close from different phases and conflating them is what lets
     _sync_collection_blocking's `finally` backstop -- which fires on the handoff
-    path too -- close the Plex phase it just handed off to."""
+    path too -- close the Plex phase it just handed off to.
+
+    Fenced on staleness like every other writer, and for the same reason:
+    expiry has to be irreversible whether or not anyone has claimed the row
+    yet. A Plex batch that crosses the window has already lost the claim -- its
+    next heartbeat raises -- and a closer that still matched would revive the
+    row as 'complete' and hand its caller a True, which is now what decides
+    whether the stock-row restoration runs."""
     cursor = conn.execute(
         """
         UPDATE library_sync_runs SET
@@ -4311,7 +4318,8 @@ def finish_library_sync_plex_phase(conn, user_id: int, run_token: Optional[str])
             finished_at = CURRENT_TIMESTAMP
         WHERE user_id = %(user_id)s AND status = 'plex_matching'
               AND run_token = %(run_token)s
-        """,
+              AND NOT ({stale})
+        """.format(stale=_SYNC_RUN_STALE_SQL),
         {"user_id": user_id, "run_token": run_token},
     )
     return cursor.rowcount > 0
