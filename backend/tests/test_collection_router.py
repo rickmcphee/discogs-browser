@@ -60,8 +60,10 @@ def test_collection_status_reports_a_running_sync(pg_test_db, authed_client_fact
         alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
         conn.commit()
     with db.user_scope(alice["id"]) as conn:
-        db.claim_library_sync_run(conn, alice["id"], "new", "all")
-        db.record_library_sync_progress(conn, alice["id"], page=3, total_pages=13, synced=42)
+        token = db.claim_library_sync_run(conn, alice["id"], "new", "all")
+        db.record_library_sync_progress(
+            conn, alice["id"], token, page=3, total_pages=13, synced=42
+        )
         conn.commit()
 
     client = authed_client_factory(alice["id"])
@@ -133,7 +135,7 @@ def test_collection_price_status_scoped_to_calling_user(pg_test_db, authed_clien
 
 
 def test_refresh_collection_starts_a_sync_for_the_calling_user(pg_test_db, authed_client_factory, monkeypatch):
-    async def _fake_sync(user_id, mode, scope="all"):
+    async def _fake_sync(user_id, mode, scope="all", run_token=None):
         await asyncio.sleep(0)
 
     monkeypatch.setattr(crawl_manager, "_sync_collection", _fake_sync)
@@ -154,7 +156,7 @@ def test_refresh_collection_starts_a_sync_for_the_calling_user(pg_test_db, authe
 def test_refresh_collection_passes_scope_through_to_start_sync(pg_test_db, authed_client_factory, monkeypatch):
     calls = []
 
-    async def _fake_sync(user_id, mode, scope="all"):
+    async def _fake_sync(user_id, mode, scope="all", run_token=None):
         calls.append((user_id, mode, scope))
         await asyncio.sleep(0)
 
@@ -174,7 +176,7 @@ def test_refresh_collection_passes_scope_through_to_start_sync(pg_test_db, authe
 def test_refresh_collection_defaults_scope_to_all(pg_test_db, authed_client_factory, monkeypatch):
     calls = []
 
-    async def _fake_sync(user_id, mode, scope="all"):
+    async def _fake_sync(user_id, mode, scope="all", run_token=None):
         calls.append((user_id, mode, scope))
         await asyncio.sleep(0)
 
@@ -194,7 +196,7 @@ def test_refresh_collection_defaults_scope_to_all(pg_test_db, authed_client_fact
 def test_refresh_collection_rejects_invalid_scope(pg_test_db, authed_client_factory, monkeypatch):
     calls = []
 
-    async def _fake_sync(user_id, mode, scope="all"):
+    async def _fake_sync(user_id, mode, scope="all", run_token=None):
         calls.append((user_id, mode, scope))
         await asyncio.sleep(0)
 
@@ -214,7 +216,7 @@ def test_refresh_collection_rejects_invalid_scope(pg_test_db, authed_client_fact
 def test_refresh_collection_rejects_invalid_mode(pg_test_db, authed_client_factory, monkeypatch):
     calls = []
 
-    async def _fake_sync(user_id, mode, scope="all"):
+    async def _fake_sync(user_id, mode, scope="all", run_token=None):
         calls.append((user_id, mode, scope))
         await asyncio.sleep(0)
 

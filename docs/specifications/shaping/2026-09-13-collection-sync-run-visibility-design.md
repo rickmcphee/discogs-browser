@@ -78,7 +78,8 @@ Touches:
 - `backend/routers/collection.py` — `GET /api/collection/status` carries the
   run.
 - `frontend/src/App.tsx` — a poll that follows a run to its end, and a `409`
-  that joins one instead of reporting a failure.
+  that joins a running sync instead of reporting a failure (and says so when
+  the refusal was not one).
 - `frontend/src/api/client.ts`, `frontend/src/api/types.ts` — the run's shape,
   and the HTTP status on a failed request so `409` is distinguishable.
 - Tests: `backend/tests/test_crawl_manager.py`,
@@ -113,7 +114,8 @@ CREATE TABLE IF NOT EXISTS library_sync_runs (
     error TEXT,
     started_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     heartbeat_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    finished_at TIMESTAMP
+    finished_at TIMESTAMP,
+    run_token TEXT                     -- which claim owns the row; see below
 );
 ```
 
@@ -132,11 +134,11 @@ Postgres, off the event loop via `run_in_threadpool` — the same treatment
 `start_stock_sync` gives its advisory lock, for the same reason.
 
 ```sql
-INSERT INTO library_sync_runs (user_id, status, mode, scope)
-VALUES (..., 'running', ..., ...)
-ON CONFLICT (user_id) DO UPDATE SET status = 'running', ... , finished_at = NULL
+INSERT INTO library_sync_runs (user_id, status, mode, scope, run_token)
+VALUES (..., 'running', ..., ..., ...)
+ON CONFLICT (user_id) DO UPDATE SET status = 'running', run_token = EXCLUDED.run_token, ...
 WHERE library_sync_runs.status <> 'running' OR <heartbeat is stale>
-RETURNING user_id
+RETURNING run_token
 ```
 
 No row returned means a live run already holds the claim, and `start_sync`
@@ -151,6 +153,28 @@ cannot carry that. The stock sync's own cross-Machine rejection had to state
 `running: true` by hand precisely because the holder's progress lives in
 another Machine's memory, unreadable from the one answering.
 
+### Every write names the claim it belongs to
+
+The claim carries a `run_token`, and every later write to the row — progress,
+heartbeat, close — requires it. Without it a writer can only address "whatever
+is running for this user", which after a takeover or a re-claim is somebody
+else's run, and two reachable sequences corrupt a newer run with an older
+one's writes:
+
+- **A taken-over worker is still alive.** Staleness (below) is judged on a
+  heartbeat, not on proof of death; a worker slow enough to be taken over is
+  still running, still advancing counters and still heartbeating. Its
+  heartbeat is the worse half: it would hold the new claim open in the old
+  worker's name.
+- **A backstop outlives its own run.** `_sync_collection_blocking` records its
+  outcome and then runs an unconditional `finally` (below). A refresh landing
+  in that gap takes a fresh claim, which the old backstop's `status =
+  'running'` predicate matches — reporting a sync that is seconds old as
+  failed, and releasing its claim for a duplicate to take.
+
+Both are silent when they happen, and both produce exactly the symptom this
+change is fixing.
+
 ### Staleness, because a claim that cannot expire is a trap
 
 A Machine that restarts mid-sync leaves its row saying `running` for ever.
@@ -161,10 +185,14 @@ a claim whose heartbeat has stopped can be taken over:
 
 The heartbeat advances at each page commit, inside that page's own
 transaction — so the row a reader sees advances exactly when the data it
-describes does, never ahead of it. A page is bounded work: at most one Discogs
-page of releases, each costing at most a barcode fetch plus its 1.1s pacing
-sleep. Fifteen minutes is far outside that and far inside "a human clicked the
-button again".
+describes does, never ahead of it. That alone is too coarse to bound the
+window on, though: a page is a hundred releases, and a release can spend a
+30-second request timeout on its barcode fetch before the pacing sleep, so a
+slow page can outlast fifteen minutes by itself and invite a takeover of a
+claim that is being worked. So the run also heartbeats every twenty-fifth
+item, on its own connection, landing while the page's transaction is still
+open. Fifteen minutes is then far outside what either loop can go quiet for,
+and far inside "a human clicked the button again".
 
 It is written with `clock_timestamp()`, not `CURRENT_TIMESTAMP`. Inside the
 page's transaction the latter is the time that transaction *began* — one
@@ -191,6 +219,17 @@ Best effort throughout, on its own connection: failing to *narrate* a sync must
 never be what ends one, and the connection the page loop was using may be in a
 failed transaction by the time the error path runs.
 
+### The two start paths share a lock
+
+`start_sync` and `start_plex_match` refuse to overlap, and used to get that for
+free: each checked both task maps and registered its own with no `await` in
+between, which asyncio's single-threaded scheduling makes atomic. The claim
+puts an await inside `start_sync`'s half of that, so a plex match starting
+during the claim would see both maps idle, register itself, and have the
+collection task created on top of it. Both now hold one lazily-created
+`asyncio.Lock` across guard, claim and registration — the same shape
+`start_stock_sync` already uses for its own guard-acquire-assign sequence.
+
 ### `GET /api/collection/status` carries the run
 
 Rather than a new endpoint. The client already calls this one (it drives the
@@ -210,6 +249,15 @@ same way.
   running is a thing to follow, not a failure to report. That is the case this
   whole change is about: the `409` may well be the other Machine saying it is
   busy with the sync this user just asked for.
+
+A refused start is followed on the evidence, not on the refusal. `409` is what
+the router answers for *every* reason `start_sync` declines, and a Plex match
+for this user is one of them — so a 409 is not proof that a sync exists to
+follow. A refusal therefore adopts only a run the poll finds actually running;
+when it finds none (or only a finished run from some earlier click, which is
+not this click's answer and must not be reported as one) it says the sync could
+not start and why it might not have. Deciding on observed state rather than on
+a reason code keeps that true for whatever else `start_sync` comes to decline.
 
 The loop drives the same state the SSE handlers do — `syncing`, the status
 message, and `syncGeneration`, which is what actually gets the new records onto
@@ -241,6 +289,10 @@ Backend:
   ever.
 - Closing a run releases the claim; a second close cannot overwrite the first's
   outcome (what makes the `finally` backstop safe).
+- A finished run's late backstop cannot close the claim taken after it, and a
+  taken-over run's old owner can neither advance nor heartbeat the run that
+  replaced it.
+- A plex match cannot register itself while a sync is mid-claim.
 - `GET /api/collection/status` reports a running run, reports an abandoned one
   as stale rather than running, reports nothing before a user's first sync, and
   is scoped to the calling user.
@@ -252,7 +304,8 @@ emits — the cross-Machine case reproduced directly:
 - a failed run and an abandoned run each say so;
 - a run that had already finished before the page loaded is not announced;
 - a refresh refused with `409` follows the running sync instead of reporting a
-  failure.
+  failure, and says the sync could not start when the refusal turns out not to
+  be one.
 
 Each was confirmed to fail against a build with the poll disabled.
 

@@ -86,6 +86,14 @@ const START_CLAIM_TIMEOUT_MS = 20_000
 // refetch and nothing else.
 const COLLECTION_SYNC_POLL_MS = 3000
 
+// What a refused start says once the poll finds no sync to show for it.
+// Deliberately not "a sync is already running": POST /collection/refresh
+// answers 409 for every reason start_sync declines, and a Plex match for this
+// user is one of them -- in which case there is no collection sync to follow
+// and the click would otherwise pass in silence.
+const REFUSED_START_MESSAGE =
+  'Could not start a sync — another job is running for your account. Try again shortly.'
+
 function collectionSyncProgressMessage(run: CollectionSyncRun): string {
   if (run.scope === 'wishlist') return 'Syncing wantlist…'
   if (run.total_pages) {
@@ -715,22 +723,31 @@ export default function App() {
 
   // Follows the run row until it ends, and is what makes a refresh visible at
   // all when this tab's SSE stream is served by the other Machine -- see
-  // COLLECTION_SYNC_POLL_MS. Restarted by bumping syncPollNonce; the ref says
-  // the restart is ours, so the loop may report the outcome of a run it has
-  // not yet seen running.
+  // COLLECTION_SYNC_POLL_MS. Restarted by bumping syncPollNonce; the ref
+  // carries what the restart means.
+  //
+  // `adoptTerminal` says whether a run that is already finished may be
+  // reported. A refresh the server accepted may well have finished before the
+  // first poll, and its outcome is this click's answer -- but only the click
+  // knows that, since the row itself looks the same as one from last week.
+  // `idleMessage` is the other half: a refused start whose refusal turns out
+  // not to be a running sync has to say *something*, or the click is the
+  // silent no-op this whole change exists to remove.
   const [syncPollNonce, setSyncPollNonce] = useState(0)
-  const expectSyncRunRef = useRef(false)
+  const syncPollIntentRef = useRef<{ adoptTerminal: boolean; idleMessage: string | null } | null>(null)
 
   useEffect(() => {
     if (authState?.state !== 'authenticated') return
     let cancelled = false
+    const intent = syncPollIntentRef.current
+    syncPollIntentRef.current = null
     // Only a run this tab has actually watched may write its outcome to the
     // banner. Otherwise every page load would re-announce the last sync,
     // however old -- the row is the most recent run, not a fresh event. A
-    // refresh we just requested counts as watched: the claim is taken by the
+    // refresh the server accepted counts as watched: the claim is taken by the
     // request itself, so the run is already there to find.
-    let following = expectSyncRunRef.current
-    expectSyncRunRef.current = false
+    let following = intent?.adoptTerminal ?? false
+    const idleMessage = intent?.idleMessage ?? null
     let lastProgress = ''
 
     async function poll() {
@@ -749,7 +766,10 @@ export default function App() {
           const run: CollectionSyncRun | null | undefined = status.sync
           // No run at all -- this user has never synced, or the reply predates
           // the field. Either way there is nothing here to follow.
-          if (!run) return
+          if (!run) {
+            if (idleMessage) setSyncStatus(idleMessage)
+            return
+          }
           if (run.running) {
             following = true
             setSyncing(true)
@@ -759,17 +779,22 @@ export default function App() {
               lastProgress = progress
               setSyncGeneration(g => g + 1)
             }
+          } else if (following) {
+            setSyncing(false)
+            setSyncStatus(collectionSyncOutcomeMessage(run))
+            // Unconditional, not gated on the counters having moved: this is
+            // the tick that pulls in everything the last page committed, and
+            // on a sync whose pages all landed between two polls it is the
+            // only one there is.
+            setSyncGeneration(g => g + 1)
+            fetchPriceStatus()
+            return
           } else {
-            if (following) {
-              setSyncing(false)
-              setSyncStatus(collectionSyncOutcomeMessage(run))
-              // Unconditional, not gated on the counters having moved: this is
-              // the tick that pulls in everything the last page committed, and
-              // on a sync whose pages all landed between two polls it is the
-              // only one there is.
-              setSyncGeneration(g => g + 1)
-              fetchPriceStatus()
-            }
+            // Nothing is running, and the run on file is not ours to report.
+            // On a refused start that means the refusal was not a running
+            // sync after all -- POST /collection/refresh answers 409 for any
+            // reason start_sync declines, a Plex match for this user included.
+            if (idleMessage) setSyncStatus(idleMessage)
             return
           }
         }
@@ -780,8 +805,8 @@ export default function App() {
     return () => { cancelled = true }
   }, [authState, syncPollNonce, setSyncStatus, fetchPriceStatus])
 
-  const followSyncRun = useCallback(() => {
-    expectSyncRunRef.current = true
+  const followSyncRun = useCallback((intent: { adoptTerminal: boolean; idleMessage: string | null }) => {
+    syncPollIntentRef.current = intent
     setSyncPollNonce(n => n + 1)
   }, [])
 
@@ -798,8 +823,10 @@ export default function App() {
         setSyncStatus(`Sync failed: ${e.message}`)
         return
       }
+      followSyncRun({ adoptTerminal: false, idleMessage: REFUSED_START_MESSAGE })
+      return
     }
-    followSyncRun()
+    followSyncRun({ adoptTerminal: true, idleMessage: null })
   }, [setSyncStatus, followSyncRun])
 
   const handleRefresh = useCallback(async (mode?: 'all' | 'new') => {
@@ -813,7 +840,7 @@ export default function App() {
       // Machine's. Neither of the modal's choices could start anything, so
       // show what is running instead of asking a question already answered.
       if (status.sync?.running) {
-        followSyncRun()
+        followSyncRun({ adoptTerminal: true, idleMessage: null })
         return
       }
       if (status.total > 0) {
@@ -838,8 +865,10 @@ export default function App() {
         setSyncStatus(`Sync failed: ${e.message}`)
         return
       }
+      followSyncRun({ adoptTerminal: false, idleMessage: REFUSED_START_MESSAGE })
+      return
     }
-    followSyncRun()
+    followSyncRun({ adoptTerminal: true, idleMessage: null })
   }, [setSyncStatus, followSyncRun])
 
   // POST /crawl/start only enqueues, and the shared worker pool broadcasts no

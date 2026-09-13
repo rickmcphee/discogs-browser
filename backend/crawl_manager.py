@@ -91,6 +91,9 @@ class CrawlManager:
         # at import, before any event loop exists -- the same reason
         # _site_locks is populated on first use.
         self._stock_start_lock: Optional[asyncio.Lock] = None
+        # The same job for start_sync and start_plex_match, which exclude each
+        # other and so have to share one. Lazily created for the same reason.
+        self._sync_start_lock: Optional[asyncio.Lock] = None
         self._judgment_tasks: dict[int, asyncio.Task] = {}
         self._plex_match_tasks: dict[int, asyncio.Task] = {}
         self._worker_tasks: list[asyncio.Task] = []
@@ -789,56 +792,80 @@ class CrawlManager:
         return task is not None and not task.done()
 
     @staticmethod
-    def _claim_sync_run(user_id: int, mode: str, scope: str) -> bool:
+    def _claim_sync_run(user_id: int, mode: str, scope: str) -> Optional[str]:
         from db import user_scope, claim_library_sync_run
         with user_scope(user_id) as conn:
-            claimed = claim_library_sync_run(conn, user_id, mode, scope)
+            run_token = claim_library_sync_run(conn, user_id, mode, scope)
             conn.commit()
-        return claimed
+        return run_token
+
+    def _start_lock(self) -> asyncio.Lock:
+        """Serializes the per-user guard, claim and task registration in
+        start_sync and start_plex_match against each other.
+
+        Those two refuse to overlap, and used to get that for free: each
+        checked both task maps and registered its own with no await in
+        between, which asyncio's single-threaded scheduling makes atomic. The
+        cross-Machine claim adds an await inside start_sync's half, so without
+        this a plex match starting during that claim sees both maps idle,
+        registers itself, and the collection task is created on top of it.
+        Lazily built, like _stock_start_lock, because the manager is
+        constructed at import time with no running loop to bind to."""
+        if self._sync_start_lock is None:
+            self._sync_start_lock = asyncio.Lock()
+        return self._sync_start_lock
 
     async def start_sync(self, user_id: int, mode: str = "all", scope: str = "all") -> bool:
-        if self.sync_running(user_id) or self.plex_match_running(user_id):
-            log.warning("Collection sync already running for %s, ignoring start request", self._username_for_log(user_id))
-            return False
-        # _sync_tasks above is this process's memory, and the deployment runs
-        # more than one Machine behind one hostname -- so the guard it provides
-        # covers only the half of the requests that happen to land here. The
-        # claim below is the same refusal made in Postgres, where the other
-        # Machine's run is visible; it doubles as the row that tells the
-        # browser its sync is under way at all (see library_sync_runs).
-        # Blocking psycopg calls, so off the event loop, same as
-        # start_stock_sync's advisory lock.
-        if not await run_in_threadpool(self._claim_sync_run, user_id, mode, scope):
-            log.warning(
-                "Collection sync already running on another instance for %s, ignoring start request",
-                self._username_for_log(user_id),
+        async with self._start_lock():
+            if self.sync_running(user_id) or self.plex_match_running(user_id):
+                log.warning("Collection sync already running for %s, ignoring start request", self._username_for_log(user_id))
+                return False
+            # _sync_tasks above is this process's memory, and the deployment
+            # runs more than one Machine behind one hostname -- so the guard it
+            # provides covers only the half of the requests that happen to land
+            # here. The claim below is the same refusal made in Postgres, where
+            # the other Machine's run is visible; it doubles as the row that
+            # tells the browser its sync is under way at all (see
+            # library_sync_runs). Blocking psycopg calls, so off the event
+            # loop, same as start_stock_sync's advisory lock.
+            run_token = await run_in_threadpool(self._claim_sync_run, user_id, mode, scope)
+            if run_token is None:
+                log.warning(
+                    "Collection sync already running on another instance for %s, ignoring start request",
+                    self._username_for_log(user_id),
+                )
+                return False
+            self._sync_tasks[user_id] = asyncio.create_task(
+                self._sync_collection(user_id, mode, scope, run_token)
             )
-            return False
-        self._sync_tasks[user_id] = asyncio.create_task(self._sync_collection(user_id, mode, scope))
-        return True
+            return True
 
     def plex_match_running(self, user_id: int) -> bool:
         task = self._plex_match_tasks.get(user_id)
         return task is not None and not task.done()
 
     async def start_plex_match(self, user_id: int) -> bool:
-        if self.plex_match_running(user_id) or self.sync_running(user_id):
-            log.warning("Plex match already running or sync in progress for %s, ignoring start request", self._username_for_log(user_id))
-            return False
-        from db import get_identity_pool
-        with get_identity_pool().connection() as conn:
-            user = conn.execute(
-                "SELECT plex_base_url, plex_token, plex_match_threshold FROM users WHERE id = %s",
-                [user_id],
-            ).fetchone()
-        if user is None or not user["plex_base_url"] or not user["plex_token"]:
-            return False
-        self._plex_match_tasks[user_id] = asyncio.create_task(
-            self._run_plex_match(user_id, user["plex_base_url"], user["plex_token"], user["plex_match_threshold"])
-        )
-        return True
+        # Under the same lock as start_sync: the mutual exclusion these two
+        # guards declare is only real if neither can register a task while the
+        # other is between its check and its own registration. See _start_lock.
+        async with self._start_lock():
+            if self.plex_match_running(user_id) or self.sync_running(user_id):
+                log.warning("Plex match already running or sync in progress for %s, ignoring start request", self._username_for_log(user_id))
+                return False
+            from db import get_identity_pool
+            with get_identity_pool().connection() as conn:
+                user = conn.execute(
+                    "SELECT plex_base_url, plex_token, plex_match_threshold FROM users WHERE id = %s",
+                    [user_id],
+                ).fetchone()
+            if user is None or not user["plex_base_url"] or not user["plex_token"]:
+                return False
+            self._plex_match_tasks[user_id] = asyncio.create_task(
+                self._run_plex_match(user_id, user["plex_base_url"], user["plex_token"], user["plex_match_threshold"])
+            )
+            return True
 
-    async def _sync_collection(self, user_id: int, mode: str, scope: str = "all"):
+    async def _sync_collection(self, user_id: int, mode: str, scope: str = "all", run_token: Optional[str] = None):
         # The actual work is a long sequence of blocking httpx/psycopg calls with
         # no natural await points between them (barcode-fetch pacing aside) --
         # run it in a worker thread via run_in_threadpool (same pattern
@@ -847,7 +874,9 @@ class CrawlManager:
         # other user's requests -- for its entire duration, or indefinitely if a
         # single call hangs.
         loop = asyncio.get_running_loop()
-        plex_params = await run_in_threadpool(self._sync_collection_blocking, user_id, mode, scope, loop)
+        plex_params = await run_in_threadpool(
+            self._sync_collection_blocking, user_id, mode, scope, loop, run_token
+        )
         if plex_params:
             base_url, token, threshold = plex_params
             await self._run_plex_match(user_id, base_url, token, threshold)
@@ -855,7 +884,10 @@ class CrawlManager:
     def _broadcast_threadsafe(self, event: dict, loop: asyncio.AbstractEventLoop):
         asyncio.run_coroutine_threadsafe(self._broadcast(event), loop)
 
-    def _sync_collection_blocking(self, user_id: int, mode: str, scope: str, loop: asyncio.AbstractEventLoop):
+    def _sync_collection_blocking(
+        self, user_id: int, mode: str, scope: str, loop: asyncio.AbstractEventLoop,
+        run_token: Optional[str] = None,
+    ):
         import token_encryption
         import discogs
         from db import (
@@ -877,7 +909,7 @@ class CrawlManager:
             try:
                 with user_scope(user_id) as conn:
                     finish_library_sync_run(
-                        conn, user_id, status, synced=synced,
+                        conn, user_id, run_token, status, synced=synced,
                         wishlist_synced=wishlist_synced, error=error,
                     )
                     conn.commit()
@@ -890,7 +922,7 @@ class CrawlManager:
         def heartbeat_run():
             try:
                 with user_scope(user_id) as conn:
-                    record_library_sync_progress(conn, user_id)
+                    record_library_sync_progress(conn, user_id, run_token)
                     conn.commit()
             except Exception as e:
                 log.warning("Could not record user %d's collection sync heartbeat: %s", user_id, e)
@@ -991,11 +1023,23 @@ class CrawlManager:
                             )
                             enqueue_crawl_queue(conn, rid)
                             count += 1
+                            # The page's own commit is the natural heartbeat,
+                            # but it is too coarse to bound on: a page is a
+                            # hundred releases, each of which can spend a
+                            # 30-second request timeout on the barcode fetch
+                            # before its pacing sleep. A page of those outlasts
+                            # the staleness window on its own and invites a
+                            # takeover of a claim that is being worked. This
+                            # one rides its own connection so it lands while
+                            # the page's transaction is still open.
+                            if count % 25 == 0:
+                                heartbeat_run()
                         # In the page's own transaction, so the row the other
                         # Machine reads advances exactly when the data it
                         # describes does -- never ahead of it.
                         record_library_sync_progress(
-                            conn, user_id, page=page, total_pages=total_pages, synced=count,
+                            conn, user_id, run_token, page=page,
+                            total_pages=total_pages, synced=count,
                         )
                         conn.commit()
                         # user_scope()'s set_config(..., true) is transaction-local and
@@ -1039,7 +1083,11 @@ class CrawlManager:
                         )
                         enqueue_crawl_queue(conn, rid)
                         wishlist_count += 1
-                    record_library_sync_progress(conn, user_id, wishlist_synced=wishlist_count)
+                        if wishlist_count % 25 == 0:
+                            heartbeat_run()
+                    record_library_sync_progress(
+                        conn, user_id, run_token, wishlist_synced=wishlist_count
+                    )
                     conn.commit()
                     # Same reasoning as the collection-loop commit above: re-scope
                     # app.user_id for this connection's next transaction, since the

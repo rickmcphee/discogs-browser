@@ -117,7 +117,7 @@ def synced_user(pg_schema):
 
 
 async def test_start_sync_returns_true_when_idle(manager, synced_user):
-    async def _fake_sync(user_id, mode, scope="all"):
+    async def _fake_sync(user_id, mode, scope="all", run_token=None):
         await asyncio.sleep(0)
 
     manager._sync_collection = _fake_sync  # type: ignore
@@ -129,7 +129,7 @@ async def test_start_sync_returns_true_when_idle(manager, synced_user):
 async def test_start_sync_returns_false_when_already_running(manager, synced_user):
     event = asyncio.Event()
 
-    async def _fake_sync(user_id, mode, scope="all"):
+    async def _fake_sync(user_id, mode, scope="all", run_token=None):
         await event.wait()
 
     manager._sync_collection = _fake_sync  # type: ignore
@@ -142,7 +142,7 @@ async def test_start_sync_returns_false_when_already_running(manager, synced_use
 
 
 async def test_sync_running_false_after_completion(manager, synced_user):
-    async def _instant(user_id, mode, scope="all"):
+    async def _instant(user_id, mode, scope="all", run_token=None):
         pass
 
     manager._sync_collection = _instant  # type: ignore
@@ -157,10 +157,10 @@ async def test_start_sync_is_refused_while_another_instance_holds_the_run(manage
     request reaches. A manager that has never heard of this run must still
     refuse to start a second one."""
     with db.user_scope(synced_user) as conn:
-        assert db.claim_library_sync_run(conn, synced_user, "all", "all") is True
+        assert db.claim_library_sync_run(conn, synced_user, "all", "all") is not None
         conn.commit()
 
-    async def _fake_sync(user_id, mode, scope="all"):
+    async def _fake_sync(user_id, mode, scope="all", run_token=None):
         await asyncio.sleep(0)
 
     manager._sync_collection = _fake_sync  # type: ignore
@@ -182,7 +182,7 @@ async def test_start_sync_takes_over_a_run_whose_machine_died(manager, synced_us
         )
         conn.commit()
 
-    async def _fake_sync(user_id, mode, scope="all"):
+    async def _fake_sync(user_id, mode, scope="all", run_token=None):
         await asyncio.sleep(0)
 
     manager._sync_collection = _fake_sync  # type: ignore
@@ -198,7 +198,7 @@ async def test_start_sync_for_one_user_does_not_block_another_users_sync(manager
     what makes this true."""
     event = asyncio.Event()
 
-    async def _fake_sync(user_id, mode, scope="all"):
+    async def _fake_sync(user_id, mode, scope="all", run_token=None):
         await event.wait()
 
     with db.get_admin_pool().connection() as conn:
@@ -377,19 +377,126 @@ async def test_a_finished_run_does_not_hold_the_claim(pg_schema):
         conn.commit()
 
     with db.user_scope(user["id"]) as conn:
-        assert db.claim_library_sync_run(conn, user["id"], "all", "all") is True
-        assert db.claim_library_sync_run(conn, user["id"], "all", "all") is False
-        assert db.finish_library_sync_run(conn, user["id"], "complete", synced=7) is True
+        token = db.claim_library_sync_run(conn, user["id"], "all", "all")
+        assert token is not None
+        assert db.claim_library_sync_run(conn, user["id"], "all", "all") is None
+        assert db.finish_library_sync_run(conn, user["id"], token, "complete", synced=7) is True
         # A second close cannot overwrite the outcome the first recorded --
         # this is what makes _sync_collection_blocking's `finally` backstop
         # safe to call on every exit.
-        assert db.finish_library_sync_run(conn, user["id"], "error", error="late") is False
-        assert db.claim_library_sync_run(conn, user["id"], "new", "all") is True
+        assert db.finish_library_sync_run(conn, user["id"], token, "error", error="late") is False
+        assert db.claim_library_sync_run(conn, user["id"], "new", "all") is not None
         conn.commit()
 
     with db.user_scope(user["id"]) as conn:
         run = db.get_library_sync_run(conn, user["id"])
     assert (run["status"], run["mode"], run["synced"]) == ("running", "new", 0)
+
+
+async def test_a_finished_runs_backstop_cannot_close_the_next_claim(pg_schema):
+    """_sync_collection_blocking records its outcome and then runs an
+    unconditional `finally` backstop. A refresh landing in between takes a
+    fresh claim -- which, without the run token, that backstop would match:
+    the new sync would be reported as failed seconds after starting, and its
+    claim released for a duplicate to take."""
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+
+    with db.user_scope(user["id"]) as conn:
+        finished = db.claim_library_sync_run(conn, user["id"], "all", "all")
+        db.finish_library_sync_run(conn, user["id"], finished, "complete", synced=5)
+        next_run = db.claim_library_sync_run(conn, user["id"], "new", "all")
+        assert next_run is not None and next_run != finished
+        # The previous run's backstop, arriving late.
+        assert db.finish_library_sync_run(
+            conn, user["id"], finished, "error", error="Sync ended unexpectedly"
+        ) is False
+        conn.commit()
+
+    with db.user_scope(user["id"]) as conn:
+        run = db.get_library_sync_run(conn, user["id"])
+    assert (run["status"], run["running"], run["error"]) == ("running", True, None)
+
+
+async def test_a_taken_over_run_cannot_be_advanced_by_its_old_owner(pg_schema):
+    """A worker whose claim went stale can still be alive -- a page of releases
+    can outlast the staleness window if Discogs is slow enough. Its writes must
+    not land on the run that replaced it: neither its counters (which would
+    report the wrong sync's progress) nor its heartbeat (which would hold the
+    new claim open in the old worker's name)."""
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+
+    with db.user_scope(user["id"]) as conn:
+        abandoned = db.claim_library_sync_run(conn, user["id"], "all", "all")
+        conn.execute(
+            "UPDATE library_sync_runs SET heartbeat_at = clock_timestamp() - INTERVAL '%s minutes' "
+            "WHERE user_id = %%s" % (db.SYNC_RUN_STALE_MINUTES + 1),
+            [user["id"]],
+        )
+        taken_over = db.claim_library_sync_run(conn, user["id"], "new", "all")
+        assert taken_over is not None and taken_over != abandoned
+
+        db.record_library_sync_progress(
+            conn, user["id"], abandoned, page=9, total_pages=9, synced=900
+        )
+        assert db.finish_library_sync_run(
+            conn, user["id"], abandoned, "complete", synced=900
+        ) is False
+        conn.commit()
+
+    with db.user_scope(user["id"]) as conn:
+        run = db.get_library_sync_run(conn, user["id"])
+    assert (run["status"], run["mode"], run["synced"], run["page"]) == ("running", "new", 0, None)
+
+
+async def test_start_plex_match_cannot_slip_in_while_a_sync_is_claiming(pg_schema, monkeypatch):
+    """start_sync and start_plex_match refuse to overlap. The cross-Machine
+    claim puts an await inside start_sync's guard, so without a shared lock a
+    plex match starting during that claim sees both task maps idle and
+    registers itself, and the collection task is created on top of it."""
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute(
+            "UPDATE users SET plex_base_url = %s, plex_token = %s WHERE id = %s",
+            ["http://plex.local:32400", "tok", user["id"]],
+        )
+        conn.commit()
+
+    manager = CrawlManager()
+    claiming = asyncio.Event()
+    release = asyncio.Event()
+    real_claim = manager._claim_sync_run
+
+    async def _slow_claim(func, *args):
+        # Stands in for run_in_threadpool: the await inside start_sync's
+        # critical section, held open for as long as the test needs.
+        claiming.set()
+        await release.wait()
+        return real_claim(*args)
+
+    monkeypatch.setattr("crawl_manager.run_in_threadpool", _slow_claim)
+
+    async def _fake_sync(user_id, mode, scope="all", run_token=None):
+        await asyncio.sleep(0)
+
+    async def _fake_plex(user_id, base_url, token, threshold):
+        await asyncio.sleep(0)
+
+    manager._sync_collection = _fake_sync  # type: ignore
+    manager._run_plex_match = _fake_plex  # type: ignore
+
+    sync = asyncio.create_task(manager.start_sync(user["id"], "all"))
+    await claiming.wait()
+    plex = asyncio.create_task(manager.start_plex_match(user["id"]))
+    await asyncio.sleep(0)
+    release.set()
+
+    assert await sync is True
+    assert await plex is False
+    await asyncio.sleep(0.01)
 
 
 @pytest.fixture
@@ -1164,7 +1271,7 @@ async def test_start_plex_match_returns_false_while_sync_running(pg_schema):
 
     manager = CrawlManager()
 
-    async def _never_finishes(user_id, mode, scope="all"):
+    async def _never_finishes(user_id, mode, scope="all", run_token=None):
         await asyncio.sleep(10)
 
     manager._sync_collection = _never_finishes

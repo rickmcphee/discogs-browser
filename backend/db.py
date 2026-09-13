@@ -1,4 +1,5 @@
 import hashlib
+import uuid
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Optional
@@ -656,6 +657,16 @@ CREATE TABLE IF NOT EXISTS library_sync_runs (
     heartbeat_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     finished_at TIMESTAMP
 );
+
+-- Identifies *which* claim owns the row, so a writer can prove the run it is
+-- describing is still the run that is there. Without it every write is
+-- addressed to "whatever is currently running for this user", and two
+-- reachable races corrupt a newer run with an older one's writes: a worker
+-- whose claim was taken over as stale is still alive and still writing, and a
+-- worker that has just finished still runs its `finally` backstop -- which a
+-- fresh claim taken in between would otherwise absorb, marking a sync that is
+-- only just starting as failed and releasing its claim.
+ALTER TABLE library_sync_runs ADD COLUMN IF NOT EXISTS run_token TEXT;
 
 -- One-shot, self-retiring migration off the global catalog.discogs_price.
 -- The guard is what makes it safe to leave in a schema string that re-runs on
@@ -4020,35 +4031,43 @@ _SYNC_RUN_STALE_SQL = (
 )
 
 
-def claim_library_sync_run(conn, user_id: int, mode: str, scope: str) -> bool:
+def claim_library_sync_run(conn, user_id: int, mode: str, scope: str) -> Optional[str]:
     """Claim the right to run a collection sync for this user, across every
-    Machine rather than just this process. Returns False when a live run
-    already holds it.
+    Machine rather than just this process. Returns the claim's run token, or
+    None when a live run already holds it.
 
     CrawlManager._sync_tasks answers the same question for one process only,
     which is not the question: with two Machines behind one hostname, the
     refusal has to hold for a sync the *other* one is running, and the browser
-    that asked has no say in which Machine it reached."""
+    that asked has no say in which Machine it reached.
+
+    The token identifies this claim to every later write (see the column's
+    comment in TENANT_SCHEMA). Hold on to it: without it a caller can only
+    address "whatever is running for this user", which after a takeover or a
+    re-claim is somebody else's run."""
+    run_token = uuid.uuid4().hex
     row = conn.execute(
         f"""
-        INSERT INTO library_sync_runs (user_id, status, mode, scope)
-        VALUES (%(user_id)s, 'running', %(mode)s, %(scope)s)
+        INSERT INTO library_sync_runs (user_id, status, mode, scope, run_token)
+        VALUES (%(user_id)s, 'running', %(mode)s, %(scope)s, %(run_token)s)
         ON CONFLICT (user_id) DO UPDATE SET
             status = 'running', mode = EXCLUDED.mode, scope = EXCLUDED.scope,
+            run_token = EXCLUDED.run_token,
             page = NULL, total_pages = NULL, synced = 0, wishlist_synced = NULL,
             error = NULL, started_at = CURRENT_TIMESTAMP,
             heartbeat_at = clock_timestamp(), finished_at = NULL
         WHERE library_sync_runs.status <> 'running' OR {_SYNC_RUN_STALE_SQL}
-        RETURNING user_id
+        RETURNING run_token
         """,
-        {"user_id": user_id, "mode": mode, "scope": scope},
+        {"user_id": user_id, "mode": mode, "scope": scope, "run_token": run_token},
     ).fetchone()
-    return row is not None
+    return row["run_token"] if row else None
 
 
 def record_library_sync_progress(
     conn,
     user_id: int,
+    run_token: Optional[str],
     page: Optional[int] = None,
     total_pages: Optional[int] = None,
     synced: Optional[int] = None,
@@ -4056,7 +4075,11 @@ def record_library_sync_progress(
 ):
     """Advance the run's counters and its heartbeat. COALESCE so a caller can
     move one field without restating the others -- the wantlist loop has no
-    page numbers to report, and the heartbeat alone is a valid update."""
+    page numbers to report, and the heartbeat alone is a valid update.
+
+    Fenced on `run_token`, so a worker whose claim was taken over while it was
+    still alive cannot go on advancing (or heartbeating, which would hold the
+    claim open) a run that is no longer its own."""
     conn.execute(
         """
         UPDATE library_sync_runs SET
@@ -4066,10 +4089,12 @@ def record_library_sync_progress(
             wishlist_synced = COALESCE(%(wishlist_synced)s, wishlist_synced),
             heartbeat_at = clock_timestamp()
         WHERE user_id = %(user_id)s AND status = 'running'
+              AND run_token = %(run_token)s
         """,
         {
-            "user_id": user_id, "page": page, "total_pages": total_pages,
-            "synced": synced, "wishlist_synced": wishlist_synced,
+            "user_id": user_id, "run_token": run_token, "page": page,
+            "total_pages": total_pages, "synced": synced,
+            "wishlist_synced": wishlist_synced,
         },
     )
 
@@ -4077,6 +4102,7 @@ def record_library_sync_progress(
 def finish_library_sync_run(
     conn,
     user_id: int,
+    run_token: Optional[str],
     status: str,
     synced: Optional[int] = None,
     wishlist_synced: Optional[int] = None,
@@ -4085,9 +4111,11 @@ def finish_library_sync_run(
     """Close the run. Returns whether this call is the one that closed it.
 
     `status = 'running'` in the WHERE is what makes the backstop in
-    _sync_collection_blocking's `finally` safe: it can be called
-    unconditionally on every exit and will not overwrite the real outcome a
-    path already recorded."""
+    _sync_collection_blocking's `finally` safe to call on every exit: it will
+    not overwrite the real outcome a path already recorded. `run_token` is what
+    makes it safe *in time*: a fresh claim can land between a run's own
+    completion and its backstop, and without the token that backstop would
+    match the new run and mark a sync that is only just starting as failed."""
     cursor = conn.execute(
         """
         UPDATE library_sync_runs SET
@@ -4098,10 +4126,11 @@ def finish_library_sync_run(
             heartbeat_at = clock_timestamp(),
             finished_at = CURRENT_TIMESTAMP
         WHERE user_id = %(user_id)s AND status = 'running'
+              AND run_token = %(run_token)s
         """,
         {
-            "user_id": user_id, "status": status, "synced": synced,
-            "wishlist_synced": wishlist_synced, "error": error,
+            "user_id": user_id, "run_token": run_token, "status": status,
+            "synced": synced, "wishlist_synced": wishlist_synced, "error": error,
         },
     )
     return cursor.rowcount > 0

@@ -184,13 +184,40 @@ describe('following a collection sync without its events', () => {
     expect(refreshCollection).not.toHaveBeenCalled()
   })
 
+  it('says the sync could not start when the refusal was not a running sync', async () => {
+    // POST /collection/refresh answers 409 for every reason start_sync
+    // declines — a Plex match for this user included — so a 409 is not proof
+    // that there is a sync to follow. Following one that is not there left the
+    // click silent, or announced the previous run's outcome as if it were new.
+    const refused: any = new Error('{"detail":"Collection sync already running"}')
+    refused.status = 409
+    refreshCollection.mockRejectedValue(refused)
+    getCollectionStatus.mockResolvedValue({
+      total: 25, last_synced: null,
+      sync: run({ status: 'complete', running: false, synced: 25, wishlist_synced: 3 }),
+    })
+
+    render(<App />)
+    fireEvent.click(await screen.findByTitle('Sync collection from Discogs'))
+    fireEvent.click(await screen.findByRole('button', { name: /Refresh All/ }))
+
+    await screen.findByText(/Could not start a sync/)
+    // And not the completed run it found on file, which belongs to a sync this
+    // click had nothing to do with.
+    expect(screen.queryByText('Synced 25 records, 3 wantlist items')).toBeNull()
+  })
+
   it('follows the running sync instead of reporting a failure when the refresh is refused', async () => {
     // 409: a sync is already running -- on this deployment, quite possibly on
     // the Machine this tab never talks to.
     const refused: any = new Error('{"detail":"Collection sync already running"}')
     refused.status = 409
     refreshCollection.mockRejectedValue(refused)
+    // Two idle reads first: the mount poll, then the modal's own "is anything
+    // loaded?" check. A running sync there would skip the modal entirely (see
+    // the test above), which is not the path being exercised here.
     getCollectionStatus
+      .mockResolvedValueOnce({ total: 5, last_synced: null, sync: null })
       .mockResolvedValueOnce({ total: 5, last_synced: null, sync: null })
       .mockResolvedValue({ total: 5, last_synced: null, sync: run({ page: 4, total_pages: 9, synced: 340 }) })
 
