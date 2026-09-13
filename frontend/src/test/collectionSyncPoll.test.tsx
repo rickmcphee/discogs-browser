@@ -341,6 +341,40 @@ describe('following a collection sync without its events', () => {
     expect(screen.queryByText('Syncing collection… 10 records (page 1/2)')).toBeNull()
   })
 
+  it('does not talk over another job while only the wantlist counter moves', async () => {
+    // wishlist_synced advances at every wantlist checkpoint and appears in no
+    // rendered line: the wantlist message is a constant, and the collection
+    // one reads page/synced. Driving the banner off the progress signature
+    // therefore rewrote it with identical text at every poll — invisible on
+    // its own, and fatal to whatever else had written to the shared banner
+    // since. The rows still have to be refetched, which is why the two are
+    // tracked apart rather than the counter simply dropped.
+    let synced = 3
+    getCollectionStatus.mockImplementation(async () => ({
+      total: 5, last_synced: null,
+      sync: run({ scope: 'wishlist', page: 1, total_pages: 1, synced: 0, wishlist_synced: synced }),
+    }))
+
+    render(<App />)
+    await screen.findByText('Syncing wantlist…')
+    const beforeOtherJob = getReleases.mock.calls.length
+
+    SilentEventSource.instances[0].emit({
+      status: 'stock_sync_progress', synced: 5, source: 'Amoeba', id: 1,
+    })
+    await screen.findByText('Syncing in-stock catalog… 5 items (Amoeba)')
+
+    // The wantlist keeps committing rows: the counter moves, the line cannot.
+    synced = 28
+    await vi.advanceTimersByTimeAsync(PAST_ONE_POLL)
+    synced = 53
+    await vi.advanceTimersByTimeAsync(PAST_ONE_POLL)
+
+    expect(screen.getByText('Syncing in-stock catalog… 5 items (Amoeba)')).toBeTruthy()
+    // ...and the rows those checkpoints committed were still fetched.
+    await waitFor(() => expect(getReleases.mock.calls.length).toBeGreaterThan(beforeOtherJob))
+  })
+
   it('reports a sync that failed on the other Machine', async () => {
     getCollectionStatus
       .mockResolvedValueOnce({ total: 5, last_synced: null, sync: run({ page: 1, total_pages: 2, synced: 10 }) })

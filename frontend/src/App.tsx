@@ -771,6 +771,15 @@ export default function App() {
   // change exists to prevent, reached by a different road.
   const followingSyncRef = useRef(false)
   const lastSyncProgressRef = useRef('')
+  // The banner line is tracked apart from the progress signature, because the
+  // two move at different times. wishlist_synced advances at every wantlist
+  // checkpoint and appears in no rendered line -- collectionSyncProgressMessage
+  // reads page/total_pages/synced for a collection sync and returns a constant
+  // for a wantlist one. Writing the banner off the signature therefore rewrote
+  // it with identical text throughout the wantlist phase, which is invisible
+  // on its own and clobbers whatever the stock sync, judgment run or price
+  // refresh had put there since the last poll.
+  const lastSyncMessageRef = useRef('')
 
   // Set when the stream speaks a terminal sync event, cleared the moment the
   // poll sees a run still running. It says only "an outcome has just been
@@ -790,6 +799,7 @@ export default function App() {
   const releaseSyncFollow = useCallback(() => {
     followingSyncRef.current = false
     lastSyncProgressRef.current = ''
+    lastSyncMessageRef.current = ''
     sseAnnouncedOutcomeRef.current = false
   }, [])
 
@@ -866,7 +876,18 @@ export default function App() {
               // three seconds would talk over all of them. The SSE path has
               // the same restraint for free: it only speaks when something
               // happened.
-              setSyncStatus(collectionSyncProgressMessage(run))
+              //
+              // The refetch is gated on the signature and the banner on the
+              // line itself, because "the run advanced" and "there is
+              // something new to say" are not the same event. Rows committed
+              // under an unchanged line still have to be fetched; a line that
+              // has not changed has nothing to add and would only be talking
+              // over someone else.
+              const message = collectionSyncProgressMessage(run)
+              if (message !== lastSyncMessageRef.current) {
+                lastSyncMessageRef.current = message
+                setSyncStatus(message)
+              }
               setSyncGeneration(g => g + 1)
             }
           } else if (followingSyncRef.current) {
