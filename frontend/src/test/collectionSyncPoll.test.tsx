@@ -7,9 +7,16 @@ import type { CollectionSyncRun, Release } from '../api/types'
 // stream and the refresh request need not land on the same one, and when they
 // don't, this tab hears nothing about the sync it just asked for.
 class SilentEventSource {
+  static instances: SilentEventSource[] = []
   onmessage: ((e: MessageEvent) => void) | null = null
   onerror: (() => void) | null = null
   close = vi.fn()
+  constructor() { SilentEventSource.instances.push(this) }
+  // Only ever called by a test that wants to put something *else* on the
+  // shared banner; the collection sync's own events never arrive here.
+  emit(data: object) {
+    this.onmessage?.({ data: JSON.stringify(data) } as MessageEvent)
+  }
 }
 
 const { getCollectionStatus, getReleases, refreshCollection } = vi.hoisted(() => ({
@@ -92,6 +99,7 @@ vi.mock('../api/client', () => ({
 const PAST_ONE_POLL = 3500
 
 beforeEach(() => {
+  SilentEventSource.instances = []
   vi.clearAllMocks()
   localStorage.clear()
   getReleases.mockResolvedValue({ total: 1, page: 1, per_page: 250, releases: [release] })
@@ -122,6 +130,28 @@ describe('following a collection sync without its events', () => {
     // The point of the whole exercise: the table goes back for the records the
     // sync just wrote, with nothing having told it to but this poll.
     await waitFor(() => expect(getReleases.mock.calls.length).toBeGreaterThan(whileRunning))
+  })
+
+  it('does not talk over another job while the run sits unchanged', async () => {
+    // The banner is shared with the stock sync, the judgment run and the price
+    // refresh, any of which can run alongside a collection sync. Repeating an
+    // unchanged line every three seconds would overwrite whatever they said.
+    getCollectionStatus.mockResolvedValue({
+      total: 5, last_synced: null, sync: run({ page: 1, total_pages: 2, synced: 10 }),
+    })
+
+    render(<App />)
+    await screen.findByText('Syncing collection… 10 records (page 1/2)')
+
+    SilentEventSource.instances[0].emit({
+      status: 'stock_sync_progress', synced: 5, source: 'Amoeba', id: 1,
+    })
+    await screen.findByText('Syncing in-stock catalog… 5 items (Amoeba)')
+
+    await vi.advanceTimersByTimeAsync(PAST_ONE_POLL * 2)
+
+    expect(screen.getByText('Syncing in-stock catalog… 5 items (Amoeba)')).toBeTruthy()
+    expect(screen.queryByText('Syncing collection… 10 records (page 1/2)')).toBeNull()
   })
 
   it('reports a sync that failed on the other Machine', async () => {

@@ -790,10 +790,18 @@ export default function App() {
           if (run.running) {
             following = true
             setSyncing(true)
-            setSyncStatus(collectionSyncProgressMessage(run))
             const progress = `${run.page}/${run.total_pages}/${run.synced}/${run.wishlist_synced}`
             if (progress !== lastProgress) {
               lastProgress = progress
+              // Both writes are gated on the run having actually advanced, not
+              // just on having been asked again. The banner is shared with the
+              // stock sync, the judgment run and the price refresh, any of
+              // which may be running alongside this one and may have written
+              // to it since the last poll -- repeating an unchanged line every
+              // three seconds would talk over all of them. The SSE path has
+              // the same restraint for free: it only speaks when something
+              // happened.
+              setSyncStatus(collectionSyncProgressMessage(run))
               setSyncGeneration(g => g + 1)
             }
           } else if (following) {

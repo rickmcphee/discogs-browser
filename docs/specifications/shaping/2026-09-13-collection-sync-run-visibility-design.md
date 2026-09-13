@@ -339,6 +339,13 @@ the screen. The SSE path stays as the same-Machine fast path; when both are
 live they agree, and a duplicated progress tick costs one extra refetch and
 nothing else.
 
+It speaks only when the run has actually advanced, though, which asking again
+is not. The banner is shared with the stock sync, the judgment run and the
+price refresh, any of which can be running alongside a collection sync and may
+have written to it since the last poll; repeating an unchanged line every
+three seconds would talk over all of them. The SSE path has that restraint for
+free, since it only fires when something happened.
+
 Only a run the loop has watched *running* may write an outcome to the status
 bar. Without that rule, every page load would re-announce the last sync,
 however old — the row is the most recent run, not a fresh event. A refresh this
@@ -393,7 +400,9 @@ emits — the cross-Machine case reproduced directly:
 - a run that had already finished before the page loaded is not announced;
 - a refresh refused with `409` follows the running sync instead of reporting a
   failure, and says the sync could not start when the refusal turns out not to
-  be one.
+  be one;
+- a message another job put on the banner survives a poll that finds the run
+  unchanged.
 
 Each was confirmed to fail against a build with the poll disabled.
 
