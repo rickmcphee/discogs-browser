@@ -169,6 +169,21 @@ describe('following a collection sync without its events', () => {
     expect(screen.queryByText('Synced 25 records, 3 wantlist items')).toBeNull()
   })
 
+  it('shows the running sync instead of asking which kind of refresh to start', async () => {
+    // Neither of the modal's two choices could start anything while a sync
+    // holds the claim, so asking is a question already answered.
+    getCollectionStatus.mockResolvedValue({
+      total: 5, last_synced: null, sync: run({ page: 2, total_pages: 9, synced: 150 }),
+    })
+
+    render(<App />)
+    fireEvent.click(await screen.findByTitle('Sync collection from Discogs'))
+
+    await screen.findByText('Syncing collection… 150 records (page 2/9)')
+    expect(screen.queryByText('Collection already loaded')).toBeNull()
+    expect(refreshCollection).not.toHaveBeenCalled()
+  })
+
   it('follows the running sync instead of reporting a failure when the refresh is refused', async () => {
     // 409: a sync is already running -- on this deployment, quite possibly on
     // the Machine this tab never talks to.

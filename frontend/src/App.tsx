@@ -809,6 +809,13 @@ export default function App() {
     }
     try {
       const status = await getCollectionStatus()
+      // A sync is already under way -- this tab's, another tab's, or the other
+      // Machine's. Neither of the modal's choices could start anything, so
+      // show what is running instead of asking a question already answered.
+      if (status.sync?.running) {
+        followSyncRun()
+        return
+      }
       if (status.total > 0) {
         setCollectionStatus(status)
         return
@@ -817,7 +824,7 @@ export default function App() {
       // fall through to full refresh
     }
     startRefresh('all')
-  }, [startRefresh])
+  }, [startRefresh, followSyncRun])
 
   // Wantlist tab's refresh has nothing analogous to the "N records already
   // loaded, refresh new or all?" choice that collectionStatus's modal offers --
