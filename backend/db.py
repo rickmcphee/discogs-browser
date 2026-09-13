@@ -4107,9 +4107,19 @@ def get_crawl_status_for_user(conn, user_id: int) -> dict:
 # too coarse to do that: a page is a hundred releases, each able to spend a
 # 30-second request timeout on its barcode fetch before the 1.1s pacing sleep,
 # so a page doing exactly what it should can outlast this on its own. The sync
-# therefore also heartbeats every twenty-fifth item, on its own connection
-# (see crawl_manager._sync_collection_blocking), which is what makes a gap
-# this long mean the process that claimed the run is gone rather than busy.
+# therefore also checkpoints mid-page, on its own connection (see
+# crawl_manager._sync_collection_blocking), which is what makes a gap this
+# long mean the process that claimed the run is gone rather than busy.
+#
+# That checkpoint comes due on an item count *or* a wall-clock ceiling
+# (crawl_manager.SYNC_CHECKPOINT_MAX_SECONDS), and the ceiling is load-bearing
+# rather than belt-and-braces: discogs._get_with_retry waits out a rate limit
+# on top of those timeouts, so under a sustained 429 a chunk of items runs well
+# past this window while the sync is alive and committing throughout. Bounding
+# the gap by count alone was correct until that landed and would be wrong again
+# the next time a request gets slower -- removing the ceiling brings back
+# exactly the false takeovers this window is meant to distinguish from real
+# ones.
 SYNC_RUN_STALE_MINUTES = 15
 
 # clock_timestamp(), not CURRENT_TIMESTAMP: the heartbeat is written inside the
