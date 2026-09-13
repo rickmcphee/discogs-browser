@@ -578,6 +578,120 @@ async def test_a_dispossessed_worker_stops_before_its_destructive_cleanup(pg_sch
     assert (run["status"], run["running"]) == ("running", True)
 
 
+async def test_a_stale_run_cannot_be_revived_by_its_old_owner(pg_schema):
+    """Expiry has to be irreversible, not just a reading. A worker that went
+    quiet past the window is told so by the client -- "the sync stopped" --
+    and the client stops polling on it; if that same worker could then come
+    back, refresh the heartbeat and finish, it would finish into a silence
+    nobody is listening to, which is the failure this whole branch removes."""
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+
+    with db.user_scope(user["id"]) as conn:
+        token = db.claim_library_sync_run(conn, user["id"], "all", "all")
+        conn.execute(
+            "UPDATE library_sync_runs SET heartbeat_at = clock_timestamp() - INTERVAL '%s minutes' "
+            "WHERE user_id = %%s" % (db.SYNC_RUN_STALE_MINUTES + 1),
+            [user["id"]],
+        )
+        conn.commit()
+
+    with db.user_scope(user["id"]) as conn:
+        # Nobody has taken it over yet -- the claim is simply past its window.
+        assert db.record_library_sync_progress(
+            conn, user["id"], token, page=4, total_pages=4, synced=400
+        ) is False
+        assert db.finish_library_sync_run(
+            conn, user["id"], token, "complete", synced=400
+        ) is False
+        conn.commit()
+
+    with db.user_scope(user["id"]) as conn:
+        run = db.get_library_sync_run(conn, user["id"])
+    assert (run["running"], run["stale"], run["synced"]) == (False, True, 0)
+
+
+@respx.mock
+async def test_progress_lands_mid_page_without_a_second_pooled_connection(pg_schema, monkeypatch):
+    """The claim's heartbeat has to keep advancing inside a long page, and it
+    cannot buy that with another connection: the app pool is small, a sync
+    already holds one of its connections for its whole duration, and a
+    heartbeat that borrowed a second would queue behind exactly the syncs it
+    exists to keep alive. Run here against a pool of one, so anything needing
+    a second connection could not finish at all."""
+    import config
+    import crawl_manager as crawl_manager_module
+    import discogs
+    from psycopg_pool import ConnectionPool
+    from psycopg.rows import dict_row
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "s")
+    monkeypatch.setattr(config, "TOKEN_ENCRYPTION_KEY", "kL8mN2pQ7rT5vX9yB3cF6hJ1kM4nP8sU2wZ5aD7eG0i=")
+    monkeypatch.setattr(crawl_manager_module.time, "sleep", lambda *a, **k: None)
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute(
+            "UPDATE users SET discogs_oauth_token_encrypted = %s, discogs_oauth_secret_encrypted = %s WHERE id = %s",
+            [token_encryption.encrypt("tok"), token_encryption.encrypt("sec"), user["id"]],
+        )
+        conn.commit()
+
+    db._app_pool = ConnectionPool(
+        db.config.APP_DATABASE_URL, min_size=1, max_size=1,
+        kwargs={"row_factory": dict_row}, timeout=5,
+    )
+
+    # Read from the admin pool, mid-page, on the 26th release -- one past the
+    # checkpoint interval, so a checkpoint must already have committed.
+    seen = {}
+
+    def _barcode(oauth_token, oauth_secret, release_id):
+        if release_id == 1026:
+            with db.get_admin_pool().connection() as conn:
+                seen["run"] = conn.execute(
+                    "SELECT synced, page, total_pages FROM library_sync_runs WHERE user_id = %s",
+                    [user["id"]],
+                ).fetchone()
+        return None
+
+    monkeypatch.setattr(discogs, "fetch_release_barcode", _barcode)
+
+    respx.get("https://api.discogs.com/users/alice/collection/fields").mock(
+        return_value=httpx.Response(200, json={"fields": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/collection/folders/0/releases").mock(
+        return_value=httpx.Response(200, json={
+            "pagination": {"pages": 1},
+            "releases": [{
+                "basic_information": {
+                    "id": 1000 + n, "title": f"Album {n}", "year": 2020,
+                    "artists": [{"name": "Artist"}], "labels": [], "formats": [],
+                    "cover_image": "",
+                },
+            } for n in range(1, 31)],
+        })
+    )
+    respx.get("https://api.discogs.com/users/alice/wants").mock(
+        return_value=httpx.Response(200, json={"pagination": {"pages": 1}, "wants": []})
+    )
+
+    manager = CrawlManager()
+    assert await manager.start_sync(user["id"], "all") is True
+    await manager._sync_tasks[user["id"]]
+
+    assert "sync_error" not in [e["status"] for e in manager.recent_events()]
+    # A quarter of the way through the page, the row already says so.
+    assert seen["run"] is not None
+    assert seen["run"]["synced"] == 25
+    assert (seen["run"]["page"], seen["run"]["total_pages"]) == (1, 1)
+
+    with db.user_scope(user["id"]) as conn:
+        run = db.get_library_sync_run(conn, user["id"])
+    assert (run["status"], run["synced"]) == ("complete", 30)
+
+
 @pytest.fixture
 def library_only_on(pg_schema):
     """The sync's restoration of store-item rows runs only under

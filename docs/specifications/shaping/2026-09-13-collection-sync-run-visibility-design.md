@@ -198,16 +198,34 @@ permanently — a worse bug than the one being fixed. So the run heartbeats, and
 a claim whose heartbeat has stopped can be taken over:
 `SYNC_RUN_STALE_MINUTES = 15`.
 
-The heartbeat advances at each page commit, inside that page's own
-transaction — so the row a reader sees advances exactly when the data it
-describes does, never ahead of it. That alone is too coarse to bound the
-window on, though: a page is a hundred releases, and a release can spend a
-30-second request timeout on its barcode fetch before the pacing sleep, so a
-slow page can outlast fifteen minutes by itself and invite a takeover of a
-claim that is being worked. So the run also heartbeats every twenty-fifth
-item, on its own connection, landing while the page's transaction is still
-open. Fifteen minutes is then far outside what either loop can go quiet for,
-and far inside "a human clicked the button again".
+The heartbeat advances with the data it describes, in the same transaction —
+so the row a reader sees never runs ahead of what has actually been written.
+A Discogs page is too coarse a unit to do that on, though: a page is a hundred
+releases, and a release can spend a 30-second request timeout on its barcode
+fetch before the pacing sleep, so a slow page can outlast fifteen minutes by
+itself and invite a takeover of a claim that is being worked. Each loop
+therefore checkpoints every twenty-fifth item — recording progress, proving
+the claim and committing — rather than only at the page boundary. Fifteen
+minutes is then far outside what either loop can go quiet for, and far inside
+"a human clicked the button again".
+
+That checkpoint runs on the loop's own connection, which is the point of
+doing it this way rather than heartbeating from a second one. The app pool is
+small (`max_size=10`) and a sync already holds one of its connections for the
+sync's whole duration; a heartbeat that had to borrow another would queue
+behind exactly the syncs it exists to keep alive, and its failures are
+swallowed, so the effect would be a slow sync whose claim quietly goes stale.
+Committing in chunks also bounds how long one write transaction stays open,
+which a page of barcode fetches otherwise stretches to the length of the page.
+
+Expiry is irreversible for the expired worker: the progress and finish
+predicates reject a run whose heartbeat is already past the window, whether or
+not anyone has claimed it yet. Without that, "stale" is only a reading — the
+client is told the sync stopped and stops polling, and a worker that comes
+back can refresh the heartbeat and finish into a silence nobody is listening
+to. With it, a worker that went quiet that long is out of the protocol, its
+next checkpoint fails, and it stops — which is what the client was already
+told.
 
 It is written with `clock_timestamp()`, not `CURRENT_TIMESTAMP`. Inside the
 page's transaction the latter is the time that transaction *began* — one
@@ -311,6 +329,10 @@ Backend:
   destructive cleanup: the wantlist record its stale snapshot would have
   deleted survives, it broadcasts no completion, and the replacement's claim
   is left running and intact.
+- A run past the window cannot be advanced or closed by the worker that owns
+  it, even with nobody else having claimed it.
+- Progress lands a quarter of the way through a page, against an app pool of
+  one connection — so the checkpoint demonstrably needs no second one.
 - A plex match cannot register itself while a sync is mid-claim.
 - `GET /api/collection/status` reports a running run, reports an abandoned one
   as stale rather than running, reports nothing before a user's first sync, and

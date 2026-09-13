@@ -4083,7 +4083,13 @@ def record_library_sync_progress(
 
     Fenced on `run_token`, so a worker whose claim was taken over while it was
     still alive cannot go on advancing (or heartbeating, which would hold the
-    claim open) a run that is no longer its own.
+    claim open) a run that is no longer its own. Fenced on staleness too, which
+    is what makes expiry irreversible: a run whose heartbeat has lapsed past
+    the window is out of the protocol whether or not anyone has taken it over
+    yet, so a worker that went quiet that long cannot come back and revive the
+    row. Without that the client has no terminal state to trust -- it is told
+    the sync stopped, stops polling, and the revived worker finishes into a
+    silence nobody is listening to.
 
     Returns whether the run is still this caller's. That answer is what makes
     ownership loss *observable* to the worker: fencing the row alone would
@@ -4102,7 +4108,8 @@ def record_library_sync_progress(
             heartbeat_at = clock_timestamp()
         WHERE user_id = %(user_id)s AND status = 'running'
               AND run_token = %(run_token)s
-        """,
+              AND NOT ({stale})
+        """.format(stale=_SYNC_RUN_STALE_SQL),
         {
             "user_id": user_id, "run_token": run_token, "page": page,
             "total_pages": total_pages, "synced": synced,
@@ -4128,7 +4135,9 @@ def finish_library_sync_run(
     not overwrite the real outcome a path already recorded. `run_token` is what
     makes it safe *in time*: a fresh claim can land between a run's own
     completion and its backstop, and without the token that backstop would
-    match the new run and mark a sync that is only just starting as failed."""
+    match the new run and mark a sync that is only just starting as failed. A
+    run already past the staleness window cannot be closed either, for the
+    same reason it cannot be advanced -- see record_library_sync_progress."""
     cursor = conn.execute(
         """
         UPDATE library_sync_runs SET
@@ -4140,7 +4149,8 @@ def finish_library_sync_run(
             finished_at = CURRENT_TIMESTAMP
         WHERE user_id = %(user_id)s AND status = 'running'
               AND run_token = %(run_token)s
-        """,
+              AND NOT ({stale})
+        """.format(stale=_SYNC_RUN_STALE_SQL),
         {
             "user_id": user_id, "run_token": run_token, "status": status,
             "synced": synced, "wishlist_synced": wishlist_synced, "error": error,

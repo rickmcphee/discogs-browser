@@ -916,24 +916,6 @@ class CrawlManager:
             except Exception as e:
                 log.warning("Could not record the end of user %d's collection sync: %s", user_id, e)
 
-        # Deliberately on its own connection rather than the page loop's: this
-        # one is called from paths where that connection is either not open yet
-        # or in the middle of a page's transaction.
-        #
-        # Returns True while the run is still ours, False once it demonstrably
-        # is not, and None when the question could not be asked -- a database
-        # blip is not evidence of a takeover and must never be read as one.
-        def heartbeat_run():
-            if run_token is None:
-                return None
-            try:
-                with user_scope(user_id) as conn:
-                    ours = record_library_sync_progress(conn, user_id, run_token)
-                    conn.commit()
-                return ours
-            except Exception as e:
-                log.warning("Could not record user %d's collection sync heartbeat: %s", user_id, e)
-                return None
 
         def sync_error(message):
             broadcast({"status": "sync_error", "error": message})
@@ -961,6 +943,32 @@ class CrawlManager:
             if run_token is not None and not recorded:
                 raise _ClaimLost()
 
+        def checkpoint(conn, **progress):
+            """Record progress, prove the claim, and commit what the loop has
+            written so far.
+
+            Called every CHECKPOINT_EVERY items rather than only at the end of
+            a Discogs page, for three reasons that all point the same way: the
+            heartbeat has to land often enough that the staleness window
+            measures silence rather than a slow page; a claim lost mid-page
+            should cost this chunk rather than a hundred releases' work; and a
+            page of barcode fetches is long enough that holding one write
+            transaction open across all of it is its own hazard. Doing it on
+            this connection is what keeps a second pooled one out of the
+            picture -- the app pool is small, a sync already holds one of its
+            connections for the sync's whole duration, and a heartbeat that
+            had to borrow another would be queueing behind exactly the syncs
+            it exists to keep alive."""
+            still_ours(conn, **progress)
+            conn.commit()
+            # user_scope()'s set_config(..., true) is transaction-local and was
+            # just reverted by the commit above -- to Postgres's empty-string
+            # placeholder for a never-set custom GUC, not to NULL, so the RLS
+            # policy's ::int cast raises InvalidTextRepresentation on the very
+            # next library_items write, not a quiet no-match. Re-issue it so
+            # the next statements are still RLS-scoped to this user.
+            conn.execute("SELECT set_config('app.user_id', %s, true)", [str(user_id)])
+
         # The records a sync commits may match store items whose queue rows
         # the library-only sweep deleted, or that _sync_stock never inserted,
         # while nobody wanted them. Insert-if-absent, and only under the
@@ -980,6 +988,12 @@ class CrawlManager:
                 conn.commit()
             if restored:
                 log.info("Queued %d store items matching user %d's library for marketplace prices", restored, user_id)
+
+        # How often a loop stops to record progress, prove its claim and
+        # commit. Small enough that the staleness window still measures
+        # silence when every item spends a request timeout, and that a lost
+        # claim costs a chunk rather than a whole page.
+        CHECKPOINT_EVERY = 25
 
         broadcast({"status": "sync_started", "scope": scope})
         try:
@@ -1009,6 +1023,7 @@ class CrawlManager:
             count = 0
             wishlist_count = 0
             wishlist_seen: set = set()
+            since_checkpoint = 0
 
             with user_scope(user_id) as conn:
                 if scope != "wishlist":
@@ -1053,39 +1068,19 @@ class CrawlManager:
                             )
                             enqueue_crawl_queue(conn, rid)
                             count += 1
-                            # The page's own commit is the natural heartbeat,
-                            # but it is too coarse to bound on: a page is a
-                            # hundred releases, each of which can spend a
-                            # 30-second request timeout on the barcode fetch
-                            # before its pacing sleep. A page of those outlasts
-                            # the staleness window on its own and invites a
-                            # takeover of a claim that is being worked. This
-                            # one rides its own connection so it lands while
-                            # the page's transaction is still open.
-                            if count % 25 == 0 and heartbeat_run() is False:
-                                # Losing the claim mid-page is worth noticing
-                                # here rather than at the page's commit: the
-                                # rest of this page is another hundred requests
-                                # made on behalf of a run somebody else now owns.
-                                raise _ClaimLost()
-                        # In the page's own transaction, so the row the other
-                        # Machine reads advances exactly when the data it
-                        # describes does -- never ahead of it, and so that a
-                        # claim lost mid-page takes this page's writes down
-                        # with it rather than committing them alongside the
-                        # sync that replaced this one.
-                        still_ours(
-                            conn, page=page, total_pages=total_pages, synced=count,
-                        )
-                        conn.commit()
-                        # user_scope()'s set_config(..., true) is transaction-local and
-                        # was just reverted by the commit above -- to Postgres's empty-
-                        # string placeholder for a never-set custom GUC, not to NULL, so
-                        # the RLS policy's ::int cast raises InvalidTextRepresentation on
-                        # the very next library_items write, not a quiet no-match. Re-
-                        # issue it so the next page's writes are still RLS-scoped to
-                        # this user.
-                        conn.execute("SELECT set_config('app.user_id', %s, true)", [str(user_id)])
+                            since_checkpoint += 1
+                            if since_checkpoint >= CHECKPOINT_EVERY:
+                                since_checkpoint = 0
+                                checkpoint(
+                                    conn, page=page, total_pages=total_pages, synced=count,
+                                )
+                        since_checkpoint = 0
+                        # The row the other Machine reads advances in the same
+                        # transaction as the data it describes -- never ahead
+                        # of it -- and a claim lost here takes the uncommitted
+                        # writes down with it rather than committing them
+                        # alongside the sync that replaced this one.
+                        checkpoint(conn, page=page, total_pages=total_pages, synced=count)
                         broadcast({"status": "sync_progress", "synced": count, "page": page, "total_pages": total_pages})
                         log.info("Sync page %d/%d (%d releases) for %s", page, total_pages, count, username)
 
@@ -1093,6 +1088,7 @@ class CrawlManager:
                     for item in items:
                         rid = f"r{item['basic_information']['id']}"
                         wishlist_seen.add(rid)
+                        since_checkpoint += 1
                         release = discogs.parse_release(item, price_field_id=None)
                         existing_row = conn.execute(
                             "SELECT barcode FROM catalog WHERE discogs_id = %s", [rid]
@@ -1119,14 +1115,11 @@ class CrawlManager:
                         )
                         enqueue_crawl_queue(conn, rid)
                         wishlist_count += 1
-                        if wishlist_count % 25 == 0 and heartbeat_run() is False:
-                            raise _ClaimLost()
-                    still_ours(conn, wishlist_synced=wishlist_count)
-                    conn.commit()
-                    # Same reasoning as the collection-loop commit above: re-scope
-                    # app.user_id for this connection's next transaction, since the
-                    # commit just ended (and reset) the one that had it set.
-                    conn.execute("SELECT set_config('app.user_id', %s, true)", [str(user_id)])
+                        if since_checkpoint >= CHECKPOINT_EVERY:
+                            since_checkpoint = 0
+                            checkpoint(conn, wishlist_synced=wishlist_count)
+                    since_checkpoint = 0
+                    checkpoint(conn, wishlist_synced=wishlist_count)
                     log.info("Wishlist sync page %d/%d (%d items) for %s", page, total_pages, wishlist_count, username)
 
                 # Before the only destructive statements in the sync, and in
@@ -1138,15 +1131,25 @@ class CrawlManager:
                 cleared = clear_wishlist_flags_not_in(conn, user_id, wishlist_seen)
                 deleted = delete_orphaned_releases(conn, user_id)
                 conn.commit()
+                conn.execute("SELECT set_config('app.user_id', %s, true)", [str(user_id)])
                 log.info(
                     "Wishlist sync complete for %s: %d items, %d stale entries cleared, %d releases deleted",
                     username, wishlist_count, cleared, len(deleted),
                 )
 
-            heartbeat_run()
-            restore_library_stock_rows()
-
+            # Closed before the stock-row restoration rather than after it.
+            # That statement is follow-on work for the crawl queue, not part of
+            # the sync the client is watching, and it is the one step here with
+            # no bound on how long it can take -- long enough, and the run
+            # would go stale before it could be closed at all.
             finish_run("complete", synced=count, wishlist_synced=wishlist_count)
+            try:
+                restore_library_stock_rows()
+            except Exception as restore_error:
+                log.warning(
+                    "Could not queue store items for user %d's library after the sync: %s",
+                    user_id, restore_error,
+                )
             broadcast({
                 "status": "sync_complete",
                 "synced": count,
