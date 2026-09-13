@@ -452,6 +452,70 @@ async def test_a_taken_over_run_cannot_be_advanced_by_its_old_owner(pg_schema):
     assert (run["status"], run["mode"], run["synced"], run["page"]) == ("running", "new", 0, None)
 
 
+@respx.mock
+async def test_a_transient_close_failure_does_not_report_a_successful_sync_as_failed(pg_schema, monkeypatch):
+    """The backstop must not invent a failure the sync did not have.
+
+    _finish_sync_run answers None when its connection fails -- the question
+    could not be asked. The row is then still 'running', so the `finally`
+    backstop's write lands, and a generic "Sync ended unexpectedly" replaces
+    the outcome of a sync that actually completed and committed its records.
+    The same-Machine stream has already said sync_complete by then, so the
+    cross-Machine client is the one left with the false story -- which is this
+    branch's own failure in mirror image."""
+    import config
+    import db as db_module
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "s")
+    monkeypatch.setattr(config, "TOKEN_ENCRYPTION_KEY", "kL8mN2pQ7rT5vX9yB3cF6hJ1kM4nP8sU2wZ5aD7eG0i=")
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute(
+            "UPDATE users SET discogs_oauth_token_encrypted = %s, discogs_oauth_secret_encrypted = %s WHERE id = %s",
+            [token_encryption.encrypt("tok"), token_encryption.encrypt("sec"), user["id"]],
+        )
+        conn.commit()
+
+    respx.get("https://api.discogs.com/users/alice/collection/fields").mock(
+        return_value=httpx.Response(200, json={"fields": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/collection/folders/0/releases").mock(
+        return_value=_collection_page(111, total_pages=1)
+    )
+    respx.get(url__regex=r"https://api\.discogs\.com/releases/\d+").mock(
+        return_value=httpx.Response(200, json={"identifiers": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/wants").mock(
+        return_value=httpx.Response(200, json={"pagination": {"pages": 1}, "wants": []})
+    )
+
+    real_finish = db_module.finish_library_sync_run
+    calls = []
+
+    def _flaky_finish(conn, user_id, run_token, status, **fields):
+        calls.append(status)
+        if len(calls) == 1:
+            # The completing close cannot reach the row.
+            raise RuntimeError("connection reset during close")
+        return real_finish(conn, user_id, run_token, status, **fields)
+
+    monkeypatch.setattr(db_module, "finish_library_sync_run", _flaky_finish)
+
+    manager = CrawlManager()
+    assert await manager.start_sync(user["id"], "all") is True
+    await manager._sync_tasks[user["id"]]
+
+    # The first close was the completion, and it failed; the backstop retried
+    # the same outcome rather than inventing a failure.
+    assert calls[0] == "complete"
+    with db.user_scope(user["id"]) as conn:
+        run = db.get_library_sync_run(conn, user["id"])
+    assert run["status"] == "complete"
+    assert run["error"] is None
+    assert run["synced"] == 1
+
+
 async def test_one_users_claim_does_not_block_another_users_start(pg_schema, monkeypatch):
     """The exclusion the start lock enforces is per user, so the lock is too.
 

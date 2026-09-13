@@ -1023,11 +1023,28 @@ class CrawlManager:
         # served by the other Machine hears none of it. These two write the
         # same run to library_sync_runs, which it can read. Both are best
         # effort: failing to narrate a sync must never be what ends one.
+        # What the body meant to record, held until the row confirms it took
+        # it. The backstop retries *this* rather than a generic failure: a
+        # close that answered None never reached the row, so the run is still
+        # saying 'running' and the backstop's write will land -- and a sync
+        # that succeeded must not be reported as one that ended unexpectedly
+        # because its own close hit a transient database failure.
+        intended_outcome = {}
+
         def finish_run(status, synced=None, wishlist_synced=None, error=None):
-            return self._finish_sync_run(
+            intended_outcome.update(
+                status=status, synced=synced,
+                wishlist_synced=wishlist_synced, error=error,
+            )
+            closed = self._finish_sync_run(
                 user_id, run_token, status, synced=synced,
                 wishlist_synced=wishlist_synced, error=error,
             )
+            if closed is not None:
+                # Answered either way: this call closed the run, or the run
+                # demonstrably was not ours and retrying would refuse again.
+                intended_outcome.clear()
+            return closed
 
         def sync_error(message):
             """Report a failure, and hand back what the close did -- callers
@@ -1376,7 +1393,17 @@ class CrawlManager:
             # left saying 'running' is worse than one that ends badly: the
             # claim would hold every later refresh until it went stale. A
             # no-op once a real outcome is recorded (see finish_library_sync_run).
-            finish_run("error", error="Sync ended unexpectedly")
+            #
+            # The generic failure is for a run that never chose an outcome at
+            # all. When one was chosen but its close could not reach the row,
+            # that outcome is what gets retried -- otherwise a transient
+            # database error at the close turns a completed sync into
+            # "Sync ended unexpectedly" for every client reading the row,
+            # while the same-Machine stream has already announced success.
+            if intended_outcome:
+                finish_run(**intended_outcome)
+            else:
+                finish_run("error", error="Sync ended unexpectedly")
 
     async def sweep_enqueue(self, mode: str = "missing"):
         from db import get_identity_pool, enqueue_crawl_queue, get_missing_releases, user_scope

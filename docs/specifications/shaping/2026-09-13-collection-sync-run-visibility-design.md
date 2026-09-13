@@ -172,6 +172,14 @@ one's writes:
   in that gap takes a fresh claim, which the old backstop's `status =
   'running'` predicate matches — reporting a sync that is seconds old as
   failed, and releasing its claim for a duplicate to take.
+- **A backstop reports a failure its run did not have.** The `status =
+  'running'` predicate makes that `finally` a no-op *once an outcome is
+  recorded* — and a close that answered `None` recorded nothing. The row is
+  still `running`, so a generic "Sync ended unexpectedly" lands over a sync
+  that completed and committed its records, for every client reading the row,
+  while the same-Machine stream has already announced success. So the backstop
+  retries the outcome the body chose, and falls back to the generic failure
+  only for a run that never chose one.
 
 Both are silent when they happen, and both produce exactly the symptom this
 change is fixing.
