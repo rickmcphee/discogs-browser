@@ -100,6 +100,11 @@ Out of scope:
   the comparison already carry an expression index on it
   (`catalog_artist_bare_lower_idx`, `stock_items_artist_bare_lower_idx`), so
   this is the cheaper spelling as well as the more correct one.
+  **Amended 2026-09-13** (`2026-09-13-artist-punctuation-fold-design.md`): those
+  indexes are now `catalog_artist_bare_fold_idx`/`stock_items_artist_bare_fold_idx`,
+  and the key they hold folds "&"/"and" and "-"/" " too — so `Overlapped` now
+  also recognizes a store's "Blink 182" as the "Blink-182" in the collection,
+  and still agrees with the sidebar beside it, which compares the same key.
 
 - **A separate clause helper, not a flag on `_library_match_fragment`.** The
   two fragments differ in the join's WHERE (title clause present or absent)
