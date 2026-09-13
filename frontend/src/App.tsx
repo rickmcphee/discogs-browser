@@ -17,7 +17,7 @@ import { useIsMobile } from './hooks/useMediaQuery'
 import { navButtonClass, primaryButtonClass, secondaryButtonClass, dismissButtonClass } from './styles/buttons'
 import { refreshCollection, getCollectionStatus, openCrawlStream, getCrawlStatus, postCrawlStart, postStockSyncStart, postJudgmentStart, clearJudgments, exportRecommendationsCsv, importRecommendationsCsv, getCrawlers, getUserSettings, getUserHiddenCrawlers, postUserHiddenCrawlers, getJudgmentStatus, getPriceStatus, getNotificationsUnread, markNotificationsRead, checkHealth, getAuthStatus, setUnauthorizedHandler, hasAvatar } from './api/client'
 import type { StockSyncStartResult } from './api/client'
-import type { CrawlEvent, CrawlStatus, CollectionStatus, Crawler, AuthStatus } from './api/types'
+import type { CrawlEvent, CrawlStatus, CollectionStatus, CollectionSyncRun, Crawler, AuthStatus } from './api/types'
 
 type View = 'collection' | 'wantlist' | 'store' | 'settings' | 'logs' | 'queue' | 'account' | 'notifications'
 type LibraryView = Extract<View, 'collection' | 'wantlist' | 'store'>
@@ -66,6 +66,47 @@ const VIEW_AS_USER_KEY = 'discogs-browser.viewAsUser'
 // work the UI has lost track of is rejected by the server rather than starting
 // anything twice.
 const START_CLAIM_TIMEOUT_MS = 20_000
+
+// How often the collection tab asks Postgres how its sync is getting on.
+//
+// It has to ask, because it cannot rely on being told. The sync_* events that
+// narrate a run are broadcast in-process (CrawlManager's _subscribers), and
+// the deployment runs more than one Machine behind one hostname with no
+// affinity between requests -- so this browser's SSE stream and the POST
+// /collection/refresh it just sent need not have landed on the same one. When
+// they don't, no sync_started, no sync_progress and no sync_complete ever
+// reaches this tab: the button never spins, the banner stays empty, and the
+// collection table -- which refetches only when one of those arrives -- keeps
+// showing the library as it was before the sync, new Discogs additions and
+// all. The sync ran; nothing here heard it.
+//
+// The run is also written to a row both Machines can read (library_sync_runs),
+// which is what this polls. The SSE handlers stay as the same-Machine fast
+// path; both drive the same state, and a doubled progress tick costs one extra
+// refetch and nothing else.
+const COLLECTION_SYNC_POLL_MS = 3000
+
+function collectionSyncProgressMessage(run: CollectionSyncRun): string {
+  if (run.scope === 'wishlist') return 'Syncing wantlist…'
+  if (run.total_pages) {
+    return `Syncing collection… ${run.synced} records (page ${run.page}/${run.total_pages})`
+  }
+  return 'Syncing collection…'
+}
+
+// No username, unlike the sync_complete event's version of this line: the run
+// row records the sync, not who authenticated it, and the user reading their
+// own banner already knows.
+function collectionSyncOutcomeMessage(run: CollectionSyncRun): string {
+  // A run whose Machine restarted mid-sync stops heartbeating and never
+  // finishes. Saying so is the whole recovery -- the click that follows is
+  // no longer refused, because the claim has gone stale with it.
+  if (run.stale) return 'Sync stopped before it finished — sync again to pick up where it left off.'
+  if (run.status === 'error') return `Sync failed: ${run.error ?? 'unknown error'}`
+  if (run.scope === 'wishlist') return `Synced ${run.wishlist_synced ?? 0} wantlist items`
+  const wantlistPart = run.wishlist_synced != null ? `, ${run.wishlist_synced} wantlist items` : ''
+  return `Synced ${run.synced} records${wantlistPart}`
+}
 
 function formatElapsed(seconds: number | null): string {
   if (seconds === null) return 'unknown'
@@ -672,14 +713,94 @@ export default function App() {
     return () => { cancelled = true }
   }, [backendUp])
 
+  // Follows the run row until it ends, and is what makes a refresh visible at
+  // all when this tab's SSE stream is served by the other Machine -- see
+  // COLLECTION_SYNC_POLL_MS. Restarted by bumping syncPollNonce; the ref says
+  // the restart is ours, so the loop may report the outcome of a run it has
+  // not yet seen running.
+  const [syncPollNonce, setSyncPollNonce] = useState(0)
+  const expectSyncRunRef = useRef(false)
+
+  useEffect(() => {
+    if (authState?.state !== 'authenticated') return
+    let cancelled = false
+    // Only a run this tab has actually watched may write its outcome to the
+    // banner. Otherwise every page load would re-announce the last sync,
+    // however old -- the row is the most recent run, not a fresh event. A
+    // refresh we just requested counts as watched: the claim is taken by the
+    // request itself, so the run is already there to find.
+    let following = expectSyncRunRef.current
+    expectSyncRunRef.current = false
+    let lastProgress = ''
+
+    async function poll() {
+      while (!cancelled) {
+        let status: CollectionStatus | null = null
+        try {
+          status = await getCollectionStatus()
+        } catch {
+          // Keep waiting only while there is something to wait for: a blip
+          // during a sync we are following must not abandon it, but a failed
+          // poll on a tab that was only checking has nothing to retry for.
+          if (!following) return
+        }
+        if (cancelled) return
+        if (status) {
+          const run: CollectionSyncRun | null | undefined = status.sync
+          // No run at all -- this user has never synced, or the reply predates
+          // the field. Either way there is nothing here to follow.
+          if (!run) return
+          if (run.running) {
+            following = true
+            setSyncing(true)
+            setSyncStatus(collectionSyncProgressMessage(run))
+            const progress = `${run.page}/${run.total_pages}/${run.synced}/${run.wishlist_synced}`
+            if (progress !== lastProgress) {
+              lastProgress = progress
+              setSyncGeneration(g => g + 1)
+            }
+          } else {
+            if (following) {
+              setSyncing(false)
+              setSyncStatus(collectionSyncOutcomeMessage(run))
+              // Unconditional, not gated on the counters having moved: this is
+              // the tick that pulls in everything the last page committed, and
+              // on a sync whose pages all landed between two polls it is the
+              // only one there is.
+              setSyncGeneration(g => g + 1)
+              fetchPriceStatus()
+            }
+            return
+          }
+        }
+        await new Promise(r => setTimeout(r, COLLECTION_SYNC_POLL_MS))
+      }
+    }
+    poll()
+    return () => { cancelled = true }
+  }, [authState, syncPollNonce, setSyncStatus, fetchPriceStatus])
+
+  const followSyncRun = useCallback(() => {
+    expectSyncRunRef.current = true
+    setSyncPollNonce(n => n + 1)
+  }, [])
+
   const startRefresh = useCallback(async (mode: 'all' | 'new') => {
     setCollectionStatus(null)
     try {
       await refreshCollection(mode)
     } catch (e: any) {
-      setSyncStatus(`Sync failed: ${e.message}`)
+      // 409 is not a failed sync, it is a sync already under way -- this tab's
+      // own earlier click, another tab's, or one the other Machine is running,
+      // which this tab could not have heard start. Following it answers the
+      // question the click was asking; "Sync failed" would not.
+      if (e?.status !== 409) {
+        setSyncStatus(`Sync failed: ${e.message}`)
+        return
+      }
     }
-  }, [setSyncStatus])
+    followSyncRun()
+  }, [setSyncStatus, followSyncRun])
 
   const handleRefresh = useCallback(async (mode?: 'all' | 'new') => {
     if (mode) {
@@ -706,9 +827,13 @@ export default function App() {
     try {
       await refreshCollection('all', 'wantlist')
     } catch (e: any) {
-      setSyncStatus(`Sync failed: ${e.message}`)
+      if (e?.status !== 409) {
+        setSyncStatus(`Sync failed: ${e.message}`)
+        return
+      }
     }
-  }, [setSyncStatus])
+    followSyncRun()
+  }, [setSyncStatus, followSyncRun])
 
   // POST /crawl/start only enqueues, and the shared worker pool broadcasts no
   // lifecycle event when it later picks the work up (the `started` event went

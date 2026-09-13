@@ -788,9 +788,31 @@ class CrawlManager:
         task = self._sync_tasks.get(user_id)
         return task is not None and not task.done()
 
+    @staticmethod
+    def _claim_sync_run(user_id: int, mode: str, scope: str) -> bool:
+        from db import user_scope, claim_library_sync_run
+        with user_scope(user_id) as conn:
+            claimed = claim_library_sync_run(conn, user_id, mode, scope)
+            conn.commit()
+        return claimed
+
     async def start_sync(self, user_id: int, mode: str = "all", scope: str = "all") -> bool:
         if self.sync_running(user_id) or self.plex_match_running(user_id):
             log.warning("Collection sync already running for %s, ignoring start request", self._username_for_log(user_id))
+            return False
+        # _sync_tasks above is this process's memory, and the deployment runs
+        # more than one Machine behind one hostname -- so the guard it provides
+        # covers only the half of the requests that happen to land here. The
+        # claim below is the same refusal made in Postgres, where the other
+        # Machine's run is visible; it doubles as the row that tells the
+        # browser its sync is under way at all (see library_sync_runs).
+        # Blocking psycopg calls, so off the event loop, same as
+        # start_stock_sync's advisory lock.
+        if not await run_in_threadpool(self._claim_sync_run, user_id, mode, scope):
+            log.warning(
+                "Collection sync already running on another instance for %s, ignoring start request",
+                self._username_for_log(user_id),
+            )
             return False
         self._sync_tasks[user_id] = asyncio.create_task(self._sync_collection(user_id, mode, scope))
         return True
@@ -839,12 +861,43 @@ class CrawlManager:
         from db import (
             get_identity_pool, user_scope, upsert_catalog_release, upsert_library_item,
             clear_wishlist_flags_not_in, delete_orphaned_releases, enqueue_crawl_queue,
-            enqueue_crawl_queue_for_library_stock_items,
+            enqueue_crawl_queue_for_library_stock_items, record_library_sync_progress,
+            finish_library_sync_run,
         )
         from config import crawl_library_only
         import httpx
 
         broadcast = lambda event: self._broadcast_threadsafe({**event, "user_id": user_id}, loop)
+
+        # Every sync_* event below is broadcast in-process only, so a browser
+        # served by the other Machine hears none of it. These two write the
+        # same run to library_sync_runs, which it can read. Both are best
+        # effort: failing to narrate a sync must never be what ends one.
+        def finish_run(status, synced=None, wishlist_synced=None, error=None):
+            try:
+                with user_scope(user_id) as conn:
+                    finish_library_sync_run(
+                        conn, user_id, status, synced=synced,
+                        wishlist_synced=wishlist_synced, error=error,
+                    )
+                    conn.commit()
+            except Exception as e:
+                log.warning("Could not record the end of user %d's collection sync: %s", user_id, e)
+
+        # Deliberately on its own connection rather than the page loop's: this
+        # one is called from paths where that connection is either not open yet
+        # or sitting in a failed transaction.
+        def heartbeat_run():
+            try:
+                with user_scope(user_id) as conn:
+                    record_library_sync_progress(conn, user_id)
+                    conn.commit()
+            except Exception as e:
+                log.warning("Could not record user %d's collection sync heartbeat: %s", user_id, e)
+
+        def sync_error(message):
+            broadcast({"status": "sync_error", "error": message})
+            finish_run("error", error=message)
 
         # The records a sync commits may match store items whose queue rows
         # the library-only sweep deleted, or that _sync_stock never inserted,
@@ -872,12 +925,12 @@ class CrawlManager:
                 user = conn.execute("SELECT * FROM users WHERE id = %s", [user_id]).fetchone()
             if user is None:
                 log.info("Collection sync started for user %d (mode=%s)", user_id, mode)
-                broadcast({"status": "sync_error", "error": "User not found"})
+                sync_error("User not found")
                 return
             username = user["discogs_username"]
             log.info("Collection sync started for %s (mode=%s)", username, mode)
             if not user["discogs_oauth_token_encrypted"]:
-                broadcast({"status": "sync_error", "error": "Discogs account not connected"})
+                sync_error("Discogs account not connected")
                 return
             oauth_token = token_encryption.decrypt(user["discogs_oauth_token_encrypted"])
             oauth_secret = token_encryption.decrypt(user["discogs_oauth_secret_encrypted"])
@@ -887,7 +940,7 @@ class CrawlManager:
                 try:
                     fields = discogs.fetch_collection_fields(oauth_token, oauth_secret, username)
                 except discogs.HTTPStatusError:
-                    broadcast({"status": "sync_error", "error": "Discogs request failed"})
+                    sync_error("Discogs request failed")
                     return
                 price_field_id = next((fid for fid, name in fields.items() if name.lower() == "price"), None)
 
@@ -938,6 +991,12 @@ class CrawlManager:
                             )
                             enqueue_crawl_queue(conn, rid)
                             count += 1
+                        # In the page's own transaction, so the row the other
+                        # Machine reads advances exactly when the data it
+                        # describes does -- never ahead of it.
+                        record_library_sync_progress(
+                            conn, user_id, page=page, total_pages=total_pages, synced=count,
+                        )
                         conn.commit()
                         # user_scope()'s set_config(..., true) is transaction-local and
                         # was just reverted by the commit above -- to Postgres's empty-
@@ -980,6 +1039,7 @@ class CrawlManager:
                         )
                         enqueue_crawl_queue(conn, rid)
                         wishlist_count += 1
+                    record_library_sync_progress(conn, user_id, wishlist_synced=wishlist_count)
                     conn.commit()
                     # Same reasoning as the collection-loop commit above: re-scope
                     # app.user_id for this connection's next transaction, since the
@@ -995,8 +1055,10 @@ class CrawlManager:
                     username, wishlist_count, cleared, len(deleted),
                 )
 
+            heartbeat_run()
             restore_library_stock_rows()
 
+            finish_run("complete", synced=count, wishlist_synced=wishlist_count)
             broadcast({
                 "status": "sync_complete",
                 "synced": count,
@@ -1018,7 +1080,7 @@ class CrawlManager:
 
         except Exception as e:
             log.error("Collection sync failed: %s", e, exc_info=True)
-            broadcast({"status": "sync_error", "error": str(e)})
+            sync_error(str(e))
             # Best effort: a second failure here must not replace the one
             # already reported.
             try:
@@ -1026,6 +1088,13 @@ class CrawlManager:
             except Exception as restore_error:
                 log.warning("Could not queue store items for user %d's library after the failed sync: %s", user_id, restore_error)
             return None
+        finally:
+            # Backstop for an exit neither branch above covered -- a
+            # BaseException, or a failure inside the error path itself. A run
+            # left saying 'running' is worse than one that ends badly: the
+            # claim would hold every later refresh until it went stale. A
+            # no-op once a real outcome is recorded (see finish_library_sync_run).
+            finish_run("error", error="Sync ended unexpectedly")
 
     async def sweep_enqueue(self, mode: str = "missing"):
         from db import get_identity_pool, enqueue_crawl_queue, get_missing_releases, user_scope

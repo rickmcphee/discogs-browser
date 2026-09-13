@@ -50,13 +50,25 @@ export async function getCollectionStatus(): Promise<CollectionStatus> {
   return r.json()
 }
 
+// Carries the HTTP status so the caller can tell a refused start from a
+// failed one. 409 is not a failure: it means a sync is already running --
+// possibly on the other Machine, where this browser could not have heard it
+// start -- which is a thing to follow, not an error to report.
+export class ApiError extends Error {
+  status: number
+  constructor(status: number, message: string) {
+    super(message)
+    this.status = status
+  }
+}
+
 export async function refreshCollection(mode?: 'all' | 'new', scope?: 'all' | 'wantlist'): Promise<{ started: boolean; running: boolean }> {
   const q = new URLSearchParams()
   if (mode === 'new') q.set('mode', 'new')
   if (scope === 'wantlist') q.set('scope', RECORD_SCOPE_PARAM.wantlist)
   const url = q.toString() ? `/collection/refresh?${q}` : '/collection/refresh'
   const r = await apiFetch(url, { method: 'POST' })
-  if (!r.ok) throw new Error(await r.text())
+  if (!r.ok) throw new ApiError(r.status, await r.text())
   return r.json()
 }
 

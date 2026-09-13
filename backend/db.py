@@ -631,6 +631,32 @@ ALTER TABLE library_items ADD COLUMN IF NOT EXISTS collection_date_added TIMESTA
 ALTER TABLE library_items ADD COLUMN IF NOT EXISTS wishlist_date_added TIMESTAMP;
 ALTER TABLE library_items ADD COLUMN IF NOT EXISTS price_paid TEXT;
 
+-- The current (or most recent) collection sync for one user, as a row rather
+-- than as process memory. CrawlManager._sync_tasks and the sync_* events that
+-- narrate a run are both in-process, and nothing bridges them between
+-- Machines, so a browser whose SSE stream is served by the other Machine sees
+-- no sync_started, no sync_progress and no sync_complete for a refresh it just
+-- requested -- and the collection table, which only refetches when one of
+-- those arrives, never shows what the sync fetched. This row is the same run
+-- told in a place both Machines can read.
+--
+-- One row per user, rewritten by each run rather than appended: nothing here
+-- is history, and the claim below has to be a single conflicting key.
+CREATE TABLE IF NOT EXISTS library_sync_runs (
+    user_id INTEGER PRIMARY KEY REFERENCES users(id),
+    status TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    page INTEGER,
+    total_pages INTEGER,
+    synced INTEGER NOT NULL DEFAULT 0,
+    wishlist_synced INTEGER,
+    error TEXT,
+    started_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    heartbeat_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    finished_at TIMESTAMP
+);
+
 -- One-shot, self-retiring migration off the global catalog.discogs_price.
 -- The guard is what makes it safe to leave in a schema string that re-runs on
 -- every boot: once the source column is gone this whole block is a no-op, so
@@ -754,6 +780,8 @@ ALTER TABLE sessions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sessions FORCE ROW LEVEL SECURITY;
 ALTER TABLE library_items ENABLE ROW LEVEL SECURITY;
 ALTER TABLE library_items FORCE ROW LEVEL SECURITY;
+ALTER TABLE library_sync_runs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE library_sync_runs FORCE ROW LEVEL SECURITY;
 ALTER TABLE stock_item_judgments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE stock_item_judgments FORCE ROW LEVEL SECURITY;
 ALTER TABLE user_hidden_crawlers ENABLE ROW LEVEL SECURITY;
@@ -793,6 +821,11 @@ CREATE POLICY sessions_isolation ON sessions
 
 DROP POLICY IF EXISTS library_items_isolation ON library_items;
 CREATE POLICY library_items_isolation ON library_items
+    USING (user_id = current_setting('app.user_id', true)::int)
+    WITH CHECK (user_id = current_setting('app.user_id', true)::int);
+
+DROP POLICY IF EXISTS library_sync_runs_isolation ON library_sync_runs;
+CREATE POLICY library_sync_runs_isolation ON library_sync_runs
     USING (user_id = current_setting('app.user_id', true)::int)
     WITH CHECK (user_id = current_setting('app.user_id', true)::int);
 
@@ -933,6 +966,9 @@ def init_tenant_schema():
         conn.execute("GRANT SELECT, INSERT, DELETE ON stock_item_price_drops TO app_user")
         conn.execute("GRANT USAGE, SELECT ON SEQUENCE listings_id_seq, stock_items_id_seq, stock_item_price_drops_id_seq TO app_user")
         conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON library_items TO app_user")
+        # No DELETE: a run row is claimed, updated and finished in place, and
+        # the next run overwrites it. Nothing ever removes one.
+        conn.execute("GRANT SELECT, INSERT, UPDATE ON library_sync_runs TO app_user")
         conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON stock_item_judgments TO app_user")
         conn.execute("GRANT SELECT, INSERT, DELETE ON user_hidden_crawlers TO app_user")
         conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON stock_item_saves TO app_user")
@@ -3963,6 +3999,131 @@ def get_crawl_status_for_user(conn, user_id: int) -> dict:
     ).fetchone()["min"]
 
     return {"total": total, "missing": total - complete, "oldest_checked": oldest}
+
+
+# How long a claimed sync run may go without a heartbeat before another
+# request may take it over. The heartbeat advances at every page commit, and a
+# page is bounded work -- at most one Discogs page of releases, each costing a
+# barcode fetch plus its 1.1s pacing sleep -- so a gap this long means the
+# process that claimed the run is gone (a Machine restart mid-sync), not slow.
+# Without a takeover the abandoned row would hold the claim forever and every
+# later refresh for that user would be refused.
+SYNC_RUN_STALE_MINUTES = 15
+
+# clock_timestamp(), not CURRENT_TIMESTAMP: the heartbeat is written inside the
+# page's own transaction, and CURRENT_TIMESTAMP there is the time that
+# transaction *began* -- one page's work before the row actually lands. The
+# staleness window would silently shrink by that much.
+_SYNC_RUN_STALE_SQL = (
+    "library_sync_runs.heartbeat_at < clock_timestamp() "
+    f"- INTERVAL '{SYNC_RUN_STALE_MINUTES} minutes'"
+)
+
+
+def claim_library_sync_run(conn, user_id: int, mode: str, scope: str) -> bool:
+    """Claim the right to run a collection sync for this user, across every
+    Machine rather than just this process. Returns False when a live run
+    already holds it.
+
+    CrawlManager._sync_tasks answers the same question for one process only,
+    which is not the question: with two Machines behind one hostname, the
+    refusal has to hold for a sync the *other* one is running, and the browser
+    that asked has no say in which Machine it reached."""
+    row = conn.execute(
+        f"""
+        INSERT INTO library_sync_runs (user_id, status, mode, scope)
+        VALUES (%(user_id)s, 'running', %(mode)s, %(scope)s)
+        ON CONFLICT (user_id) DO UPDATE SET
+            status = 'running', mode = EXCLUDED.mode, scope = EXCLUDED.scope,
+            page = NULL, total_pages = NULL, synced = 0, wishlist_synced = NULL,
+            error = NULL, started_at = CURRENT_TIMESTAMP,
+            heartbeat_at = clock_timestamp(), finished_at = NULL
+        WHERE library_sync_runs.status <> 'running' OR {_SYNC_RUN_STALE_SQL}
+        RETURNING user_id
+        """,
+        {"user_id": user_id, "mode": mode, "scope": scope},
+    ).fetchone()
+    return row is not None
+
+
+def record_library_sync_progress(
+    conn,
+    user_id: int,
+    page: Optional[int] = None,
+    total_pages: Optional[int] = None,
+    synced: Optional[int] = None,
+    wishlist_synced: Optional[int] = None,
+):
+    """Advance the run's counters and its heartbeat. COALESCE so a caller can
+    move one field without restating the others -- the wantlist loop has no
+    page numbers to report, and the heartbeat alone is a valid update."""
+    conn.execute(
+        """
+        UPDATE library_sync_runs SET
+            page = COALESCE(%(page)s, page),
+            total_pages = COALESCE(%(total_pages)s, total_pages),
+            synced = COALESCE(%(synced)s, synced),
+            wishlist_synced = COALESCE(%(wishlist_synced)s, wishlist_synced),
+            heartbeat_at = clock_timestamp()
+        WHERE user_id = %(user_id)s AND status = 'running'
+        """,
+        {
+            "user_id": user_id, "page": page, "total_pages": total_pages,
+            "synced": synced, "wishlist_synced": wishlist_synced,
+        },
+    )
+
+
+def finish_library_sync_run(
+    conn,
+    user_id: int,
+    status: str,
+    synced: Optional[int] = None,
+    wishlist_synced: Optional[int] = None,
+    error: Optional[str] = None,
+) -> bool:
+    """Close the run. Returns whether this call is the one that closed it.
+
+    `status = 'running'` in the WHERE is what makes the backstop in
+    _sync_collection_blocking's `finally` safe: it can be called
+    unconditionally on every exit and will not overwrite the real outcome a
+    path already recorded."""
+    cursor = conn.execute(
+        """
+        UPDATE library_sync_runs SET
+            status = %(status)s,
+            synced = COALESCE(%(synced)s, synced),
+            wishlist_synced = COALESCE(%(wishlist_synced)s, wishlist_synced),
+            error = %(error)s,
+            heartbeat_at = clock_timestamp(),
+            finished_at = CURRENT_TIMESTAMP
+        WHERE user_id = %(user_id)s AND status = 'running'
+        """,
+        {
+            "user_id": user_id, "status": status, "synced": synced,
+            "wishlist_synced": wishlist_synced, "error": error,
+        },
+    )
+    return cursor.rowcount > 0
+
+
+def get_library_sync_run(conn, user_id: int) -> Optional[dict]:
+    """The user's current or most recent sync run, or None if they have never
+    run one.
+
+    `running` is computed rather than read off `status`: an abandoned run keeps
+    saying 'running' forever, and a client that believed it would spin on a
+    sync nothing is doing. `stale` is carried separately so the UI can say what
+    happened instead of silently going idle."""
+    return conn.execute(
+        f"""
+        SELECT *,
+               (status = 'running' AND NOT ({_SYNC_RUN_STALE_SQL})) AS running,
+               (status = 'running' AND {_SYNC_RUN_STALE_SQL}) AS stale
+        FROM library_sync_runs WHERE user_id = %s
+        """,
+        [user_id],
+    ).fetchone()
 
 
 # Callers must call this before delete_orphaned_releases in the same sync

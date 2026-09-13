@@ -94,9 +94,31 @@ export interface CrawlEvent {
   crawler_id?: number | null
 }
 
+// The collection sync as both Machines can see it, rather than as one
+// process remembers it. `running` is not `status === 'running'`: a run whose
+// Machine died mid-sync keeps that status forever, and the server reports it
+// as stale instead (see backend/db.py's get_library_sync_run).
+export interface CollectionSyncRun {
+  status: 'running' | 'complete' | 'error'
+  running: boolean
+  stale: boolean
+  mode: string
+  scope: string
+  page: number | null
+  total_pages: number | null
+  synced: number
+  wishlist_synced: number | null
+  error: string | null
+  started_at: string | null
+  finished_at: string | null
+}
+
 export interface CollectionStatus {
   total: number
   last_synced: string | null
+  // Optional because every test double for this endpoint predates it; absent
+  // reads the same as "no sync has ever run".
+  sync?: CollectionSyncRun | null
 }
 
 export interface CrawlStatus {

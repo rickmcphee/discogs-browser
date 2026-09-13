@@ -105,39 +105,89 @@ async def test_sync_not_running_initially(manager):
     assert manager.sync_running(1) is False
 
 
-async def test_start_sync_returns_true_when_idle(manager):
+# start_sync claims the run in Postgres before it creates the task -- the
+# guard has to hold against the other Machine, not just this process -- so
+# every test of it needs a real user row to claim against.
+@pytest.fixture
+def synced_user(pg_schema):
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+    return user["id"]
+
+
+async def test_start_sync_returns_true_when_idle(manager, synced_user):
     async def _fake_sync(user_id, mode, scope="all"):
         await asyncio.sleep(0)
 
     manager._sync_collection = _fake_sync  # type: ignore
-    started = await manager.start_sync(1, "all")
+    started = await manager.start_sync(synced_user, "all")
     assert started is True
     await asyncio.sleep(0.01)
 
 
-async def test_start_sync_returns_false_when_already_running(manager, pg_schema):
+async def test_start_sync_returns_false_when_already_running(manager, synced_user):
     event = asyncio.Event()
 
     async def _fake_sync(user_id, mode, scope="all"):
         await event.wait()
 
     manager._sync_collection = _fake_sync  # type: ignore
-    await manager.start_sync(1, "all")
-    assert manager.sync_running(1) is True
-    second = await manager.start_sync(1, "all")
+    await manager.start_sync(synced_user, "all")
+    assert manager.sync_running(synced_user) is True
+    second = await manager.start_sync(synced_user, "all")
     assert second is False
     event.set()
     await asyncio.sleep(0.01)
 
 
-async def test_sync_running_false_after_completion(manager):
+async def test_sync_running_false_after_completion(manager, synced_user):
     async def _instant(user_id, mode, scope="all"):
         pass
 
     manager._sync_collection = _instant  # type: ignore
-    await manager.start_sync(1, "all")
+    await manager.start_sync(synced_user, "all")
     await asyncio.sleep(0.05)
-    assert manager.sync_running(1) is False
+    assert manager.sync_running(synced_user) is False
+
+
+async def test_start_sync_is_refused_while_another_instance_holds_the_run(manager, synced_user):
+    """The in-process guard cannot see the other Machine's sync, and with two
+    Machines behind one hostname the browser has no say in which one its
+    request reaches. A manager that has never heard of this run must still
+    refuse to start a second one."""
+    with db.user_scope(synced_user) as conn:
+        assert db.claim_library_sync_run(conn, synced_user, "all", "all") is True
+        conn.commit()
+
+    async def _fake_sync(user_id, mode, scope="all"):
+        await asyncio.sleep(0)
+
+    manager._sync_collection = _fake_sync  # type: ignore
+    assert manager.sync_running(synced_user) is False
+    assert await manager.start_sync(synced_user, "all") is False
+    assert manager.sync_running(synced_user) is False
+
+
+async def test_start_sync_takes_over_a_run_whose_machine_died(manager, synced_user, monkeypatch):
+    """A run abandoned mid-sync (its Machine restarted) stops heartbeating and
+    never finishes, so without a takeover its claim would refuse every later
+    refresh for that user for good."""
+    with db.user_scope(synced_user) as conn:
+        db.claim_library_sync_run(conn, synced_user, "all", "all")
+        conn.execute(
+            "UPDATE library_sync_runs SET heartbeat_at = clock_timestamp() - INTERVAL '%s minutes' "
+            "WHERE user_id = %%s" % (db.SYNC_RUN_STALE_MINUTES + 1),
+            [synced_user],
+        )
+        conn.commit()
+
+    async def _fake_sync(user_id, mode, scope="all"):
+        await asyncio.sleep(0)
+
+    manager._sync_collection = _fake_sync  # type: ignore
+    assert await manager.start_sync(synced_user, "all") is True
+    await asyncio.sleep(0.01)
 
 
 async def test_start_sync_for_one_user_does_not_block_another_users_sync(manager, pg_schema):
@@ -151,17 +201,22 @@ async def test_start_sync_for_one_user_does_not_block_another_users_sync(manager
     async def _fake_sync(user_id, mode, scope="all"):
         await event.wait()
 
-    manager._sync_collection = _fake_sync  # type: ignore
-    alice_started = await manager.start_sync(1, "all")
-    assert alice_started is True
-    assert manager.sync_running(1) is True
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")["id"]
+        bob = db.create_user(conn, discogs_user_id=2, discogs_username="bob")["id"]
+        conn.commit()
 
-    bob_started = await manager.start_sync(2, "all")
+    manager._sync_collection = _fake_sync  # type: ignore
+    alice_started = await manager.start_sync(alice, "all")
+    assert alice_started is True
+    assert manager.sync_running(alice) is True
+
+    bob_started = await manager.start_sync(bob, "all")
     assert bob_started is True
-    assert manager.sync_running(2) is True
+    assert manager.sync_running(bob) is True
 
     # Alice's own second concurrent call is still refused.
-    alice_second = await manager.start_sync(1, "all")
+    alice_second = await manager.start_sync(alice, "all")
     assert alice_second is False
 
     event.set()
@@ -237,6 +292,104 @@ async def test_sync_collection_enqueues_crawl_queue_for_missing_listings(pg_sche
     with db.get_admin_pool().connection() as conn:
         queued = conn.execute("SELECT discogs_id, status FROM crawl_queue ORDER BY discogs_id").fetchall()
     assert [(q["discogs_id"], q["status"]) for q in queued] == [("r111", "pending"), ("r222", "pending")]
+
+
+@respx.mock
+async def test_sync_records_its_progress_and_completion_in_the_run_row(pg_schema, monkeypatch):
+    """The run row is what a browser served by the *other* Machine reads:
+    CrawlManager's sync_* events never leave the process that ran the sync, so
+    without this row that browser has no way to learn a sync started, advanced
+    or finished -- and its collection table, which only refetches when it
+    hears one, never shows what the sync fetched."""
+    import config
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "s")
+    monkeypatch.setattr(config, "TOKEN_ENCRYPTION_KEY", "kL8mN2pQ7rT5vX9yB3cF6hJ1kM4nP8sU2wZ5aD7eG0i=")
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute(
+            "UPDATE users SET discogs_oauth_token_encrypted = %s, discogs_oauth_secret_encrypted = %s WHERE id = %s",
+            [token_encryption.encrypt("tok"), token_encryption.encrypt("sec"), user["id"]],
+        )
+        conn.commit()
+
+    respx.get("https://api.discogs.com/users/alice/collection/fields").mock(
+        return_value=httpx.Response(200, json={"fields": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/collection/folders/0/releases").mock(
+        side_effect=[_collection_page(111, total_pages=2), _collection_page(222, total_pages=2)]
+    )
+    respx.get(url__regex=r"https://api\.discogs\.com/releases/\d+").mock(
+        return_value=httpx.Response(200, json={"identifiers": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/wants").mock(
+        return_value=httpx.Response(200, json={"pagination": {"pages": 1}, "wants": []})
+    )
+
+    manager = CrawlManager()
+    assert await manager.start_sync(user["id"], "all") is True
+    await manager._sync_tasks[user["id"]]
+
+    with db.user_scope(user["id"]) as conn:
+        run = db.get_library_sync_run(conn, user["id"])
+    assert run["status"] == "complete"
+    assert run["running"] is False
+    assert run["stale"] is False
+    assert run["synced"] == 2
+    assert run["wishlist_synced"] == 0
+    assert (run["page"], run["total_pages"]) == (2, 2)
+    assert run["error"] is None
+    assert run["finished_at"] is not None
+
+
+@respx.mock
+async def test_sync_records_a_failure_in_the_run_row(pg_schema, monkeypatch):
+    """A sync that dies is the case where silence is most costly: the click
+    looked like it did nothing at all. The row carries the reason to a browser
+    that never received the sync_error event."""
+    import config
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "s")
+    monkeypatch.setattr(config, "TOKEN_ENCRYPTION_KEY", "kL8mN2pQ7rT5vX9yB3cF6hJ1kM4nP8sU2wZ5aD7eG0i=")
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+
+    manager = CrawlManager()
+    assert await manager.start_sync(user["id"], "all") is True
+    await manager._sync_tasks[user["id"]]
+
+    with db.user_scope(user["id"]) as conn:
+        run = db.get_library_sync_run(conn, user["id"])
+    # No OAuth token was stored, so the sync stops before it reaches Discogs.
+    assert run["status"] == "error"
+    assert run["running"] is False
+    assert run["error"] == "Discogs account not connected"
+
+
+async def test_a_finished_run_does_not_hold_the_claim(pg_schema):
+    """The claim and the record are one row, so finishing has to release it --
+    otherwise the first sync a user ever ran would be the last."""
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+
+    with db.user_scope(user["id"]) as conn:
+        assert db.claim_library_sync_run(conn, user["id"], "all", "all") is True
+        assert db.claim_library_sync_run(conn, user["id"], "all", "all") is False
+        assert db.finish_library_sync_run(conn, user["id"], "complete", synced=7) is True
+        # A second close cannot overwrite the outcome the first recorded --
+        # this is what makes _sync_collection_blocking's `finally` backstop
+        # safe to call on every exit.
+        assert db.finish_library_sync_run(conn, user["id"], "error", error="late") is False
+        assert db.claim_library_sync_run(conn, user["id"], "new", "all") is True
+        conn.commit()
+
+    with db.user_scope(user["id"]) as conn:
+        run = db.get_library_sync_run(conn, user["id"])
+    assert (run["status"], run["mode"], run["synced"]) == ("running", "new", 0)
 
 
 @pytest.fixture

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import App from '../App'
-import { refreshCollection, getCollectionStatus } from '../api/client'
+import { refreshCollection, getReleases } from '../api/client'
 import type { Release } from '../api/types'
 
 class MockEventSource {
@@ -90,7 +90,13 @@ describe('wantlist tab refresh', () => {
     fireEvent.click(button)
 
     await waitFor(() => expect(refreshCollection).toHaveBeenCalledWith('all', 'wantlist'))
-    expect(getCollectionStatus).not.toHaveBeenCalled()
+    // Asserted through the modal rather than through getCollectionStatus not
+    // being called: that endpoint now also carries the sync run the collection
+    // tab polls (see COLLECTION_SYNC_POLL_MS in App.tsx), so a call to it no
+    // longer means the "already loaded?" check ran. The modal appearing is
+    // what that check would actually do here -- the stub reports a non-empty
+    // collection.
+    await waitFor(() => expect(getReleases).toHaveBeenCalled())
     expect(screen.queryByText('Collection already loaded')).toBeNull()
   })
 })
