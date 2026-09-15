@@ -6,15 +6,36 @@ import db
 router = APIRouter()
 
 
+# The fields of a sync run the client is given. Spelled out rather than
+# returning the row: `status` and `running` say different things (an abandoned
+# run still says 'running' -- see db.get_library_sync_run), and the row also
+# carries a heartbeat that is bookkeeping, not news.
+_SYNC_RUN_FIELDS = (
+    "status", "running", "stale", "mode", "scope", "page", "total_pages",
+    "synced", "wishlist_synced", "error", "started_at", "finished_at",
+)
+
+
 @router.get("/collection/status")
 def collection_status(request: Request):
+    """Also carries the current (or most recent) sync run, because the events
+    that narrate one reach only the Machine that is running it: CrawlManager's
+    fan-out is in-process, and a browser's SSE stream and its POST
+    /collection/refresh are two independent requests that need not have landed
+    on the same one. Polling this is how the client follows a sync it cannot
+    hear."""
     user_id = request.state.user_id
     with db.user_scope(user_id) as conn:
         row = conn.execute(
             "SELECT COUNT(*) AS total, MAX(last_synced) AS last_synced FROM library_items WHERE user_id = %s",
             [user_id],
         ).fetchone()
-    return {"total": row["total"], "last_synced": row["last_synced"]}
+        run = db.get_library_sync_run(conn, user_id)
+    return {
+        "total": row["total"],
+        "last_synced": row["last_synced"],
+        "sync": {k: run[k] for k in _SYNC_RUN_FIELDS} if run else None,
+    }
 
 
 @router.get("/collection/price-status")
