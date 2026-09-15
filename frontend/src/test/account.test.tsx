@@ -509,8 +509,12 @@ describe('Account', () => {
 
   it('shows a placeholder when no invites have been minted', async () => {
     renderAccount()
-    await waitFor(() => expect(listInvites).toHaveBeenCalled())
-    expect(screen.getByText('No invites minted yet.')).toBeInTheDocument()
+    // findByText, not waitFor(called) + getByText: the call is registered
+    // during render, so waiting on it can return before the promise has
+    // resolved and the list has re-rendered, and the synchronous getByText
+    // then misses a placeholder that is about to appear. It passed on a fast
+    // machine and failed on a loaded CI runner for exactly that reason.
+    expect(await screen.findByText('No invites minted yet.')).toBeInTheDocument()
   })
 
   it('mints a new invite, clears the note, and shows the code with a Copy button', async () => {

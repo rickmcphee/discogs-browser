@@ -1,5 +1,6 @@
 import hashlib
 import re
+import uuid
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Optional
@@ -711,6 +712,42 @@ ALTER TABLE library_items ADD COLUMN IF NOT EXISTS collection_date_added TIMESTA
 ALTER TABLE library_items ADD COLUMN IF NOT EXISTS wishlist_date_added TIMESTAMP;
 ALTER TABLE library_items ADD COLUMN IF NOT EXISTS price_paid TEXT;
 
+-- The current (or most recent) collection sync for one user, as a row rather
+-- than as process memory. CrawlManager._sync_tasks and the sync_* events that
+-- narrate a run are both in-process, and nothing bridges them between
+-- Machines, so a browser whose SSE stream is served by the other Machine sees
+-- no sync_started, no sync_progress and no sync_complete for a refresh it just
+-- requested -- and the collection table, which only refetches when one of
+-- those arrives, never shows what the sync fetched. This row is the same run
+-- told in a place both Machines can read.
+--
+-- One row per user, rewritten by each run rather than appended: nothing here
+-- is history, and the claim below has to be a single conflicting key.
+CREATE TABLE IF NOT EXISTS library_sync_runs (
+    user_id INTEGER PRIMARY KEY REFERENCES users(id),
+    status TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    page INTEGER,
+    total_pages INTEGER,
+    synced INTEGER NOT NULL DEFAULT 0,
+    wishlist_synced INTEGER,
+    error TEXT,
+    started_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    heartbeat_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    finished_at TIMESTAMP
+);
+
+-- Identifies *which* claim owns the row, so a writer can prove the run it is
+-- describing is still the run that is there. Without it every write is
+-- addressed to "whatever is currently running for this user", and two
+-- reachable races corrupt a newer run with an older one's writes: a worker
+-- whose claim was taken over as stale is still alive and still writing, and a
+-- worker that has just finished still runs its `finally` backstop -- which a
+-- fresh claim taken in between would otherwise absorb, marking a sync that is
+-- only just starting as failed and releasing its claim.
+ALTER TABLE library_sync_runs ADD COLUMN IF NOT EXISTS run_token TEXT;
+
 -- One-shot, self-retiring migration off the global catalog.discogs_price.
 -- The guard is what makes it safe to leave in a schema string that re-runs on
 -- every boot: once the source column is gone this whole block is a no-op, so
@@ -834,6 +871,8 @@ ALTER TABLE sessions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sessions FORCE ROW LEVEL SECURITY;
 ALTER TABLE library_items ENABLE ROW LEVEL SECURITY;
 ALTER TABLE library_items FORCE ROW LEVEL SECURITY;
+ALTER TABLE library_sync_runs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE library_sync_runs FORCE ROW LEVEL SECURITY;
 ALTER TABLE stock_item_judgments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE stock_item_judgments FORCE ROW LEVEL SECURITY;
 ALTER TABLE user_hidden_crawlers ENABLE ROW LEVEL SECURITY;
@@ -873,6 +912,11 @@ CREATE POLICY sessions_isolation ON sessions
 
 DROP POLICY IF EXISTS library_items_isolation ON library_items;
 CREATE POLICY library_items_isolation ON library_items
+    USING (user_id = current_setting('app.user_id', true)::int)
+    WITH CHECK (user_id = current_setting('app.user_id', true)::int);
+
+DROP POLICY IF EXISTS library_sync_runs_isolation ON library_sync_runs;
+CREATE POLICY library_sync_runs_isolation ON library_sync_runs
     USING (user_id = current_setting('app.user_id', true)::int)
     WITH CHECK (user_id = current_setting('app.user_id', true)::int);
 
@@ -1013,6 +1057,9 @@ def init_tenant_schema():
         conn.execute("GRANT SELECT, INSERT, DELETE ON stock_item_price_drops TO app_user")
         conn.execute("GRANT USAGE, SELECT ON SEQUENCE listings_id_seq, stock_items_id_seq, stock_item_price_drops_id_seq TO app_user")
         conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON library_items TO app_user")
+        # No DELETE: a run row is claimed, updated and finished in place, and
+        # the next run overwrites it. Nothing ever removes one.
+        conn.execute("GRANT SELECT, INSERT, UPDATE ON library_sync_runs TO app_user")
         conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON stock_item_judgments TO app_user")
         conn.execute("GRANT SELECT, INSERT, DELETE ON user_hidden_crawlers TO app_user")
         conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON stock_item_saves TO app_user")
@@ -4050,6 +4097,261 @@ def get_crawl_status_for_user(conn, user_id: int) -> dict:
     ).fetchone()["min"]
 
     return {"total": total, "missing": total - complete, "oldest_checked": oldest}
+
+
+# How long a claimed sync run may go without a heartbeat before another
+# request may take it over. Without a takeover an abandoned row would hold the
+# claim forever and every later refresh for that user would be refused.
+#
+# The window has to measure silence rather than slowness, and a page commit is
+# too coarse to do that: a page is a hundred releases, each able to spend a
+# 30-second request timeout on its barcode fetch before the 1.1s pacing sleep,
+# so a page doing exactly what it should can outlast this on its own. The sync
+# therefore also checkpoints mid-page, on its own connection (see
+# crawl_manager._sync_collection_blocking), which is what makes a gap this
+# long mean the process that claimed the run is gone rather than busy.
+#
+# That checkpoint comes due on an item count *or* a wall-clock ceiling
+# (crawl_manager.SYNC_CHECKPOINT_MAX_SECONDS), and the ceiling is load-bearing
+# rather than belt-and-braces: discogs._get_with_retry waits out a rate limit
+# on top of those timeouts, so under a sustained 429 a chunk of items runs well
+# past this window while the sync is alive and committing throughout. Bounding
+# the gap by count alone was correct until that landed and would be wrong again
+# the next time a request gets slower -- removing the ceiling brings back
+# exactly the false takeovers this window is meant to distinguish from real
+# ones.
+SYNC_RUN_STALE_MINUTES = 15
+
+# clock_timestamp(), not CURRENT_TIMESTAMP: the heartbeat is written inside the
+# page's own transaction, and CURRENT_TIMESTAMP there is the time that
+# transaction *began* -- one page's work before the row actually lands. The
+# staleness window would silently shrink by that much.
+# The statuses that hold the claim. 'plex_matching' is the sync's own work
+# finished but the user's library still being written, by the Plex phase
+# _sync_collection runs straight afterwards. Both start paths refuse to overlap
+# with that phase in process memory (CrawlManager._sync_tasks stays occupied
+# for its duration), so the claim -- which is the same refusal made where the
+# other Machine can see it -- has to cover it too, or a remote sync starts on
+# top of a Plex match the local guard would have refused.
+#
+# It is deliberately not "running": the client reads `running` to decide
+# whether a sync is still under way, and by this point the sync it asked for is
+# done and its counts are final.
+_SYNC_RUN_CLAIMED_SQL = "library_sync_runs.status IN ('running', 'plex_matching')"
+
+_SYNC_RUN_STALE_SQL = (
+    "library_sync_runs.heartbeat_at < clock_timestamp() "
+    f"- INTERVAL '{SYNC_RUN_STALE_MINUTES} minutes'"
+)
+
+
+def claim_library_sync_run(conn, user_id: int, mode: str, scope: str) -> Optional[str]:
+    """Claim the right to run a collection sync for this user, across every
+    Machine rather than just this process. Returns the claim's run token, or
+    None when a live run already holds it.
+
+    CrawlManager._sync_tasks answers the same question for one process only,
+    which is not the question: with two Machines behind one hostname, the
+    refusal has to hold for a sync the *other* one is running, and the browser
+    that asked has no say in which Machine it reached.
+
+    The token identifies this claim to every later write (see the column's
+    comment in TENANT_SCHEMA). Hold on to it: without it a caller can only
+    address "whatever is running for this user", which after a takeover or a
+    re-claim is somebody else's run."""
+    run_token = uuid.uuid4().hex
+    row = conn.execute(
+        f"""
+        INSERT INTO library_sync_runs (user_id, status, mode, scope, run_token)
+        VALUES (%(user_id)s, 'running', %(mode)s, %(scope)s, %(run_token)s)
+        ON CONFLICT (user_id) DO UPDATE SET
+            status = 'running', mode = EXCLUDED.mode, scope = EXCLUDED.scope,
+            run_token = EXCLUDED.run_token,
+            page = NULL, total_pages = NULL, synced = 0, wishlist_synced = NULL,
+            error = NULL, started_at = CURRENT_TIMESTAMP,
+            heartbeat_at = clock_timestamp(), finished_at = NULL
+        WHERE NOT ({_SYNC_RUN_CLAIMED_SQL}) OR {_SYNC_RUN_STALE_SQL}
+        RETURNING run_token
+        """,
+        {"user_id": user_id, "mode": mode, "scope": scope, "run_token": run_token},
+    ).fetchone()
+    return row["run_token"] if row else None
+
+
+def record_library_sync_progress(
+    conn,
+    user_id: int,
+    run_token: Optional[str],
+    page: Optional[int] = None,
+    total_pages: Optional[int] = None,
+    synced: Optional[int] = None,
+    wishlist_synced: Optional[int] = None,
+) -> bool:
+    """Advance the run's counters and its heartbeat. COALESCE so a caller can
+    move one field without restating the others -- the wantlist loop has no
+    page numbers to report, and the heartbeat alone is a valid update.
+
+    Fenced on `run_token`, so a worker whose claim was taken over while it was
+    still alive cannot go on advancing (or heartbeating, which would hold the
+    claim open) a run that is no longer its own. Fenced on staleness too, which
+    is what makes expiry irreversible: a run whose heartbeat has lapsed past
+    the window is out of the protocol whether or not anyone has taken it over
+    yet, so a worker that went quiet that long cannot come back and revive the
+    row. Without that the client has no terminal state to trust -- it is told
+    the sync stopped, stops polling, and the revived worker finishes into a
+    silence nobody is listening to.
+
+    Returns whether the run is still this caller's. That answer is what makes
+    ownership loss *observable* to the worker: fencing the row alone would
+    leave a dispossessed worker writing library rows and running destructive
+    wantlist cleanup alongside the sync that replaced it. Called inside a
+    transaction, the row lock it takes also holds the claim for the rest of
+    that transaction, so a competing claim waits rather than landing halfway
+    through."""
+    cursor = conn.execute(
+        """
+        UPDATE library_sync_runs SET
+            page = COALESCE(%(page)s, page),
+            total_pages = COALESCE(%(total_pages)s, total_pages),
+            synced = COALESCE(%(synced)s, synced),
+            wishlist_synced = COALESCE(%(wishlist_synced)s, wishlist_synced),
+            heartbeat_at = clock_timestamp()
+        WHERE user_id = %(user_id)s AND {claimed}
+              AND run_token = %(run_token)s
+              AND NOT ({stale})
+        """.format(claimed=_SYNC_RUN_CLAIMED_SQL, stale=_SYNC_RUN_STALE_SQL),
+        {
+            "user_id": user_id, "run_token": run_token, "page": page,
+            "total_pages": total_pages, "synced": synced,
+            "wishlist_synced": wishlist_synced,
+        },
+    )
+    return cursor.rowcount > 0
+
+
+def finish_library_sync_run(
+    conn,
+    user_id: int,
+    run_token: Optional[str],
+    status: str,
+    synced: Optional[int] = None,
+    wishlist_synced: Optional[int] = None,
+    error: Optional[str] = None,
+) -> bool:
+    """Close the run. Returns whether this call is the one that closed it.
+
+    `status = 'running'` in the WHERE is what makes the backstop in
+    _sync_collection_blocking's `finally` safe to call on every exit: it will
+    not overwrite the real outcome a path already recorded. `run_token` is what
+    makes it safe *in time*: a fresh claim can land between a run's own
+    completion and its backstop, and without the token that backstop would
+    match the new run and mark a sync that is only just starting as failed. A
+    run already past the staleness window cannot be closed either, for the
+    same reason it cannot be advanced -- see record_library_sync_progress.
+
+    Closes a run from the sync phase only. The Plex phase that can follow it
+    has its own release (finish_library_sync_plex_phase) so that this one,
+    which the sync's `finally` backstop calls unconditionally, cannot reach
+    past its own phase."""
+    cursor = conn.execute(
+        """
+        UPDATE library_sync_runs SET
+            status = %(status)s,
+            synced = COALESCE(%(synced)s, synced),
+            wishlist_synced = COALESCE(%(wishlist_synced)s, wishlist_synced),
+            error = %(error)s,
+            heartbeat_at = clock_timestamp(),
+            finished_at = CURRENT_TIMESTAMP
+        WHERE user_id = %(user_id)s AND status = 'running'
+              AND run_token = %(run_token)s
+              AND NOT ({stale})
+        """.format(stale=_SYNC_RUN_STALE_SQL),
+        {
+            "user_id": user_id, "run_token": run_token, "status": status,
+            "synced": synced, "wishlist_synced": wishlist_synced, "error": error,
+        },
+    )
+    return cursor.rowcount > 0
+
+
+def start_library_sync_plex_phase(
+    conn,
+    user_id: int,
+    run_token: Optional[str],
+    synced: Optional[int] = None,
+    wishlist_synced: Optional[int] = None,
+) -> bool:
+    """Hand the run from the sync to the Plex phase that follows it, keeping
+    the claim. The sync's counts are final at this point, so the client reads
+    this as the sync having finished; what stays held is the exclusion against
+    another Machine starting a sync on top of the Plex match."""
+    cursor = conn.execute(
+        """
+        UPDATE library_sync_runs SET
+            status = 'plex_matching',
+            synced = COALESCE(%(synced)s, synced),
+            wishlist_synced = COALESCE(%(wishlist_synced)s, wishlist_synced),
+            error = NULL,
+            heartbeat_at = clock_timestamp(),
+            finished_at = CURRENT_TIMESTAMP
+        WHERE user_id = %(user_id)s AND status = 'running'
+              AND run_token = %(run_token)s
+              AND NOT ({stale})
+        """.format(stale=_SYNC_RUN_STALE_SQL),
+        {
+            "user_id": user_id, "run_token": run_token,
+            "synced": synced, "wishlist_synced": wishlist_synced,
+        },
+    )
+    return cursor.rowcount > 0
+
+
+def finish_library_sync_plex_phase(conn, user_id: int, run_token: Optional[str]) -> bool:
+    """Release the claim the Plex phase has been holding.
+
+    Separate from finish_library_sync_run rather than a flag on it, because the
+    two close from different phases and conflating them is what lets
+    _sync_collection_blocking's `finally` backstop -- which fires on the handoff
+    path too -- close the Plex phase it just handed off to.
+
+    Fenced on staleness like every other writer, and for the same reason:
+    expiry has to be irreversible whether or not anyone has claimed the row
+    yet. A Plex batch that crosses the window has already lost the claim -- its
+    next heartbeat raises -- and a closer that still matched would revive the
+    row as 'complete' and hand its caller a True, which is now what decides
+    whether the stock-row restoration runs."""
+    cursor = conn.execute(
+        """
+        UPDATE library_sync_runs SET
+            status = 'complete',
+            heartbeat_at = clock_timestamp(),
+            finished_at = CURRENT_TIMESTAMP
+        WHERE user_id = %(user_id)s AND status = 'plex_matching'
+              AND run_token = %(run_token)s
+              AND NOT ({stale})
+        """.format(stale=_SYNC_RUN_STALE_SQL),
+        {"user_id": user_id, "run_token": run_token},
+    )
+    return cursor.rowcount > 0
+
+
+def get_library_sync_run(conn, user_id: int) -> Optional[dict]:
+    """The user's current or most recent sync run, or None if they have never
+    run one.
+
+    `running` is computed rather than read off `status`: an abandoned run keeps
+    saying 'running' forever, and a client that believed it would spin on a
+    sync nothing is doing. `stale` is carried separately so the UI can say what
+    happened instead of silently going idle."""
+    return conn.execute(
+        f"""
+        SELECT *,
+               (status = 'running' AND NOT ({_SYNC_RUN_STALE_SQL})) AS running,
+               ({_SYNC_RUN_CLAIMED_SQL} AND {_SYNC_RUN_STALE_SQL}) AS stale
+        FROM library_sync_runs WHERE user_id = %s
+        """,
+        [user_id],
+    ).fetchone()
 
 
 # Callers must call this before delete_orphaned_releases in the same sync

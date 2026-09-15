@@ -105,39 +105,137 @@ async def test_sync_not_running_initially(manager):
     assert manager.sync_running(1) is False
 
 
-async def test_start_sync_returns_true_when_idle(manager):
-    async def _fake_sync(user_id, mode, scope="all"):
+# start_sync claims the run in Postgres before it creates the task -- the
+# guard has to hold against the other Machine, not just this process -- so
+# every test of it needs a real user row to claim against.
+@pytest.fixture
+def synced_user(pg_schema):
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+    return user["id"]
+
+
+async def test_start_sync_returns_true_when_idle(manager, synced_user):
+    async def _fake_sync(user_id, mode, scope="all", run_token=None):
         await asyncio.sleep(0)
 
     manager._sync_collection = _fake_sync  # type: ignore
-    started = await manager.start_sync(1, "all")
+    started = await manager.start_sync(synced_user, "all")
     assert started is True
     await asyncio.sleep(0.01)
 
 
-async def test_start_sync_returns_false_when_already_running(manager, pg_schema):
+async def test_start_sync_returns_false_when_already_running(manager, synced_user):
     event = asyncio.Event()
 
-    async def _fake_sync(user_id, mode, scope="all"):
+    async def _fake_sync(user_id, mode, scope="all", run_token=None):
         await event.wait()
 
     manager._sync_collection = _fake_sync  # type: ignore
-    await manager.start_sync(1, "all")
-    assert manager.sync_running(1) is True
-    second = await manager.start_sync(1, "all")
+    await manager.start_sync(synced_user, "all")
+    assert manager.sync_running(synced_user) is True
+    second = await manager.start_sync(synced_user, "all")
     assert second is False
     event.set()
     await asyncio.sleep(0.01)
 
 
-async def test_sync_running_false_after_completion(manager):
-    async def _instant(user_id, mode, scope="all"):
+async def test_sync_running_false_after_completion(manager, synced_user):
+    async def _instant(user_id, mode, scope="all", run_token=None):
         pass
 
     manager._sync_collection = _instant  # type: ignore
-    await manager.start_sync(1, "all")
+    await manager.start_sync(synced_user, "all")
     await asyncio.sleep(0.05)
-    assert manager.sync_running(1) is False
+    assert manager.sync_running(synced_user) is False
+
+
+async def test_start_sync_is_refused_while_another_instance_holds_the_run(manager, synced_user):
+    """The in-process guard cannot see the other Machine's sync, and with two
+    Machines behind one hostname the browser has no say in which one its
+    request reaches. A manager that has never heard of this run must still
+    refuse to start a second one."""
+    with db.user_scope(synced_user) as conn:
+        assert db.claim_library_sync_run(conn, synced_user, "all", "all") is not None
+        conn.commit()
+
+    async def _fake_sync(user_id, mode, scope="all", run_token=None):
+        await asyncio.sleep(0)
+
+    manager._sync_collection = _fake_sync  # type: ignore
+    assert manager.sync_running(synced_user) is False
+    assert await manager.start_sync(synced_user, "all") is False
+    assert manager.sync_running(synced_user) is False
+
+
+async def test_this_machine_can_take_over_its_own_stalled_worker(manager, synced_user, monkeypatch):
+    """A stalled worker must not make its own Machine the one place its run
+    cannot be recovered.
+
+    sync_running() answers "is this task object still pending", which a worker
+    wedged in a blocking call says for ever. Refusing on it before consulting
+    the row meant the row's expired heartbeat -- which exists precisely to say
+    the worker is gone -- was never reached here, while the other Machine read
+    it and took over. The same click then succeeded or failed by load
+    balancing."""
+    started = asyncio.Event()
+
+    async def _wedged(user_id, mode, scope="all", run_token=None):
+        started.set()
+        await asyncio.sleep(3600)
+
+    manager._sync_collection = _wedged  # type: ignore
+    assert await manager.start_sync(synced_user, "all") is True
+    await started.wait()
+    stalled = manager._sync_tasks[synced_user]
+
+    # While its run is fresh, the claim refuses a second start as firmly as
+    # the local guard did -- nothing is being loosened here.
+    assert await manager.start_sync(synced_user, "all") is False
+
+    # The worker goes quiet past the window, but its task never finishes.
+    with db.user_scope(synced_user) as conn:
+        conn.execute(
+            "UPDATE library_sync_runs SET heartbeat_at = clock_timestamp() - INTERVAL '%s minutes' "
+            "WHERE user_id = %%s" % (db.SYNC_RUN_STALE_MINUTES + 1),
+            [synced_user],
+        )
+        conn.commit()
+    assert manager.sync_running(synced_user) is True
+
+    async def _instant(user_id, mode, scope="all", run_token=None):
+        await asyncio.sleep(0)
+
+    manager._sync_collection = _instant  # type: ignore
+    assert await manager.start_sync(synced_user, "all") is True
+    # And the worker that was holding the slot is retired rather than left to
+    # notice at a checkpoint it may never reach. cancel() only requests it, so
+    # give the loop the tick it needs to deliver.
+    await asyncio.sleep(0)
+    assert stalled.cancelled()
+    await manager._sync_tasks[synced_user]
+
+
+async def test_start_sync_takes_over_a_run_whose_machine_died(manager, synced_user, monkeypatch):
+    """A run abandoned mid-sync (its Machine restarted) stops heartbeating and
+    never finishes, so without a takeover its claim would refuse every later
+    refresh for that user for good."""
+    with db.user_scope(synced_user) as conn:
+        db.claim_library_sync_run(conn, synced_user, "all", "all")
+        conn.execute(
+            "UPDATE library_sync_runs SET heartbeat_at = clock_timestamp() - INTERVAL '%s minutes' "
+            "WHERE user_id = %%s" % (db.SYNC_RUN_STALE_MINUTES + 1),
+            [synced_user],
+        )
+        conn.commit()
+
+    async def _fake_sync(user_id, mode, scope="all", run_token=None):
+        await asyncio.sleep(0)
+
+    manager._sync_collection = _fake_sync  # type: ignore
+    assert await manager.start_sync(synced_user, "all") is True
+    await asyncio.sleep(0.01)
 
 
 async def test_start_sync_for_one_user_does_not_block_another_users_sync(manager, pg_schema):
@@ -148,20 +246,25 @@ async def test_start_sync_for_one_user_does_not_block_another_users_sync(manager
     what makes this true."""
     event = asyncio.Event()
 
-    async def _fake_sync(user_id, mode, scope="all"):
+    async def _fake_sync(user_id, mode, scope="all", run_token=None):
         await event.wait()
 
-    manager._sync_collection = _fake_sync  # type: ignore
-    alice_started = await manager.start_sync(1, "all")
-    assert alice_started is True
-    assert manager.sync_running(1) is True
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")["id"]
+        bob = db.create_user(conn, discogs_user_id=2, discogs_username="bob")["id"]
+        conn.commit()
 
-    bob_started = await manager.start_sync(2, "all")
+    manager._sync_collection = _fake_sync  # type: ignore
+    alice_started = await manager.start_sync(alice, "all")
+    assert alice_started is True
+    assert manager.sync_running(alice) is True
+
+    bob_started = await manager.start_sync(bob, "all")
     assert bob_started is True
-    assert manager.sync_running(2) is True
+    assert manager.sync_running(bob) is True
 
     # Alice's own second concurrent call is still refused.
-    alice_second = await manager.start_sync(1, "all")
+    alice_second = await manager.start_sync(alice, "all")
     assert alice_second is False
 
     event.set()
@@ -237,6 +340,972 @@ async def test_sync_collection_enqueues_crawl_queue_for_missing_listings(pg_sche
     with db.get_admin_pool().connection() as conn:
         queued = conn.execute("SELECT discogs_id, status FROM crawl_queue ORDER BY discogs_id").fetchall()
     assert [(q["discogs_id"], q["status"]) for q in queued] == [("r111", "pending"), ("r222", "pending")]
+
+
+@respx.mock
+async def test_sync_records_its_progress_and_completion_in_the_run_row(pg_schema, monkeypatch):
+    """The run row is what a browser served by the *other* Machine reads:
+    CrawlManager's sync_* events never leave the process that ran the sync, so
+    without this row that browser has no way to learn a sync started, advanced
+    or finished -- and its collection table, which only refetches when it
+    hears one, never shows what the sync fetched."""
+    import config
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "s")
+    monkeypatch.setattr(config, "TOKEN_ENCRYPTION_KEY", "kL8mN2pQ7rT5vX9yB3cF6hJ1kM4nP8sU2wZ5aD7eG0i=")
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute(
+            "UPDATE users SET discogs_oauth_token_encrypted = %s, discogs_oauth_secret_encrypted = %s WHERE id = %s",
+            [token_encryption.encrypt("tok"), token_encryption.encrypt("sec"), user["id"]],
+        )
+        conn.commit()
+
+    respx.get("https://api.discogs.com/users/alice/collection/fields").mock(
+        return_value=httpx.Response(200, json={"fields": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/collection/folders/0/releases").mock(
+        side_effect=[_collection_page(111, total_pages=2), _collection_page(222, total_pages=2)]
+    )
+    respx.get(url__regex=r"https://api\.discogs\.com/releases/\d+").mock(
+        return_value=httpx.Response(200, json={"identifiers": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/wants").mock(
+        return_value=httpx.Response(200, json={"pagination": {"pages": 1}, "wants": []})
+    )
+
+    manager = CrawlManager()
+    assert await manager.start_sync(user["id"], "all") is True
+    await manager._sync_tasks[user["id"]]
+
+    with db.user_scope(user["id"]) as conn:
+        run = db.get_library_sync_run(conn, user["id"])
+    assert run["status"] == "complete"
+    assert run["running"] is False
+    assert run["stale"] is False
+    assert run["synced"] == 2
+    assert run["wishlist_synced"] == 0
+    assert (run["page"], run["total_pages"]) == (2, 2)
+    assert run["error"] is None
+    assert run["finished_at"] is not None
+
+
+@respx.mock
+async def test_sync_records_a_failure_in_the_run_row(pg_schema, monkeypatch):
+    """A sync that dies is the case where silence is most costly: the click
+    looked like it did nothing at all. The row carries the reason to a browser
+    that never received the sync_error event."""
+    import config
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "s")
+    monkeypatch.setattr(config, "TOKEN_ENCRYPTION_KEY", "kL8mN2pQ7rT5vX9yB3cF6hJ1kM4nP8sU2wZ5aD7eG0i=")
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+
+    manager = CrawlManager()
+    assert await manager.start_sync(user["id"], "all") is True
+    await manager._sync_tasks[user["id"]]
+
+    with db.user_scope(user["id"]) as conn:
+        run = db.get_library_sync_run(conn, user["id"])
+    # No OAuth token was stored, so the sync stops before it reaches Discogs.
+    assert run["status"] == "error"
+    assert run["running"] is False
+    assert run["error"] == "Discogs account not connected"
+
+
+async def test_a_finished_run_does_not_hold_the_claim(pg_schema):
+    """The claim and the record are one row, so finishing has to release it --
+    otherwise the first sync a user ever ran would be the last."""
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+
+    with db.user_scope(user["id"]) as conn:
+        token = db.claim_library_sync_run(conn, user["id"], "all", "all")
+        assert token is not None
+        assert db.claim_library_sync_run(conn, user["id"], "all", "all") is None
+        assert db.finish_library_sync_run(conn, user["id"], token, "complete", synced=7) is True
+        # A second close cannot overwrite the outcome the first recorded --
+        # this is what makes _sync_collection_blocking's `finally` backstop
+        # safe to call on every exit.
+        assert db.finish_library_sync_run(conn, user["id"], token, "error", error="late") is False
+        assert db.claim_library_sync_run(conn, user["id"], "new", "all") is not None
+        conn.commit()
+
+    with db.user_scope(user["id"]) as conn:
+        run = db.get_library_sync_run(conn, user["id"])
+    assert (run["status"], run["mode"], run["synced"]) == ("running", "new", 0)
+
+
+async def test_a_finished_runs_backstop_cannot_close_the_next_claim(pg_schema):
+    """_sync_collection_blocking records its outcome and then runs an
+    unconditional `finally` backstop. A refresh landing in between takes a
+    fresh claim -- which, without the run token, that backstop would match:
+    the new sync would be reported as failed seconds after starting, and its
+    claim released for a duplicate to take."""
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+
+    with db.user_scope(user["id"]) as conn:
+        finished = db.claim_library_sync_run(conn, user["id"], "all", "all")
+        db.finish_library_sync_run(conn, user["id"], finished, "complete", synced=5)
+        next_run = db.claim_library_sync_run(conn, user["id"], "new", "all")
+        assert next_run is not None and next_run != finished
+        # The previous run's backstop, arriving late.
+        assert db.finish_library_sync_run(
+            conn, user["id"], finished, "error", error="Sync ended unexpectedly"
+        ) is False
+        conn.commit()
+
+    with db.user_scope(user["id"]) as conn:
+        run = db.get_library_sync_run(conn, user["id"])
+    assert (run["status"], run["running"], run["error"]) == ("running", True, None)
+
+
+async def test_a_taken_over_run_cannot_be_advanced_by_its_old_owner(pg_schema):
+    """A worker whose claim went stale can still be alive -- a page of releases
+    can outlast the staleness window if Discogs is slow enough. Its writes must
+    not land on the run that replaced it: neither its counters (which would
+    report the wrong sync's progress) nor its heartbeat (which would hold the
+    new claim open in the old worker's name)."""
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+
+    with db.user_scope(user["id"]) as conn:
+        abandoned = db.claim_library_sync_run(conn, user["id"], "all", "all")
+        conn.execute(
+            "UPDATE library_sync_runs SET heartbeat_at = clock_timestamp() - INTERVAL '%s minutes' "
+            "WHERE user_id = %%s" % (db.SYNC_RUN_STALE_MINUTES + 1),
+            [user["id"]],
+        )
+        taken_over = db.claim_library_sync_run(conn, user["id"], "new", "all")
+        assert taken_over is not None and taken_over != abandoned
+
+        db.record_library_sync_progress(
+            conn, user["id"], abandoned, page=9, total_pages=9, synced=900
+        )
+        assert db.finish_library_sync_run(
+            conn, user["id"], abandoned, "complete", synced=900
+        ) is False
+        conn.commit()
+
+    with db.user_scope(user["id"]) as conn:
+        run = db.get_library_sync_run(conn, user["id"])
+    assert (run["status"], run["mode"], run["synced"], run["page"]) == ("running", "new", 0, None)
+
+
+@respx.mock
+async def test_a_transient_close_failure_does_not_report_a_successful_sync_as_failed(pg_schema, monkeypatch):
+    """The backstop must not invent a failure the sync did not have.
+
+    _finish_sync_run answers None when its connection fails -- the question
+    could not be asked. The row is then still 'running', so the `finally`
+    backstop's write lands, and a generic "Sync ended unexpectedly" replaces
+    the outcome of a sync that actually completed and committed its records.
+    The same-Machine stream has already said sync_complete by then, so the
+    cross-Machine client is the one left with the false story -- which is this
+    branch's own failure in mirror image."""
+    import config
+    import db as db_module
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "s")
+    monkeypatch.setattr(config, "TOKEN_ENCRYPTION_KEY", "kL8mN2pQ7rT5vX9yB3cF6hJ1kM4nP8sU2wZ5aD7eG0i=")
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute(
+            "UPDATE users SET discogs_oauth_token_encrypted = %s, discogs_oauth_secret_encrypted = %s WHERE id = %s",
+            [token_encryption.encrypt("tok"), token_encryption.encrypt("sec"), user["id"]],
+        )
+        conn.commit()
+
+    respx.get("https://api.discogs.com/users/alice/collection/fields").mock(
+        return_value=httpx.Response(200, json={"fields": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/collection/folders/0/releases").mock(
+        return_value=_collection_page(111, total_pages=1)
+    )
+    respx.get(url__regex=r"https://api\.discogs\.com/releases/\d+").mock(
+        return_value=httpx.Response(200, json={"identifiers": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/wants").mock(
+        return_value=httpx.Response(200, json={"pagination": {"pages": 1}, "wants": []})
+    )
+
+    real_finish = db_module.finish_library_sync_run
+    calls = []
+
+    def _flaky_finish(conn, user_id, run_token, status, **fields):
+        calls.append(status)
+        if len(calls) == 1:
+            # The completing close cannot reach the row.
+            raise RuntimeError("connection reset during close")
+        return real_finish(conn, user_id, run_token, status, **fields)
+
+    monkeypatch.setattr(db_module, "finish_library_sync_run", _flaky_finish)
+
+    manager = CrawlManager()
+    assert await manager.start_sync(user["id"], "all") is True
+    await manager._sync_tasks[user["id"]]
+
+    # The first close was the completion, and it failed; the backstop retried
+    # the same outcome rather than inventing a failure.
+    assert calls[0] == "complete"
+    with db.user_scope(user["id"]) as conn:
+        run = db.get_library_sync_run(conn, user["id"])
+    assert run["status"] == "complete"
+    assert run["error"] is None
+    assert run["synced"] == 1
+
+
+async def test_one_users_claim_does_not_block_another_users_start(pg_schema, monkeypatch):
+    """The exclusion the start lock enforces is per user, so the lock is too.
+
+    It is held across the blocking claim, which can wait on the row lock a
+    checkpoint or cleanup transaction holds. One manager-wide lock would make
+    Alice's refresh block Bob's sync and Plex starts on this Machine, against
+    the per-user concurrency the rest of the manager keeps."""
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        bob = db.create_user(conn, discogs_user_id=2, discogs_username="bob")
+        conn.commit()
+
+    manager = CrawlManager()
+    claiming = asyncio.Event()
+    release = asyncio.Event()
+    real_claim = manager._claim_sync_run
+
+    async def _claim(func, *args):
+        # Alice's claim hangs; Bob's must not queue behind it.
+        if args and args[0] == alice["id"]:
+            claiming.set()
+            await release.wait()
+        return real_claim(*args)
+
+    monkeypatch.setattr("crawl_manager.run_in_threadpool", _claim)
+
+    async def _fake_sync(user_id, mode, scope="all", run_token=None):
+        await asyncio.sleep(0)
+
+    manager._sync_collection = _fake_sync  # type: ignore
+
+    stuck = asyncio.create_task(manager.start_sync(alice["id"], "all"))
+    await claiming.wait()
+
+    # Bob's start runs to completion while Alice's is still inside its claim.
+    assert await asyncio.wait_for(manager.start_sync(bob["id"], "all"), timeout=2) is True
+
+    release.set()
+    assert await stuck is True
+    await asyncio.sleep(0.01)
+
+
+async def test_start_plex_match_cannot_slip_in_while_a_sync_is_claiming(pg_schema, monkeypatch):
+    """start_sync and start_plex_match refuse to overlap. The cross-Machine
+    claim puts an await inside start_sync's guard, so without a shared lock a
+    plex match starting during that claim sees both task maps idle and
+    registers itself, and the collection task is created on top of it."""
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute(
+            "UPDATE users SET plex_base_url = %s, plex_token = %s WHERE id = %s",
+            ["http://plex.local:32400", "tok", user["id"]],
+        )
+        conn.commit()
+
+    manager = CrawlManager()
+    claiming = asyncio.Event()
+    release = asyncio.Event()
+    real_claim = manager._claim_sync_run
+
+    async def _slow_claim(func, *args):
+        # Stands in for run_in_threadpool: the await inside start_sync's
+        # critical section, held open for as long as the test needs.
+        claiming.set()
+        await release.wait()
+        return real_claim(*args)
+
+    monkeypatch.setattr("crawl_manager.run_in_threadpool", _slow_claim)
+
+    async def _fake_sync(user_id, mode, scope="all", run_token=None):
+        await asyncio.sleep(0)
+
+    async def _fake_plex(user_id, base_url, token, threshold, run_token=None):
+        await asyncio.sleep(0)
+
+    manager._sync_collection = _fake_sync  # type: ignore
+    manager._run_plex_match = _fake_plex  # type: ignore
+
+    sync = asyncio.create_task(manager.start_sync(user["id"], "all"))
+    await claiming.wait()
+    plex = asyncio.create_task(manager.start_plex_match(user["id"]))
+    await asyncio.sleep(0)
+    release.set()
+
+    assert await sync is True
+    assert await plex is False
+    await asyncio.sleep(0.01)
+
+
+@respx.mock
+async def test_a_dispossessed_worker_stops_before_its_destructive_cleanup(pg_schema, monkeypatch):
+    """Fencing the run row is not enough on its own. A worker whose claim was
+    taken over mid-sync would otherwise keep committing library rows and go on
+    to clear_wishlist_flags_not_in / delete_orphaned_releases -- destructive
+    statements driven by a wishlist_seen snapshot older than the sync that
+    replaced it, which can delete a wantlist record the replacement had just
+    written. Losing the claim has to stop the worker, not just its
+    bookkeeping."""
+    import config
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "s")
+    monkeypatch.setattr(config, "TOKEN_ENCRYPTION_KEY", "kL8mN2pQ7rT5vX9yB3cF6hJ1kM4nP8sU2wZ5aD7eG0i=")
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute(
+            "UPDATE users SET discogs_oauth_token_encrypted = %s, discogs_oauth_secret_encrypted = %s WHERE id = %s",
+            [token_encryption.encrypt("tok"), token_encryption.encrypt("sec"), user["id"]],
+        )
+        conn.commit()
+
+    respx.get("https://api.discogs.com/users/alice/collection/fields").mock(
+        return_value=httpx.Response(200, json={"fields": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/collection/folders/0/releases").mock(
+        side_effect=[_collection_page(111, total_pages=2), _collection_page(222, total_pages=2)]
+    )
+    respx.get(url__regex=r"https://api\.discogs\.com/releases/\d+").mock(
+        return_value=httpx.Response(200, json={"identifiers": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/wants").mock(
+        return_value=httpx.Response(200, json={"pagination": {"pages": 1}, "wants": []})
+    )
+
+    # A wantlist record the replacement sync owns. The dispossessed worker
+    # sees an empty wantlist from Discogs, so if it reaches its cleanup it
+    # clears this flag and deletes the row.
+    with db.get_admin_pool().connection() as conn:
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r999", "artist": "A", "title": "T", "year": None,
+            "label": None, "format": None, "barcode": None,
+            "cover_image_url": None, "discogs_url": None,
+        })
+        db.upsert_library_item(conn, user["id"], "r999", in_wishlist=True)
+        conn.commit()
+
+    manager = CrawlManager()
+    assert await manager.start_sync(user["id"], "all") is True
+
+    # Somebody else claims the run out from under it, the way a takeover of a
+    # stale claim would.
+    with db.user_scope(user["id"]) as conn:
+        conn.execute(
+            "UPDATE library_sync_runs SET heartbeat_at = clock_timestamp() - INTERVAL '%s minutes' "
+            "WHERE user_id = %%s" % (db.SYNC_RUN_STALE_MINUTES + 1),
+            [user["id"]],
+        )
+        assert db.claim_library_sync_run(conn, user["id"], "all", "all") is not None
+        conn.commit()
+
+    await manager._sync_tasks[user["id"]]
+
+    with db.user_scope(user["id"]) as conn:
+        survived = conn.execute(
+            "SELECT in_wishlist FROM library_items WHERE user_id = %s AND discogs_id = 'r999'",
+            [user["id"]],
+        ).fetchone()
+    assert survived is not None and survived["in_wishlist"] is True
+
+    statuses = [e["status"] for e in manager.recent_events()]
+    assert "sync_complete" not in statuses
+
+    # And the replacement's claim is untouched -- still running, still its own.
+    with db.user_scope(user["id"]) as conn:
+        run = db.get_library_sync_run(conn, user["id"])
+    assert (run["status"], run["running"]) == ("running", True)
+
+
+async def test_a_stale_run_cannot_be_revived_by_its_old_owner(pg_schema):
+    """Expiry has to be irreversible, not just a reading. A worker that went
+    quiet past the window is told so by the client -- "the sync stopped" --
+    and the client stops polling on it; if that same worker could then come
+    back, refresh the heartbeat and finish, it would finish into a silence
+    nobody is listening to, which is the failure this whole branch removes."""
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+
+    with db.user_scope(user["id"]) as conn:
+        token = db.claim_library_sync_run(conn, user["id"], "all", "all")
+        conn.execute(
+            "UPDATE library_sync_runs SET heartbeat_at = clock_timestamp() - INTERVAL '%s minutes' "
+            "WHERE user_id = %%s" % (db.SYNC_RUN_STALE_MINUTES + 1),
+            [user["id"]],
+        )
+        conn.commit()
+
+    with db.user_scope(user["id"]) as conn:
+        # Nobody has taken it over yet -- the claim is simply past its window.
+        assert db.record_library_sync_progress(
+            conn, user["id"], token, page=4, total_pages=4, synced=400
+        ) is False
+        assert db.finish_library_sync_run(
+            conn, user["id"], token, "complete", synced=400
+        ) is False
+        conn.commit()
+
+    with db.user_scope(user["id"]) as conn:
+        run = db.get_library_sync_run(conn, user["id"])
+    assert (run["running"], run["stale"], run["synced"]) == (False, True, 0)
+
+
+@respx.mock
+async def test_progress_lands_mid_page_without_a_second_pooled_connection(pg_schema, monkeypatch):
+    """The claim's heartbeat has to keep advancing inside a long page, and it
+    cannot buy that with another connection: the app pool is small, a sync
+    already holds one of its connections for its whole duration, and a
+    heartbeat that borrowed a second would queue behind exactly the syncs it
+    exists to keep alive. Run here against a pool of one, so anything needing
+    a second connection could not finish at all."""
+    import config
+    import crawl_manager as crawl_manager_module
+    import discogs
+    from psycopg_pool import ConnectionPool
+    from psycopg.rows import dict_row
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "s")
+    monkeypatch.setattr(config, "TOKEN_ENCRYPTION_KEY", "kL8mN2pQ7rT5vX9yB3cF6hJ1kM4nP8sU2wZ5aD7eG0i=")
+    monkeypatch.setattr(crawl_manager_module.time, "sleep", lambda *a, **k: None)
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute(
+            "UPDATE users SET discogs_oauth_token_encrypted = %s, discogs_oauth_secret_encrypted = %s WHERE id = %s",
+            [token_encryption.encrypt("tok"), token_encryption.encrypt("sec"), user["id"]],
+        )
+        conn.commit()
+
+    db._app_pool = ConnectionPool(
+        db.config.APP_DATABASE_URL, min_size=1, max_size=1,
+        kwargs={"row_factory": dict_row}, timeout=5,
+    )
+
+    # Read from the admin pool, mid-page, on the 26th release -- one past the
+    # checkpoint interval, so a checkpoint must already have committed.
+    seen = {}
+
+    def _barcode(oauth_token, oauth_secret, release_id):
+        if release_id == 1026:
+            with db.get_admin_pool().connection() as conn:
+                seen["run"] = conn.execute(
+                    "SELECT synced, page, total_pages FROM library_sync_runs WHERE user_id = %s",
+                    [user["id"]],
+                ).fetchone()
+        return None
+
+    monkeypatch.setattr(discogs, "fetch_release_barcode", _barcode)
+
+    respx.get("https://api.discogs.com/users/alice/collection/fields").mock(
+        return_value=httpx.Response(200, json={"fields": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/collection/folders/0/releases").mock(
+        return_value=httpx.Response(200, json={
+            "pagination": {"pages": 1},
+            "releases": [{
+                "basic_information": {
+                    "id": 1000 + n, "title": f"Album {n}", "year": 2020,
+                    "artists": [{"name": "Artist"}], "labels": [], "formats": [],
+                    "cover_image": "",
+                },
+            } for n in range(1, 31)],
+        })
+    )
+    respx.get("https://api.discogs.com/users/alice/wants").mock(
+        return_value=httpx.Response(200, json={"pagination": {"pages": 1}, "wants": []})
+    )
+
+    manager = CrawlManager()
+    assert await manager.start_sync(user["id"], "all") is True
+    await manager._sync_tasks[user["id"]]
+
+    assert "sync_error" not in [e["status"] for e in manager.recent_events()]
+    # A quarter of the way through the page, the row already says so.
+    assert seen["run"] is not None
+    assert seen["run"]["synced"] == 25
+    assert (seen["run"]["page"], seen["run"]["total_pages"]) == (1, 1)
+
+    with db.user_scope(user["id"]) as conn:
+        run = db.get_library_sync_run(conn, user["id"])
+    assert (run["status"], run["synced"]) == ("complete", 30)
+
+
+@respx.mock
+async def test_a_rate_limited_page_still_heartbeats_before_its_25th_item(pg_schema, monkeypatch):
+    """A sync that is alive but slow must not be reported as one that stopped.
+
+    Counting items bounded the heartbeat gap only while an item's worst case
+    was one request timeout. discogs._get_with_retry waits out a 429 on top of
+    that, so a sustained rate limit stretches a chunk of items past
+    SYNC_RUN_STALE_MINUTES -- and a sync that is making progress the whole
+    time gets read as stale, announced to the user as stopped, and taken over
+    by the next start_sync. The gap is bounded in wall-clock time as well, so
+    here a single slow item is enough to make the row advance, with the item
+    count still far short of CHECKPOINT_EVERY."""
+    import config
+    import crawl_manager as crawl_manager_module
+    import discogs
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "s")
+    monkeypatch.setattr(config, "TOKEN_ENCRYPTION_KEY", "kL8mN2pQ7rT5vX9yB3cF6hJ1kM4nP8sU2wZ5aD7eG0i=")
+
+    class _Clock:
+        """Stands in for the module's time so a retry budget can be spent
+        without the test spending it too."""
+
+        def __init__(self):
+            self.now = 0.0
+
+        def monotonic(self):
+            return self.now
+
+        def sleep(self, *a, **k):
+            pass
+
+    clock = _Clock()
+    monkeypatch.setattr(crawl_manager_module, "time", clock)
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute(
+            "UPDATE users SET discogs_oauth_token_encrypted = %s, discogs_oauth_secret_encrypted = %s WHERE id = %s",
+            [token_encryption.encrypt("tok"), token_encryption.encrypt("sec"), user["id"]],
+        )
+        conn.commit()
+
+    seen = {}
+
+    def _barcode(oauth_token, oauth_secret, release_id):
+        # The third release is the rate-limited one: it comes back only after
+        # a retry budget's worth of waiting.
+        if release_id == 1003:
+            clock.now += crawl_manager_module.SYNC_CHECKPOINT_MAX_SECONDS + 1
+        # The fifth reads what the other Machine would read. Four items in,
+        # the count alone would not have committed anything yet.
+        if release_id == 1005:
+            with db.get_admin_pool().connection() as conn:
+                seen["run"] = conn.execute(
+                    "SELECT synced, heartbeat_at FROM library_sync_runs WHERE user_id = %s",
+                    [user["id"]],
+                ).fetchone()
+        return None
+
+    monkeypatch.setattr(discogs, "fetch_release_barcode", _barcode)
+
+    respx.get("https://api.discogs.com/users/alice/collection/fields").mock(
+        return_value=httpx.Response(200, json={"fields": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/collection/folders/0/releases").mock(
+        return_value=httpx.Response(200, json={
+            "pagination": {"pages": 1},
+            "releases": [{
+                "basic_information": {
+                    "id": 1000 + n, "title": f"Album {n}", "year": 2020,
+                    "artists": [{"name": "Artist"}], "labels": [], "formats": [],
+                    "cover_image": "",
+                },
+            } for n in range(1, 11)],
+        })
+    )
+    respx.get("https://api.discogs.com/users/alice/wants").mock(
+        return_value=httpx.Response(200, json={"pagination": {"pages": 1}, "wants": []})
+    )
+
+    manager = CrawlManager()
+    assert await manager.start_sync(user["id"], "all") is True
+    await manager._sync_tasks[user["id"]]
+
+    assert "sync_error" not in [e["status"] for e in manager.recent_events()]
+    # Committed mid-page on the clock, not on the count: three items in, with
+    # CHECKPOINT_EVERY still more than twenty away.
+    assert seen["run"] is not None
+    assert seen["run"]["synced"] == 3
+
+
+@respx.mock
+async def test_a_dispossessed_plex_phase_does_not_restore_stock_rows(pg_schema, monkeypatch):
+    """Losing the claim during the Plex phase has to stop the follow-on work
+    too, not just the phase.
+
+    _run_plex_match handles _ClaimLost itself and returns normally, so the
+    release in _sync_collection's `finally` runs either way -- and it answers
+    False when the run has been taken over. Restoring stock rows on that answer
+    scans and enqueues against the very library_items the replacement sync is
+    rewriting, which is the overlap the claim exists to prevent. The non-Plex
+    close path already refuses to restore on a definite False; this is the same
+    refusal on the path that holds the claim one phase longer."""
+    import config
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "s")
+    monkeypatch.setattr(config, "TOKEN_ENCRYPTION_KEY", "kL8mN2pQ7rT5vX9yB3cF6hJ1kM4nP8sU2wZ5aD7eG0i=")
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute(
+            "UPDATE users SET discogs_oauth_token_encrypted = %s, discogs_oauth_secret_encrypted = %s, "
+            "plex_base_url = %s, plex_token = %s WHERE id = %s",
+            [
+                token_encryption.encrypt("tok"), token_encryption.encrypt("sec"),
+                "http://plex.local:32400", "ptok", user["id"],
+            ],
+        )
+        conn.commit()
+
+    respx.get("https://api.discogs.com/users/alice/collection/fields").mock(
+        return_value=httpx.Response(200, json={"fields": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/collection/folders/0/releases").mock(
+        return_value=_collection_page(111, total_pages=1)
+    )
+    respx.get(url__regex=r"https://api\.discogs\.com/releases/\d+").mock(
+        return_value=httpx.Response(200, json={"identifiers": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/wants").mock(
+        return_value=httpx.Response(200, json={"pagination": {"pages": 1}, "wants": []})
+    )
+
+    restored = []
+
+    async def _fake_plex(user_id, base_url, token, threshold, run_token=None):
+        # Stands in for a Plex phase that ran, found its run taken over, logged
+        # it and returned -- exactly what _run_plex_match's own _ClaimLost
+        # handler does.
+        with db.user_scope(user_id) as other:
+            other.execute(
+                "UPDATE library_sync_runs SET heartbeat_at = clock_timestamp() - INTERVAL '%s minutes' "
+                "WHERE user_id = %%s" % (db.SYNC_RUN_STALE_MINUTES + 1),
+                [user_id],
+            )
+            db.claim_library_sync_run(other, user_id, "all", "all")
+            other.commit()
+
+    manager = CrawlManager()
+    manager._run_plex_match = _fake_plex  # type: ignore
+    manager._restore_library_stock_rows = lambda uid: restored.append(uid)  # type: ignore
+    assert await manager.start_sync(user["id"], "all") is True
+    await manager._sync_tasks[user["id"]]
+
+    assert restored == []
+
+    # The replacement's claim is untouched by the old worker's release.
+    with db.user_scope(user["id"]) as conn:
+        run = db.get_library_sync_run(conn, user["id"])
+    assert (run["status"], run["running"]) == ("running", True)
+
+
+async def test_an_expired_plex_phase_cannot_close_its_own_run(pg_schema):
+    """Expiry is irreversible for every writer, the Plex closer included.
+
+    A Plex batch that crosses the staleness window has already lost the claim
+    -- its next heartbeat raises -- but nobody need have claimed the row yet.
+    A closer that still matched would revive it as 'complete' and answer True,
+    which is what now decides whether the stock-row restoration runs, so the
+    expired worker would go on to enqueue against a library it no longer
+    owns."""
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+
+    with db.user_scope(user["id"]) as conn:
+        run_token = db.claim_library_sync_run(conn, user["id"], "all", "all")
+        assert db.start_library_sync_plex_phase(conn, user["id"], run_token) is True
+        conn.execute(
+            "UPDATE library_sync_runs SET heartbeat_at = clock_timestamp() - INTERVAL '%s minutes' "
+            "WHERE user_id = %%s" % (db.SYNC_RUN_STALE_MINUTES + 1),
+            [user["id"]],
+        )
+        conn.commit()
+
+    # Nobody has taken it over -- expiry alone has to be enough.
+    with db.user_scope(user["id"]) as conn:
+        assert db.finish_library_sync_plex_phase(conn, user["id"], run_token) is False
+        conn.commit()
+
+    with db.user_scope(user["id"]) as conn:
+        run = db.get_library_sync_run(conn, user["id"])
+    assert run["status"] == "plex_matching"
+    assert (run["running"], run["stale"]) == (False, True)
+
+
+@respx.mock
+async def test_a_dispossessed_worker_does_not_restore_stock_rows_when_it_fails(pg_schema, monkeypatch):
+    """Failing is not the same as still owning the run.
+
+    An expired or dispossessed worker can reach an ordinary exception, and the
+    error path went on to restore crawl rows regardless -- scanning and
+    enqueueing against the library the replacement sync is rewriting, which is
+    what the successful close and the Plex release already refuse to do."""
+    import config
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "s")
+    monkeypatch.setattr(config, "TOKEN_ENCRYPTION_KEY", "kL8mN2pQ7rT5vX9yB3cF6hJ1kM4nP8sU2wZ5aD7eG0i=")
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute(
+            "UPDATE users SET discogs_oauth_token_encrypted = %s, discogs_oauth_secret_encrypted = %s WHERE id = %s",
+            [token_encryption.encrypt("tok"), token_encryption.encrypt("sec"), user["id"]],
+        )
+        conn.commit()
+
+    respx.get("https://api.discogs.com/users/alice/collection/fields").mock(
+        return_value=httpx.Response(200, json={"fields": []})
+    )
+
+    # The claim is taken while the first page is being fetched, and that fetch
+    # then fails -- so the worker reaches its error path already dispossessed.
+    def _pages(*args, **kwargs):
+        with db.user_scope(user["id"]) as other:
+            other.execute(
+                "UPDATE library_sync_runs SET heartbeat_at = clock_timestamp() - INTERVAL '%s minutes' "
+                "WHERE user_id = %%s" % (db.SYNC_RUN_STALE_MINUTES + 1),
+                [user["id"]],
+            )
+            db.claim_library_sync_run(other, user["id"], "all", "all")
+            other.commit()
+        raise RuntimeError("collection page fetch exploded")
+
+    import discogs
+    monkeypatch.setattr(discogs, "iter_collection_pages", _pages)
+
+    restored = []
+
+    manager = CrawlManager()
+    manager._restore_library_stock_rows = lambda uid: restored.append(uid)  # type: ignore
+    assert await manager.start_sync(user["id"], "all") is True
+    await manager._sync_tasks[user["id"]]
+
+    assert restored == []
+
+    # The replacement's claim is untouched by the failing worker's close.
+    with db.user_scope(user["id"]) as conn:
+        run = db.get_library_sync_run(conn, user["id"])
+    assert (run["status"], run["running"]) == ("running", True)
+
+
+@respx.mock
+async def test_the_claim_is_held_across_the_plex_phase(pg_schema, monkeypatch):
+    """_sync_collection runs a Plex match straight after the sync, and this
+    Machine's _sync_tasks entry stays occupied for its duration -- so a local
+    sync is refused throughout. Releasing the cross-Machine claim when the sync
+    itself ended would let the *other* Machine start exactly the sync the local
+    guard refuses, against the declared sync/Plex exclusion."""
+    import config
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "s")
+    monkeypatch.setattr(config, "TOKEN_ENCRYPTION_KEY", "kL8mN2pQ7rT5vX9yB3cF6hJ1kM4nP8sU2wZ5aD7eG0i=")
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute(
+            "UPDATE users SET discogs_oauth_token_encrypted = %s, discogs_oauth_secret_encrypted = %s, "
+            "plex_base_url = %s, plex_token = %s WHERE id = %s",
+            [
+                token_encryption.encrypt("tok"), token_encryption.encrypt("sec"),
+                "http://plex.local:32400", "ptok", user["id"],
+            ],
+        )
+        conn.commit()
+
+    respx.get("https://api.discogs.com/users/alice/collection/fields").mock(
+        return_value=httpx.Response(200, json={"fields": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/collection/folders/0/releases").mock(
+        return_value=_collection_page(111, total_pages=1)
+    )
+    respx.get(url__regex=r"https://api\.discogs\.com/releases/\d+").mock(
+        return_value=httpx.Response(200, json={"identifiers": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/wants").mock(
+        return_value=httpx.Response(200, json={"pagination": {"pages": 1}, "wants": []})
+    )
+
+    matching = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _fake_plex(user_id, base_url, token, threshold, run_token=None):
+        matching.set()
+        await release.wait()
+
+    manager = CrawlManager()
+    manager._run_plex_match = _fake_plex  # type: ignore
+    assert await manager.start_sync(user["id"], "all") is True
+    await matching.wait()
+
+    # Mid-Plex-phase: the sync reads as finished, with its counts final...
+    with db.user_scope(user["id"]) as conn:
+        run = db.get_library_sync_run(conn, user["id"])
+    assert run["status"] == "plex_matching"
+    assert (run["running"], run["stale"], run["synced"]) == (False, False, 1)
+
+    # ...but the claim is still held, so no other Machine can start a sync.
+    other_machine = CrawlManager()
+    assert await other_machine.start_sync(user["id"], "all") is False
+
+    release.set()
+    await manager._sync_tasks[user["id"]]
+
+    with db.user_scope(user["id"]) as conn:
+        run = db.get_library_sync_run(conn, user["id"])
+    assert run["status"] == "complete"
+
+    # And released once the Plex phase is over.
+    assert await other_machine.start_sync(user["id"], "all") is True
+    await asyncio.sleep(0.01)
+
+
+@respx.mock
+async def test_a_lost_handoff_stops_the_sync_before_the_plex_phase(pg_schema, monkeypatch):
+    """The wantlist cleanup's transaction releases the run row's lock when it
+    commits, and a Machine that was waiting on that lock can take the claim in
+    the moment that follows. The handoff to the Plex phase is fenced for that
+    reason -- and its answer has to be read, or this worker broadcasts
+    completion and starts a Plex match on a claim it no longer holds, against
+    the very sync that replaced it."""
+    import config
+    import db as db_module
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "s")
+    monkeypatch.setattr(config, "TOKEN_ENCRYPTION_KEY", "kL8mN2pQ7rT5vX9yB3cF6hJ1kM4nP8sU2wZ5aD7eG0i=")
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute(
+            "UPDATE users SET discogs_oauth_token_encrypted = %s, discogs_oauth_secret_encrypted = %s, "
+            "plex_base_url = %s, plex_token = %s WHERE id = %s",
+            [
+                token_encryption.encrypt("tok"), token_encryption.encrypt("sec"),
+                "http://plex.local:32400", "ptok", user["id"],
+            ],
+        )
+        conn.commit()
+
+    respx.get("https://api.discogs.com/users/alice/collection/fields").mock(
+        return_value=httpx.Response(200, json={"fields": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/collection/folders/0/releases").mock(
+        return_value=_collection_page(111, total_pages=1)
+    )
+    respx.get(url__regex=r"https://api\.discogs\.com/releases/\d+").mock(
+        return_value=httpx.Response(200, json={"identifiers": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/wants").mock(
+        return_value=httpx.Response(200, json={"pagination": {"pages": 1}, "wants": []})
+    )
+
+    # Somebody else gets the claim in the window between the cleanup commit and
+    # the handoff.
+    real_handoff = db_module.start_library_sync_plex_phase
+
+
+    def _stolen(conn, user_id, run_token, **kwargs):
+        with db.user_scope(user_id) as other:
+            other.execute(
+                "UPDATE library_sync_runs SET heartbeat_at = clock_timestamp() - INTERVAL '%s minutes' "
+                "WHERE user_id = %%s" % (db.SYNC_RUN_STALE_MINUTES + 1),
+                [user_id],
+            )
+            db.claim_library_sync_run(other, user_id, "all", "all")
+            other.commit()
+        return real_handoff(conn, user_id, run_token, **kwargs)
+
+    monkeypatch.setattr(db_module, "start_library_sync_plex_phase", _stolen)
+
+    plex_ran = []
+
+    async def _fake_plex(user_id, base_url, token, threshold, run_token=None):
+        plex_ran.append(user_id)
+
+    manager = CrawlManager()
+    manager._run_plex_match = _fake_plex  # type: ignore
+    assert await manager.start_sync(user["id"], "all") is True
+    await manager._sync_tasks[user["id"]]
+
+    assert plex_ran == []
+    statuses = [e["status"] for e in manager.recent_events()]
+    assert "sync_complete" not in statuses
+
+    # The replacement's claim is untouched.
+    with db.user_scope(user["id"]) as conn:
+        run = db.get_library_sync_run(conn, user["id"])
+    assert (run["status"], run["running"]) == ("running", True)
+
+
+@respx.mock
+async def test_a_lost_close_stops_the_sync_before_it_announces_completion(pg_schema, monkeypatch):
+    """The same window as the Plex handoff, on the path without Plex. The
+    cleanup transaction releases the run row's lock when it commits; a Machine
+    waiting on it can take the claim before the close lands. A worker that
+    ignored the refused close would restore crawl rows and announce a
+    completed sync while the replacement's run is the live one."""
+    import config
+    import db as db_module
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "s")
+    monkeypatch.setattr(config, "TOKEN_ENCRYPTION_KEY", "kL8mN2pQ7rT5vX9yB3cF6hJ1kM4nP8sU2wZ5aD7eG0i=")
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute(
+            "UPDATE users SET discogs_oauth_token_encrypted = %s, discogs_oauth_secret_encrypted = %s WHERE id = %s",
+            [token_encryption.encrypt("tok"), token_encryption.encrypt("sec"), user["id"]],
+        )
+        conn.commit()
+
+    respx.get("https://api.discogs.com/users/alice/collection/fields").mock(
+        return_value=httpx.Response(200, json={"fields": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/collection/folders/0/releases").mock(
+        return_value=_collection_page(111, total_pages=1)
+    )
+    respx.get(url__regex=r"https://api\.discogs\.com/releases/\d+").mock(
+        return_value=httpx.Response(200, json={"identifiers": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/wants").mock(
+        return_value=httpx.Response(200, json={"pagination": {"pages": 1}, "wants": []})
+    )
+
+    real_finish = db_module.finish_library_sync_run
+
+    def _stolen(conn, user_id, run_token, status, **kwargs):
+        with db.user_scope(user_id) as other:
+            other.execute(
+                "UPDATE library_sync_runs SET heartbeat_at = clock_timestamp() - INTERVAL '%s minutes' "
+                "WHERE user_id = %%s" % (db.SYNC_RUN_STALE_MINUTES + 1),
+                [user_id],
+            )
+            db.claim_library_sync_run(other, user_id, "all", "all")
+            other.commit()
+        return real_finish(conn, user_id, run_token, status, **kwargs)
+
+    monkeypatch.setattr(db_module, "finish_library_sync_run", _stolen)
+
+    manager = CrawlManager()
+    assert await manager.start_sync(user["id"], "all") is True
+    await manager._sync_tasks[user["id"]]
+
+    statuses = [e["status"] for e in manager.recent_events()]
+    assert "sync_complete" not in statuses
+
+    with db.user_scope(user["id"]) as conn:
+        run = db.get_library_sync_run(conn, user["id"])
+    assert (run["status"], run["running"]) == ("running", True)
 
 
 @pytest.fixture
@@ -894,7 +1963,7 @@ async def test_sync_collection_calls_plex_match_when_configured(pg_schema, monke
     manager = CrawlManager()
     calls = []
 
-    async def _fake_plex_match(user_id, base_url, token, threshold):
+    async def _fake_plex_match(user_id, base_url, token, threshold, run_token=None):
         calls.append((user_id, base_url, token, threshold))
 
     manager._run_plex_match = _fake_plex_match
@@ -936,7 +2005,7 @@ async def test_sync_collection_skips_plex_match_when_unconfigured(pg_schema, mon
     manager = CrawlManager()
     calls = []
 
-    async def _fake_plex_match(user_id, base_url, token, threshold):
+    async def _fake_plex_match(user_id, base_url, token, threshold, run_token=None):
         calls.append((user_id, base_url, token, threshold))
 
     manager._run_plex_match = _fake_plex_match
@@ -959,7 +2028,7 @@ async def test_start_plex_match_runs_when_configured(pg_schema):
     manager = CrawlManager()
     calls = []
 
-    async def _fake_plex_match(user_id, base_url, token, threshold):
+    async def _fake_plex_match(user_id, base_url, token, threshold, run_token=None):
         calls.append((user_id, base_url, token, threshold))
 
     manager._run_plex_match = _fake_plex_match
@@ -1011,7 +2080,7 @@ async def test_start_plex_match_returns_false_while_sync_running(pg_schema):
 
     manager = CrawlManager()
 
-    async def _never_finishes(user_id, mode, scope="all"):
+    async def _never_finishes(user_id, mode, scope="all", run_token=None):
         await asyncio.sleep(10)
 
     manager._sync_collection = _never_finishes
@@ -1043,6 +2112,259 @@ async def test_start_sync_returns_false_while_plex_match_running(pg_schema):
 # ---------------------------------------------------------------------------
 # _run_plex_match (per-user Plex library matching, SSRF-guarded via plex_security)
 # ---------------------------------------------------------------------------
+
+@respx.mock
+async def test_an_unresolved_close_does_not_start_the_unbounded_restoration(pg_schema, monkeypatch):
+    """A close that never reached the row leaves the claim held, and that is
+    the expensive answer rather than the reassuring one.
+
+    "Not a takeover" was the only thing being read off a None, so the worker
+    went on to the stock-row restoration -- explicitly the one step with no
+    bound worth leasing against. Running it under a claim nobody has released
+    is how the lease lapses mid-scan and a replacement sync starts on top of
+    a worker still enqueueing against the same library."""
+    import config
+    import db as db_module
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "s")
+    monkeypatch.setattr(config, "TOKEN_ENCRYPTION_KEY", "kL8mN2pQ7rT5vX9yB3cF6hJ1kM4nP8sU2wZ5aD7eG0i=")
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute(
+            "UPDATE users SET discogs_oauth_token_encrypted = %s, discogs_oauth_secret_encrypted = %s WHERE id = %s",
+            [token_encryption.encrypt("tok"), token_encryption.encrypt("sec"), user["id"]],
+        )
+        conn.commit()
+
+    respx.get("https://api.discogs.com/users/alice/collection/fields").mock(
+        return_value=httpx.Response(200, json={"fields": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/collection/folders/0/releases").mock(
+        return_value=_collection_page(111, total_pages=1)
+    )
+    respx.get(url__regex=r"https://api\.discogs\.com/releases/\d+").mock(
+        return_value=httpx.Response(200, json={"identifiers": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/wants").mock(
+        return_value=httpx.Response(200, json={"pagination": {"pages": 1}, "wants": []})
+    )
+
+    # Every close fails, so the answer stays unresolved through the retry too.
+    def _always_fails(conn, user_id, run_token, status, **fields):
+        raise RuntimeError("connection reset during close")
+
+    monkeypatch.setattr(db_module, "finish_library_sync_run", _always_fails)
+
+    restored = []
+    manager = CrawlManager()
+    manager._restore_library_stock_rows = lambda uid: restored.append(uid)  # type: ignore
+    assert await manager.start_sync(user["id"], "all") is True
+    await manager._sync_tasks[user["id"]]
+
+    assert restored == []
+
+
+@respx.mock
+async def test_a_transient_release_failure_does_not_strand_the_claim(pg_schema, monkeypatch):
+    """The Plex release is the only thing that hands the claim back.
+
+    It answers None when it cannot reach the row, which is not a takeover --
+    but leaving it there keeps the row saying 'plex_matching', one of the two
+    statuses the claim predicate refuses on, for a phase that has already
+    ended. The user's every refresh is then refused until the staleness window
+    expires, because of one connection blip."""
+    import config
+    import db as db_module
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "s")
+    monkeypatch.setattr(config, "TOKEN_ENCRYPTION_KEY", "kL8mN2pQ7rT5vX9yB3cF6hJ1kM4nP8sU2wZ5aD7eG0i=")
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute(
+            "UPDATE users SET discogs_oauth_token_encrypted = %s, discogs_oauth_secret_encrypted = %s, "
+            "plex_base_url = %s, plex_token = %s WHERE id = %s",
+            [
+                token_encryption.encrypt("tok"), token_encryption.encrypt("sec"),
+                "http://plex.local:32400", "ptok", user["id"],
+            ],
+        )
+        conn.commit()
+
+    respx.get("https://api.discogs.com/users/alice/collection/fields").mock(
+        return_value=httpx.Response(200, json={"fields": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/collection/folders/0/releases").mock(
+        return_value=_collection_page(111, total_pages=1)
+    )
+    respx.get(url__regex=r"https://api\.discogs\.com/releases/\d+").mock(
+        return_value=httpx.Response(200, json={"identifiers": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/wants").mock(
+        return_value=httpx.Response(200, json={"pagination": {"pages": 1}, "wants": []})
+    )
+
+    real_release = db_module.finish_library_sync_plex_phase
+    calls = []
+
+    def _flaky_release(conn, user_id, run_token):
+        calls.append(run_token)
+        if len(calls) == 1:
+            raise RuntimeError("connection reset during release")
+        return real_release(conn, user_id, run_token)
+
+    monkeypatch.setattr(db_module, "finish_library_sync_plex_phase", _flaky_release)
+
+    async def _fake_plex(user_id, base_url, token, threshold, run_token=None):
+        return None
+
+    manager = CrawlManager()
+    manager._run_plex_match = _fake_plex  # type: ignore
+    assert await manager.start_sync(user["id"], "all") is True
+    await manager._sync_tasks[user["id"]]
+
+    assert len(calls) == 2
+    # The claim is handed back, so the next refresh is not refused.
+    with db.user_scope(user["id"]) as conn:
+        run = db.get_library_sync_run(conn, user["id"])
+    assert run["status"] == "complete"
+    other_machine = CrawlManager()
+    assert await other_machine.start_sync(user["id"], "all") is True
+    other_machine._sync_tasks[user["id"]].cancel()
+
+
+@respx.mock
+async def test_a_dispossessed_worker_does_not_announce_a_failure_for_the_run_that_replaced_it(pg_schema, monkeypatch):
+    """sync_error closes before it announces.
+
+    A dispossessed worker can reach an ordinary exception. Announcing first
+    tells every browser on this Machine that the run failed -- when the run
+    belongs to the replacement now, and may be running perfectly well. A
+    terminal sync event also sets the client's "an outcome was just published"
+    flag, so the false failure can swallow the replacement's real one."""
+    import config
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "s")
+    monkeypatch.setattr(config, "TOKEN_ENCRYPTION_KEY", "kL8mN2pQ7rT5vX9yB3cF6hJ1kM4nP8sU2wZ5aD7eG0i=")
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute(
+            "UPDATE users SET discogs_oauth_token_encrypted = %s, discogs_oauth_secret_encrypted = %s WHERE id = %s",
+            [token_encryption.encrypt("tok"), token_encryption.encrypt("sec"), user["id"]],
+        )
+        conn.commit()
+
+    respx.get("https://api.discogs.com/users/alice/collection/fields").mock(
+        return_value=httpx.Response(200, json={"fields": []})
+    )
+
+    import discogs
+
+    def _pages(*args, **kwargs):
+        with db.user_scope(user["id"]) as other:
+            other.execute(
+                "UPDATE library_sync_runs SET heartbeat_at = clock_timestamp() - INTERVAL '%s minutes' "
+                "WHERE user_id = %%s" % (db.SYNC_RUN_STALE_MINUTES + 1),
+                [user["id"]],
+            )
+            db.claim_library_sync_run(other, user["id"], "all", "all")
+            other.commit()
+        raise RuntimeError("collection page fetch exploded")
+
+    monkeypatch.setattr(discogs, "iter_collection_pages", _pages)
+
+    manager = CrawlManager()
+    assert await manager.start_sync(user["id"], "all") is True
+    await manager._sync_tasks[user["id"]]
+
+    # Nothing on this Machine's stream claims a sync failed: the run this
+    # worker would have been speaking for is the replacement's.
+    assert "sync_error" not in [e["status"] for e in manager.recent_events()]
+    with db.user_scope(user["id"]) as conn:
+        run = db.get_library_sync_run(conn, user["id"])
+    assert (run["status"], run["running"]) == ("running", True)
+
+
+async def test_a_slow_plex_chunk_heartbeats_before_its_25th_item(pg_schema, monkeypatch):
+    """The Plex phase holds the sync's claim, so its heartbeat needs the same
+    wall-clock bound the sync's own checkpoint has.
+
+    Counting items cannot bound the gap here either, and for a sharper reason:
+    find_best_match scans the whole Plex album list for every item, so what 25
+    of them cost is set by the size of the user's Plex library rather than by
+    anything this loop controls. A big enough library puts a healthy chunk past
+    the staleness window, and another Machine then takes over and starts a sync
+    while this phase is still writing matches."""
+    import plex
+    import crawl_manager as crawl_manager_module
+
+    class _Clock:
+        def __init__(self):
+            self.now = 0.0
+
+        def monotonic(self):
+            return self.now
+
+        def sleep(self, *a, **k):
+            pass
+
+    clock = _Clock()
+    monkeypatch.setattr(crawl_manager_module, "time", clock)
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        for n in range(1, 7):
+            db.upsert_catalog_release(conn, {
+                "discogs_id": f"r{n}", "artist": f"Artist {n}", "title": f"Album {n}",
+                "year": 1990, "label": "Label", "format": "Vinyl", "discogs_price": None,
+                "barcode": None, "cover_image_url": None, "discogs_url": None,
+            })
+            db.upsert_library_item(conn, user["id"], f"r{n}", in_collection=True)
+        conn.commit()
+
+    with db.user_scope(user["id"]) as conn:
+        run_token = db.claim_library_sync_run(conn, user["id"], "all", "all")
+        assert db.start_library_sync_plex_phase(conn, user["id"], run_token) is True
+        conn.commit()
+
+    with db.get_admin_pool().connection() as conn:
+        before = conn.execute(
+            "SELECT heartbeat_at FROM library_sync_runs WHERE user_id = %s", [user["id"]]
+        ).fetchone()["heartbeat_at"]
+
+    seen = {}
+    matched_count = {"n": 0}
+
+    def _match(artist, title, albums, threshold):
+        matched_count["n"] += 1
+        # The third item is the one that takes a long time -- a large library
+        # scanned for one release.
+        if matched_count["n"] == 3:
+            clock.now += crawl_manager_module.SYNC_CHECKPOINT_MAX_SECONDS + 1
+        # By the fifth, a heartbeat must already have landed: four items in,
+        # the every-25th-item boundary is nowhere near.
+        if matched_count["n"] == 5:
+            with db.get_admin_pool().connection() as conn:
+                seen["heartbeat"] = conn.execute(
+                    "SELECT heartbeat_at FROM library_sync_runs WHERE user_id = %s", [user["id"]]
+                ).fetchone()["heartbeat_at"]
+        return None
+
+    monkeypatch.setattr(plex, "get_music_section_key", lambda base_url, token: "2")
+    monkeypatch.setattr(plex, "fetch_albums", lambda base_url, token, key: [
+        {"artist": "Someone", "title": "Something", "rating_key": "500"},
+    ])
+    monkeypatch.setattr(plex, "get_machine_identifier", lambda base_url, token: "abc123")
+    monkeypatch.setattr(plex, "find_best_match", _match)
+
+    manager = CrawlManager()
+    await manager._run_plex_match(user["id"], "plex.local:32400", "tok", 90, run_token)
+
+    assert seen.get("heartbeat") is not None
+    assert seen["heartbeat"] > before
+
 
 async def test_run_plex_match_updates_matched_and_clears_unmatched(pg_schema, monkeypatch):
     import plex

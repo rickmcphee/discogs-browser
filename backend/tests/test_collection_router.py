@@ -43,6 +43,76 @@ def test_collection_status_scoped_to_calling_user(pg_test_db, authed_client_fact
     assert r.json()["total"] == 0
 
 
+def test_collection_status_reports_no_sync_before_one_has_ever_run(pg_test_db, authed_client_factory):
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+
+    client = authed_client_factory(alice["id"])
+    assert client.get("/api/collection/status").json()["sync"] is None
+
+
+def test_collection_status_reports_a_running_sync(pg_test_db, authed_client_factory):
+    """What the client polls instead of listening: the sync_* events narrating
+    a run never leave the Machine running it, and the browser's SSE stream and
+    its refresh request need not have landed on the same one."""
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+    with db.user_scope(alice["id"]) as conn:
+        token = db.claim_library_sync_run(conn, alice["id"], "new", "all")
+        db.record_library_sync_progress(
+            conn, alice["id"], token, page=3, total_pages=13, synced=42
+        )
+        conn.commit()
+
+    client = authed_client_factory(alice["id"])
+    sync = client.get("/api/collection/status").json()["sync"]
+    assert sync["running"] is True
+    assert sync["stale"] is False
+    assert (sync["status"], sync["mode"], sync["scope"]) == ("running", "new", "all")
+    assert (sync["page"], sync["total_pages"], sync["synced"]) == (3, 13, 42)
+
+
+def test_collection_status_reports_an_abandoned_run_as_stale_rather_than_running(
+    pg_test_db, authed_client_factory
+):
+    """A Machine that restarts mid-sync leaves its row saying 'running'
+    forever. Reported as running, the client would spin on a sync nothing is
+    doing; reported as simply idle, the user would never learn why their
+    refresh stopped."""
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+    with db.user_scope(alice["id"]) as conn:
+        db.claim_library_sync_run(conn, alice["id"], "all", "all")
+        conn.execute(
+            "UPDATE library_sync_runs SET heartbeat_at = clock_timestamp() - INTERVAL '%s minutes' "
+            "WHERE user_id = %%s" % (db.SYNC_RUN_STALE_MINUTES + 1),
+            [alice["id"]],
+        )
+        conn.commit()
+
+    client = authed_client_factory(alice["id"])
+    sync = client.get("/api/collection/status").json()["sync"]
+    assert sync["status"] == "running"
+    assert sync["running"] is False
+    assert sync["stale"] is True
+
+
+def test_collection_status_sync_is_scoped_to_the_calling_user(pg_test_db, authed_client_factory):
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        bob = db.create_user(conn, discogs_user_id=2, discogs_username="bob")
+        conn.commit()
+    with db.user_scope(alice["id"]) as conn:
+        db.claim_library_sync_run(conn, alice["id"], "all", "all")
+        conn.commit()
+
+    client = authed_client_factory(bob["id"])
+    assert client.get("/api/collection/status").json()["sync"] is None
+
+
 def test_collection_price_status_scoped_to_calling_user(pg_test_db, authed_client_factory):
     with db.get_admin_pool().connection() as conn:
         alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
@@ -65,7 +135,7 @@ def test_collection_price_status_scoped_to_calling_user(pg_test_db, authed_clien
 
 
 def test_refresh_collection_starts_a_sync_for_the_calling_user(pg_test_db, authed_client_factory, monkeypatch):
-    async def _fake_sync(user_id, mode, scope="all"):
+    async def _fake_sync(user_id, mode, scope="all", run_token=None):
         await asyncio.sleep(0)
 
     monkeypatch.setattr(crawl_manager, "_sync_collection", _fake_sync)
@@ -86,7 +156,7 @@ def test_refresh_collection_starts_a_sync_for_the_calling_user(pg_test_db, authe
 def test_refresh_collection_passes_scope_through_to_start_sync(pg_test_db, authed_client_factory, monkeypatch):
     calls = []
 
-    async def _fake_sync(user_id, mode, scope="all"):
+    async def _fake_sync(user_id, mode, scope="all", run_token=None):
         calls.append((user_id, mode, scope))
         await asyncio.sleep(0)
 
@@ -106,7 +176,7 @@ def test_refresh_collection_passes_scope_through_to_start_sync(pg_test_db, authe
 def test_refresh_collection_defaults_scope_to_all(pg_test_db, authed_client_factory, monkeypatch):
     calls = []
 
-    async def _fake_sync(user_id, mode, scope="all"):
+    async def _fake_sync(user_id, mode, scope="all", run_token=None):
         calls.append((user_id, mode, scope))
         await asyncio.sleep(0)
 
@@ -126,7 +196,7 @@ def test_refresh_collection_defaults_scope_to_all(pg_test_db, authed_client_fact
 def test_refresh_collection_rejects_invalid_scope(pg_test_db, authed_client_factory, monkeypatch):
     calls = []
 
-    async def _fake_sync(user_id, mode, scope="all"):
+    async def _fake_sync(user_id, mode, scope="all", run_token=None):
         calls.append((user_id, mode, scope))
         await asyncio.sleep(0)
 
@@ -146,7 +216,7 @@ def test_refresh_collection_rejects_invalid_scope(pg_test_db, authed_client_fact
 def test_refresh_collection_rejects_invalid_mode(pg_test_db, authed_client_factory, monkeypatch):
     calls = []
 
-    async def _fake_sync(user_id, mode, scope="all"):
+    async def _fake_sync(user_id, mode, scope="all", run_token=None):
         calls.append((user_id, mode, scope))
         await asyncio.sleep(0)
 

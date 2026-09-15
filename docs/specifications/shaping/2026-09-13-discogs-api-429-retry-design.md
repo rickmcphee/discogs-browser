@@ -165,6 +165,21 @@ The arithmetic is chosen for these properties:
    background job that reports progress over SSE; a couple of minutes of
    deliberate waiting is cheap next to abandoning half a collection.
 
+   **Amendment (2026-09-13, merging into `claude/practical-cerf-kvjwbf`):**
+   The worst case above is bounded per *request*, which is the bound this
+   section argues for, and it still holds. What it cannot see from here is that
+   `2026-09-13-collection-sync-run-visibility-design.md` was in flight on a
+   branch, giving the sync a claim that expires if it stops heartbeating for
+   `db.SYNC_RUN_STALE_MINUTES`. Waits that are individually cheap accumulate
+   across the items between two heartbeats, and under a sustained rate limit
+   they pushed that gap past the window — so a sync that was waiting exactly
+   as intended here looked abandoned there. Fixed on that side, by bounding
+   the heartbeat gap in wall-clock time rather than in items
+   (`crawl_manager.SYNC_CHECKPOINT_MAX_SECONDS`); nothing in this design
+   changed. Recorded because the per-request bound above is the thing a reader
+   will reach for when asking how long a sync can go quiet, and on its own it
+   now understates the answer.
+
 **No jitter**, unlike `catalog_http.get_with_retry()`'s
 `random.uniform(delay * 0.5, delay)`. Jitter there de-synchronises crawlers
 converging on one shared platform edge. Here the limit is per authenticated
