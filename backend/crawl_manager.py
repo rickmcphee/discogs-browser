@@ -12,6 +12,12 @@ log = get_logger("crawl_manager")
 # pg_advisory_xact_lock(2026080901) convention.
 STOCK_SYNC_LOCK_KEY = 2026081601
 
+# The longest a collection sync may go without recording progress, which is
+# also the longest its claim can go without a heartbeat. Paired with
+# db.SYNC_RUN_STALE_MINUTES: this has to stay far enough below it that the
+# ceiling plus one maximally slow item is still comfortably inside the window.
+SYNC_CHECKPOINT_MAX_SECONDS = 120
+
 
 async def _shielded(coro):
     """Runs `coro` to completion even if the awaiting task is cancelled
@@ -75,6 +81,18 @@ def _is_playwright_timeout(exc: BaseException) -> bool:
     return isinstance(exc, PlaywrightTimeoutError)
 
 
+class _ClaimLost(Exception):
+    """Raised when the run a worker is writing is no longer the run in the row.
+
+    Fencing the writes to library_sync_runs is not by itself enough: a
+    dispossessed worker would go on committing library rows and then run the
+    wantlist cleanup, which deletes -- against a `wishlist_seen` snapshot older
+    than the sync that replaced it. So losing the claim has to stop the worker,
+    not just its bookkeeping. The Plex phase that can follow a sync holds the
+    same claim and owes the same duty, which is why this lives out here rather
+    than inside the sync's own body."""
+
+
 class CrawlManager:
     def __init__(self):
         self._sync_tasks: dict[int, asyncio.Task] = {}
@@ -91,6 +109,9 @@ class CrawlManager:
         # at import, before any event loop exists -- the same reason
         # _site_locks is populated on first use.
         self._stock_start_lock: Optional[asyncio.Lock] = None
+        # The same job for start_sync and start_plex_match, which exclude each
+        # other and so have to share one. Lazily created for the same reason.
+        self._sync_start_locks: dict[int, asyncio.Lock] = {}
         self._judgment_tasks: dict[int, asyncio.Task] = {}
         self._plex_match_tasks: dict[int, asyncio.Task] = {}
         self._worker_tasks: list[asyncio.Task] = []
@@ -788,35 +809,177 @@ class CrawlManager:
         task = self._sync_tasks.get(user_id)
         return task is not None and not task.done()
 
+    @staticmethod
+    def _finish_sync_run(user_id: int, run_token: Optional[str], status: str, **fields):
+        """Close a run, and say whether this call is what closed it.
+
+        True means the run was this caller's and is now closed; False that it
+        demonstrably was not (taken over, or expired); None that the question
+        could not be asked, which a caller must not read as a takeover. Best
+        effort on that last point deliberately: failing to record how a sync
+        ended must never be what ends one."""
+        from db import user_scope, finish_library_sync_run
+        try:
+            with user_scope(user_id) as conn:
+                closed = finish_library_sync_run(conn, user_id, run_token, status, **fields)
+                conn.commit()
+            return closed
+        except Exception as e:
+            log.warning("Could not record the end of user %d's collection sync: %s", user_id, e)
+            return None
+
+    @staticmethod
+    def _restore_library_stock_rows(user_id: int):
+        """Give the user's freshly synced records their marketplace crawl rows
+        back. Insert-if-absent, and only under crawl_library_only: with it off
+        every live item already has a row, so the statement would scan the
+        whole stock inventory against this library, under the reconciliation
+        lock, to insert nothing.
+
+        Runs outside the sync's claim on both paths -- it is follow-on work for
+        the crawl queue rather than part of the sync, and it is the one step
+        with no bound worth leasing against."""
+        from db import user_scope, enqueue_crawl_queue_for_library_stock_items
+        from config import crawl_library_only
+        if not crawl_library_only():
+            return
+        with user_scope(user_id) as conn:
+            restored = enqueue_crawl_queue_for_library_stock_items(conn, user_id)
+            conn.commit()
+        if restored:
+            log.info("Queued %d store items matching user %d's library for marketplace prices", restored, user_id)
+
+    @staticmethod
+    def _release_plex_phase(user_id: int, run_token: Optional[str]):
+        """Release the claim the Plex phase held, and say whether this call is
+        what released it.
+
+        Same three-valued answer as _finish_sync_run, for the same reason: True
+        that the phase was this caller's and is now closed, False that it
+        demonstrably was not, None that the question could not be asked -- which
+        a caller must not read as a takeover."""
+        from db import user_scope, finish_library_sync_plex_phase
+        try:
+            with user_scope(user_id) as conn:
+                released = finish_library_sync_plex_phase(conn, user_id, run_token)
+                conn.commit()
+            return released
+        except Exception as e:
+            log.warning("Could not release user %d's collection sync claim: %s", user_id, e)
+            return None
+
+    @staticmethod
+    def _claim_sync_run(user_id: int, mode: str, scope: str) -> Optional[str]:
+        from db import user_scope, claim_library_sync_run
+        with user_scope(user_id) as conn:
+            run_token = claim_library_sync_run(conn, user_id, mode, scope)
+            conn.commit()
+        return run_token
+
+    def _start_lock(self, user_id: int) -> asyncio.Lock:
+        """Serializes the guard, claim and task registration in start_sync and
+        start_plex_match against each other, for one user.
+
+        Those two refuse to overlap, and used to get that for free: each
+        checked both task maps and registered its own with no await in
+        between, which asyncio's single-threaded scheduling makes atomic. The
+        cross-Machine claim adds an await inside start_sync's half, so without
+        this a plex match starting during that claim sees both maps idle,
+        registers itself, and the collection task is created on top of it.
+
+        Keyed by user because that is the scope of the exclusion it enforces,
+        and because it is held across a blocking database call: the claim can
+        wait on the row lock a checkpoint or cleanup transaction holds, and one
+        manager-wide lock would make one account's refresh block every other
+        account's sync and Plex starts on this Machine. Building the entry is
+        safe unlocked -- there is no await between the read and the write, so
+        the event loop cannot interleave another start in between.
+
+        Lazily built, like _stock_start_lock, because the manager is
+        constructed at import time with no running loop to bind to."""
+        lock = self._sync_start_locks.get(user_id)
+        if lock is None:
+            lock = self._sync_start_locks[user_id] = asyncio.Lock()
+        return lock
+
     async def start_sync(self, user_id: int, mode: str = "all", scope: str = "all") -> bool:
-        if self.sync_running(user_id) or self.plex_match_running(user_id):
-            log.warning("Collection sync already running for %s, ignoring start request", self._username_for_log(user_id))
-            return False
-        self._sync_tasks[user_id] = asyncio.create_task(self._sync_collection(user_id, mode, scope))
-        return True
+        async with self._start_lock(user_id):
+            # The Plex match still has no claim of its own, so this local guard
+            # is the only thing that refuses an overlap with one.
+            if self.plex_match_running(user_id):
+                log.warning("Plex match in progress for %s, ignoring sync request", self._username_for_log(user_id))
+                return False
+            # Deliberately *not* also guarded on sync_running(). _sync_tasks is
+            # this process's memory, and the deployment runs more than one
+            # Machine behind one hostname, so it covers only the half of the
+            # requests that land here -- but the worse half is that it answers
+            # "is a task object still pending", which a worker wedged in a
+            # blocking call says for ever. Refusing on that alone made this
+            # Machine the one place a run it had abandoned could never be taken
+            # over, while the other Machine took it happily: the same click
+            # succeeded or failed by load balancing, which is the silent,
+            # inexplicable refusal this change exists to remove, wearing a
+            # different hat.
+            #
+            # So the row decides. It is the same refusal made in Postgres,
+            # where the other Machine's run is visible and where a heartbeat
+            # that stopped fifteen minutes ago says the worker is gone whatever
+            # its task object claims -- and it doubles as the row that tells
+            # the browser its sync is under way at all (see library_sync_runs).
+            # A healthy local run is refused by it just as firmly, because that
+            # run's own heartbeat is keeping the row fresh. Blocking psycopg
+            # calls, so off the event loop, same as start_stock_sync's advisory
+            # lock.
+            run_token = await run_in_threadpool(self._claim_sync_run, user_id, mode, scope)
+            if run_token is None:
+                log.warning(
+                    "Collection sync already running for %s, ignoring start request",
+                    self._username_for_log(user_id),
+                )
+                return False
+            # The claim was granted, so whatever this Machine still has running
+            # for this user is working a run that is no longer its own. Its
+            # fencing stops it at the next checkpoint -- but a worker that never
+            # reaches one is exactly the case that got us here, so it is
+            # cancelled rather than left to notice.
+            previous = self._sync_tasks.get(user_id)
+            if previous is not None and not previous.done():
+                log.warning(
+                    "Taking over %s's abandoned collection sync from this instance's own stalled worker",
+                    self._username_for_log(user_id),
+                )
+                previous.cancel()
+            self._sync_tasks[user_id] = asyncio.create_task(
+                self._sync_collection(user_id, mode, scope, run_token)
+            )
+            return True
 
     def plex_match_running(self, user_id: int) -> bool:
         task = self._plex_match_tasks.get(user_id)
         return task is not None and not task.done()
 
     async def start_plex_match(self, user_id: int) -> bool:
-        if self.plex_match_running(user_id) or self.sync_running(user_id):
-            log.warning("Plex match already running or sync in progress for %s, ignoring start request", self._username_for_log(user_id))
-            return False
-        from db import get_identity_pool
-        with get_identity_pool().connection() as conn:
-            user = conn.execute(
-                "SELECT plex_base_url, plex_token, plex_match_threshold FROM users WHERE id = %s",
-                [user_id],
-            ).fetchone()
-        if user is None or not user["plex_base_url"] or not user["plex_token"]:
-            return False
-        self._plex_match_tasks[user_id] = asyncio.create_task(
-            self._run_plex_match(user_id, user["plex_base_url"], user["plex_token"], user["plex_match_threshold"])
-        )
-        return True
+        # Under the same lock as start_sync: the mutual exclusion these two
+        # guards declare is only real if neither can register a task while the
+        # other is between its check and its own registration. See _start_lock.
+        async with self._start_lock(user_id):
+            if self.plex_match_running(user_id) or self.sync_running(user_id):
+                log.warning("Plex match already running or sync in progress for %s, ignoring start request", self._username_for_log(user_id))
+                return False
+            from db import get_identity_pool
+            with get_identity_pool().connection() as conn:
+                user = conn.execute(
+                    "SELECT plex_base_url, plex_token, plex_match_threshold FROM users WHERE id = %s",
+                    [user_id],
+                ).fetchone()
+            if user is None or not user["plex_base_url"] or not user["plex_token"]:
+                return False
+            self._plex_match_tasks[user_id] = asyncio.create_task(
+                self._run_plex_match(user_id, user["plex_base_url"], user["plex_token"], user["plex_match_threshold"])
+            )
+            return True
 
-    async def _sync_collection(self, user_id: int, mode: str, scope: str = "all"):
+    async def _sync_collection(self, user_id: int, mode: str, scope: str = "all", run_token: Optional[str] = None):
         # The actual work is a long sequence of blocking httpx/psycopg calls with
         # no natural await points between them (barcode-fetch pacing aside) --
         # run it in a worker thread via run_in_threadpool (same pattern
@@ -825,26 +988,181 @@ class CrawlManager:
         # other user's requests -- for its entire duration, or indefinitely if a
         # single call hangs.
         loop = asyncio.get_running_loop()
-        plex_params = await run_in_threadpool(self._sync_collection_blocking, user_id, mode, scope, loop)
+        plex_params = await run_in_threadpool(
+            self._sync_collection_blocking, user_id, mode, scope, loop, run_token
+        )
         if plex_params:
             base_url, token, threshold = plex_params
-            await self._run_plex_match(user_id, base_url, token, threshold)
+            try:
+                await self._run_plex_match(user_id, base_url, token, threshold, run_token)
+            finally:
+                # The run has been holding the claim across the Plex phase (see
+                # start_library_sync_plex_phase); this is where it is released,
+                # on every exit, including a cancelled Plex match. The stock-row
+                # restoration the sync deferred runs after that release, so it
+                # never has a lease to overrun.
+                #
+                # Fenced on the way out, like the non-Plex close: the release
+                # answers False when this phase was taken over, which is
+                # reachable because _run_plex_match handles _ClaimLost itself
+                # and returns normally. Restoring rows for a run somebody else
+                # owns is the overlap the claim exists to prevent -- the
+                # replacement sync is rewriting the very library_items this
+                # would scan, and it runs its own restoration when it ends. A
+                # None means the release could not be attempted at all, which
+                # is not evidence of a takeover, so it still restores.
+                released = await run_in_threadpool(
+                    self._release_plex_phase, user_id, run_token
+                )
+                if released is None:
+                    # Not a takeover -- the release never reached the row. It
+                    # is the only thing that hands the claim back, so leaving
+                    # it there costs the user every refresh until the lease
+                    # expires: the row still says 'plex_matching', and that is
+                    # one of the two statuses the claim predicate refuses on,
+                    # for a phase that has already ended. One retry on a fresh
+                    # connection, the same backstop shape the sync's own close
+                    # gets, so a one-off blip cannot strand the claim.
+                    released = await run_in_threadpool(
+                        self._release_plex_phase, user_id, run_token
+                    )
+                    if released is None:
+                        log.warning(
+                            "Could not release user %d's sync claim after the Plex phase; "
+                            "it will hold until the staleness window expires",
+                            user_id,
+                        )
+                if run_token is not None and released is False:
+                    log.warning(
+                        "Not queueing store items for user %d's library: this sync's run was taken over",
+                        user_id,
+                    )
+                else:
+                    try:
+                        await run_in_threadpool(self._restore_library_stock_rows, user_id)
+                    except Exception as restore_error:
+                        log.warning(
+                            "Could not queue store items for user %d's library after the sync: %s",
+                            user_id, restore_error,
+                        )
 
     def _broadcast_threadsafe(self, event: dict, loop: asyncio.AbstractEventLoop):
         asyncio.run_coroutine_threadsafe(self._broadcast(event), loop)
 
-    def _sync_collection_blocking(self, user_id: int, mode: str, scope: str, loop: asyncio.AbstractEventLoop):
+    def _sync_collection_blocking(
+        self, user_id: int, mode: str, scope: str, loop: asyncio.AbstractEventLoop,
+        run_token: Optional[str] = None,
+    ):
         import token_encryption
         import discogs
         from db import (
             get_identity_pool, user_scope, upsert_catalog_release, upsert_library_item,
             clear_wishlist_flags_not_in, delete_orphaned_releases, enqueue_crawl_queue,
-            enqueue_crawl_queue_for_library_stock_items,
+            record_library_sync_progress, start_library_sync_plex_phase,
         )
-        from config import crawl_library_only
         import httpx
 
         broadcast = lambda event: self._broadcast_threadsafe({**event, "user_id": user_id}, loop)
+
+        # Every sync_* event below is broadcast in-process only, so a browser
+        # served by the other Machine hears none of it. These two write the
+        # same run to library_sync_runs, which it can read. Both are best
+        # effort: failing to narrate a sync must never be what ends one.
+        # What the body meant to record, held until the row confirms it took
+        # it. The backstop retries *this* rather than a generic failure: a
+        # close that answered None never reached the row, so the run is still
+        # saying 'running' and the backstop's write will land -- and a sync
+        # that succeeded must not be reported as one that ended unexpectedly
+        # because its own close hit a transient database failure.
+        intended_outcome = {}
+
+        def finish_run(status, synced=None, wishlist_synced=None, error=None):
+            intended_outcome.update(
+                status=status, synced=synced,
+                wishlist_synced=wishlist_synced, error=error,
+            )
+            closed = self._finish_sync_run(
+                user_id, run_token, status, synced=synced,
+                wishlist_synced=wishlist_synced, error=error,
+            )
+            if closed is None:
+                # Unresolved, not refused -- and unresolved is the expensive
+                # answer here, because the row is still 'running' and the claim
+                # still held. One retry on a fresh connection, so ownership is
+                # settled before the caller decides whether to do the follow-on
+                # work the claim must not be held across.
+                closed = self._finish_sync_run(
+                    user_id, run_token, status, synced=synced,
+                    wishlist_synced=wishlist_synced, error=error,
+                )
+            if closed is not None:
+                # Answered either way: this call closed the run, or the run
+                # demonstrably was not ours and retrying would refuse again.
+                intended_outcome.clear()
+            return closed
+
+        def sync_error(message):
+            """Report a failure, and hand back what the close did -- callers
+            that go on to do follow-on work have to know whether this run was
+            still theirs.
+
+            Closed before announced, deliberately. A dispossessed worker can
+            reach an ordinary exception, and the close is what reveals it:
+            announcing first tells every browser on this Machine that the run
+            failed, when the run is the *replacement's* now and may be running
+            perfectly well. It is not only a wrong line on screen -- a terminal
+            sync event also sets the client's "an outcome was just published"
+            flag, which can then swallow the replacement's real outcome.
+
+            Only a definite False silences it. A None means the close could not
+            be attempted, which is no evidence of a takeover, and a run with no
+            token never entered the claim protocol at all -- both still speak,
+            because staying quiet about a real failure is the worse error."""
+            closed = finish_run("error", error=message)
+            if not (run_token is not None and closed is False):
+                broadcast({"status": "sync_error", "error": message})
+            return closed
+
+        def still_ours(conn, **progress):
+            """Record progress and assert the run is still this worker's. In
+            the caller's transaction, so the row lock also holds the claim
+            until that transaction commits.
+
+            No token means this sync never entered the claim protocol at all
+            (nothing in the app starts one that way -- start_sync always
+            claims first -- but the tests drive _sync_collection directly),
+            and a run that holds no claim cannot lose one."""
+            recorded = record_library_sync_progress(conn, user_id, run_token, **progress)
+            if run_token is not None and not recorded:
+                raise _ClaimLost()
+
+        def checkpoint(conn, **progress):
+            """Record progress, prove the claim, and commit what the loop has
+            written so far.
+
+            Called on checkpoint_due rather than only at the end of a
+            Discogs page, for three reasons that all point the same way: the
+            heartbeat has to land often enough that the staleness window
+            measures silence rather than a slow page; a claim lost mid-page
+            should cost this chunk rather than a hundred releases' work; and a
+            page of barcode fetches is long enough that holding one write
+            transaction open across all of it is its own hazard. Doing it on
+            this connection is what keeps a second pooled one out of the
+            picture -- the app pool is small, a sync already holds one of its
+            connections for the sync's whole duration, and a heartbeat that
+            had to borrow another would be queueing behind exactly the syncs
+            it exists to keep alive."""
+            nonlocal last_checkpoint
+            still_ours(conn, **progress)
+            conn.commit()
+            last_checkpoint = time.monotonic()
+            # user_scope()'s set_config(..., true) is transaction-local and was
+            # just reverted by the commit above -- to Postgres's empty-string
+            # placeholder for a never-set custom GUC, not to NULL, so the RLS
+            # policy's ::int cast raises InvalidTextRepresentation on the very
+            # next library_items write, not a quiet no-match. Re-issue it so
+            # the next statements are still RLS-scoped to this user.
+            conn.execute("SELECT set_config('app.user_id', %s, true)", [str(user_id)])
 
         # The records a sync commits may match store items whose queue rows
         # the library-only sweep deleted, or that _sync_stock never inserted,
@@ -858,13 +1176,38 @@ class CrawlManager:
         # has still committed the earlier ones, and those records are owed
         # their rows just the same.
         def restore_library_stock_rows():
-            if not crawl_library_only():
-                return
-            with user_scope(user_id) as conn:
-                restored = enqueue_crawl_queue_for_library_stock_items(conn, user_id)
-                conn.commit()
-            if restored:
-                log.info("Queued %d store items matching user %d's library for marketplace prices", restored, user_id)
+            try:
+                self._restore_library_stock_rows(user_id)
+            except Exception as restore_error:
+                log.warning(
+                    "Could not queue store items for user %d's library after the sync: %s",
+                    user_id, restore_error,
+                )
+
+        # How often a loop stops to record progress, prove its claim and
+        # commit -- a count of items, and a wall-clock ceiling on the gap
+        # between two of them.
+        #
+        # The count alone used to bound that gap, because an item's worst case
+        # was one request timeout and 25 of those stayed inside the staleness
+        # window. discogs._get_with_retry ended that: an item that is rate
+        # limited now waits out its retry budget on top of its timeouts, so a
+        # sustained 429 stretches 25 items well past the window while the sync
+        # is alive and making progress. It would be reported stale, told the
+        # user it had stopped, and be taken over by the next start_sync -- at
+        # which point its own fencing stops it. The ceiling keeps the window
+        # measuring silence rather than slowness, whatever a request costs.
+        #
+        # Only the pathological case reaches the ceiling: at the pacing a
+        # healthy sync runs at, the count comes due first every time and the
+        # clock never fires.
+        CHECKPOINT_EVERY = 25
+
+        def checkpoint_due(since_checkpoint):
+            return (
+                since_checkpoint >= CHECKPOINT_EVERY
+                or time.monotonic() - last_checkpoint >= SYNC_CHECKPOINT_MAX_SECONDS
+            )
 
         broadcast({"status": "sync_started", "scope": scope})
         try:
@@ -872,12 +1215,12 @@ class CrawlManager:
                 user = conn.execute("SELECT * FROM users WHERE id = %s", [user_id]).fetchone()
             if user is None:
                 log.info("Collection sync started for user %d (mode=%s)", user_id, mode)
-                broadcast({"status": "sync_error", "error": "User not found"})
+                sync_error("User not found")
                 return
             username = user["discogs_username"]
             log.info("Collection sync started for %s (mode=%s)", username, mode)
             if not user["discogs_oauth_token_encrypted"]:
-                broadcast({"status": "sync_error", "error": "Discogs account not connected"})
+                sync_error("Discogs account not connected")
                 return
             oauth_token = token_encryption.decrypt(user["discogs_oauth_token_encrypted"])
             oauth_secret = token_encryption.decrypt(user["discogs_oauth_secret_encrypted"])
@@ -887,13 +1230,15 @@ class CrawlManager:
                 try:
                     fields = discogs.fetch_collection_fields(oauth_token, oauth_secret, username)
                 except discogs.HTTPStatusError:
-                    broadcast({"status": "sync_error", "error": "Discogs request failed"})
+                    sync_error("Discogs request failed")
                     return
                 price_field_id = next((fid for fid, name in fields.items() if name.lower() == "price"), None)
 
             count = 0
             wishlist_count = 0
             wishlist_seen: set = set()
+            since_checkpoint = 0
+            last_checkpoint = time.monotonic()
 
             with user_scope(user_id) as conn:
                 if scope != "wishlist":
@@ -938,15 +1283,19 @@ class CrawlManager:
                             )
                             enqueue_crawl_queue(conn, rid)
                             count += 1
-                        conn.commit()
-                        # user_scope()'s set_config(..., true) is transaction-local and
-                        # was just reverted by the commit above -- to Postgres's empty-
-                        # string placeholder for a never-set custom GUC, not to NULL, so
-                        # the RLS policy's ::int cast raises InvalidTextRepresentation on
-                        # the very next library_items write, not a quiet no-match. Re-
-                        # issue it so the next page's writes are still RLS-scoped to
-                        # this user.
-                        conn.execute("SELECT set_config('app.user_id', %s, true)", [str(user_id)])
+                            since_checkpoint += 1
+                            if checkpoint_due(since_checkpoint):
+                                since_checkpoint = 0
+                                checkpoint(
+                                    conn, page=page, total_pages=total_pages, synced=count,
+                                )
+                        since_checkpoint = 0
+                        # The row the other Machine reads advances in the same
+                        # transaction as the data it describes -- never ahead
+                        # of it -- and a claim lost here takes the uncommitted
+                        # writes down with it rather than committing them
+                        # alongside the sync that replaced this one.
+                        checkpoint(conn, page=page, total_pages=total_pages, synced=count)
                         broadcast({"status": "sync_progress", "synced": count, "page": page, "total_pages": total_pages})
                         log.info("Sync page %d/%d (%d releases) for %s", page, total_pages, count, username)
 
@@ -954,6 +1303,7 @@ class CrawlManager:
                     for item in items:
                         rid = f"r{item['basic_information']['id']}"
                         wishlist_seen.add(rid)
+                        since_checkpoint += 1
                         release = discogs.parse_release(item, price_field_id=None)
                         existing_row = conn.execute(
                             "SELECT barcode FROM catalog WHERE discogs_id = %s", [rid]
@@ -980,23 +1330,101 @@ class CrawlManager:
                         )
                         enqueue_crawl_queue(conn, rid)
                         wishlist_count += 1
-                    conn.commit()
-                    # Same reasoning as the collection-loop commit above: re-scope
-                    # app.user_id for this connection's next transaction, since the
-                    # commit just ended (and reset) the one that had it set.
-                    conn.execute("SELECT set_config('app.user_id', %s, true)", [str(user_id)])
+                        if checkpoint_due(since_checkpoint):
+                            since_checkpoint = 0
+                            checkpoint(conn, wishlist_synced=wishlist_count)
+                    since_checkpoint = 0
+                    checkpoint(conn, wishlist_synced=wishlist_count)
                     log.info("Wishlist sync page %d/%d (%d items) for %s", page, total_pages, wishlist_count, username)
 
+                # Before the only destructive statements in the sync, and in
+                # their transaction: this both proves the claim is still ours
+                # and holds it (on the row lock) until the cleanup commits, so
+                # a takeover cannot land halfway through a delete driven by
+                # this worker's wishlist_seen.
+                still_ours(conn)
                 cleared = clear_wishlist_flags_not_in(conn, user_id, wishlist_seen)
                 deleted = delete_orphaned_releases(conn, user_id)
                 conn.commit()
+                conn.execute("SELECT set_config('app.user_id', %s, true)", [str(user_id)])
                 log.info(
                     "Wishlist sync complete for %s: %d items, %d stale entries cleared, %d releases deleted",
                     username, wishlist_count, cleared, len(deleted),
                 )
 
-            restore_library_stock_rows()
+            # Plex matching needs a real event loop (it awaits asyncio.to_thread
+            # internally) and this function runs inside run_in_threadpool, so it
+            # can't be awaited here -- _sync_collection runs it after this
+            # thread-pool call returns, and closes the run when it is done.
+            plex_base_url = user["plex_base_url"] or ""
+            plex_token = user["plex_token"] or ""
+            plex_follows = bool(plex_base_url and plex_token)
 
+            # Closed (or handed to the Plex phase) before the stock-row
+            # restoration rather than after it. That statement is follow-on
+            # work for the crawl queue, not part of the sync the client is
+            # watching, and it is the one step here with no bound on how long
+            # it can take -- long enough, and the run would go stale before it
+            # could be closed at all.
+            #
+            # The Plex phase keeps the claim: this Machine's _sync_tasks entry
+            # stays occupied for its duration and refuses a local sync, so
+            # releasing the claim here would let the *other* Machine start one
+            # the local guard would have refused.
+            # Bound on both branches: the Plex path never reaches the
+            # restoration here (it runs after the phase releases the claim), but
+            # leaving this unset there makes the guard below a NameError rather
+            # than a decision.
+            claim_unresolved = False
+            if plex_follows:
+                with user_scope(user_id) as conn:
+                    handed_over = start_library_sync_plex_phase(
+                        conn, user_id, run_token,
+                        synced=count, wishlist_synced=wishlist_count,
+                    )
+                    conn.commit()
+                # Fenced like every other write, so its answer decides whether
+                # this worker may go on: the cleanup transaction above released
+                # its row lock, and a Machine that was waiting on it can have
+                # taken the claim in between. Broadcasting completion and
+                # starting a Plex match without the claim is exactly the
+                # overlap it exists to prevent.
+                if run_token is not None and not handed_over:
+                    raise _ClaimLost()
+            else:
+                # Fenced, and read for the same reason the handoff is: the
+                # cleanup transaction released the run row's lock when it
+                # committed, so a Machine waiting on it can have taken the
+                # claim in between. Restoring rows and announcing a completed
+                # sync on somebody else's run is the overlap the claim exists
+                # to prevent. A None means the close could not be attempted at
+                # all, which is not evidence of a takeover.
+                closed = finish_run("complete", synced=count, wishlist_synced=wishlist_count)
+                if run_token is not None and closed is False:
+                    raise _ClaimLost()
+                # A None has survived the retry inside finish_run, so the close
+                # never reached the row and the claim is still this worker's --
+                # which is the problem, not the reassurance it sounds like. The
+                # restoration below is the one step with no bound worth leasing
+                # against, and running it under a claim nobody has released is
+                # how the lease lapses mid-scan and a replacement sync starts
+                # on top of it. Skipped rather than risked: it is
+                # insert-if-absent follow-on work, the next sync does it, and a
+                # replacement that takes over runs its own.
+                claim_unresolved = run_token is not None and closed is None
+            # Only when nothing else holds the claim. On the Plex path the
+            # run is still claimed, and this statement -- a scan of the stock
+            # inventory against this library, under the reconciliation lock --
+            # has no bound worth leasing against: long enough and the claim
+            # lapses under a sync that is still working. _sync_collection runs
+            # it there instead, once the claim has been released.
+            if not plex_follows and not claim_unresolved:
+                restore_library_stock_rows()
+            elif claim_unresolved:
+                log.warning(
+                    "Not queueing store items for user %d's library: this sync's run could not be closed",
+                    user_id,
+                )
             broadcast({
                 "status": "sync_complete",
                 "synced": count,
@@ -1006,26 +1434,72 @@ class CrawlManager:
             })
             log.info("Collection sync complete: %d releases, %d wishlist items for %s", count, wishlist_count, username)
 
-            # Plex matching needs a real event loop (it awaits asyncio.to_thread
-            # internally) and this function runs inside run_in_threadpool, so it
-            # can't be awaited here -- return the params and let _sync_collection
-            # run it after this thread-pool call returns.
-            plex_base_url = user["plex_base_url"] or ""
-            plex_token = user["plex_token"] or ""
-            if plex_base_url and plex_token:
+            if plex_follows:
                 return (plex_base_url, plex_token, user["plex_match_threshold"])
             return None
 
+        except _ClaimLost:
+            # Another instance took this run over -- it is doing the work now.
+            # The uncommitted page goes with it: raising out of user_scope's
+            # `with` leaves psycopg's pool to roll the transaction back, so
+            # nothing half-done from this worker lands beside the replacement's
+            # writes. Said out loud rather than swallowed: a browser attached
+            # to *this* Machine watched this sync start, and the run row it
+            # polls now belongs to a sync this process cannot narrate.
+            log.warning(
+                "Collection sync for user %d was taken over by another instance; stopping",
+                user_id,
+            )
+            broadcast({
+                "status": "sync_error",
+                "error": "Sync was taken over by another instance",
+            })
+            return None
         except Exception as e:
             log.error("Collection sync failed: %s", e, exc_info=True)
-            broadcast({"status": "sync_error", "error": str(e)})
-            # Best effort: a second failure here must not replace the one
-            # already reported.
-            try:
-                restore_library_stock_rows()
-            except Exception as restore_error:
-                log.warning("Could not queue store items for user %d's library after the failed sync: %s", user_id, restore_error)
+            closed = sync_error(str(e))
+            # Fenced like the successful close and the Plex release. Failing is
+            # not the same as still owning the run: an expired or dispossessed
+            # worker can reach an ordinary exception, and restoring rows from
+            # here would scan and enqueue against the library the replacement
+            # sync is rewriting.
+            #
+            # A None is not a takeover, but it is not permission either: the
+            # close never reached the row, so the claim is still held, and the
+            # restoration is the one step long enough to let that claim lapse
+            # under it. Both answers stop it here, for different reasons --
+            # refused because the work is somebody else's, unresolved because
+            # nobody has said it is ours to finish.
+            if run_token is not None and closed is not True:
+                log.warning(
+                    "Not queueing store items for user %d's library: this sync's run was %s",
+                    user_id, "taken over" if closed is False else "not closed",
+                )
+            else:
+                # Best effort: a second failure here must not replace the one
+                # already reported.
+                try:
+                    restore_library_stock_rows()
+                except Exception as restore_error:
+                    log.warning("Could not queue store items for user %d's library after the failed sync: %s", user_id, restore_error)
             return None
+        finally:
+            # Backstop for an exit neither branch above covered -- a
+            # BaseException, or a failure inside the error path itself. A run
+            # left saying 'running' is worse than one that ends badly: the
+            # claim would hold every later refresh until it went stale. A
+            # no-op once a real outcome is recorded (see finish_library_sync_run).
+            #
+            # The generic failure is for a run that never chose an outcome at
+            # all. When one was chosen but its close could not reach the row,
+            # that outcome is what gets retried -- otherwise a transient
+            # database error at the close turns a completed sync into
+            # "Sync ended unexpectedly" for every client reading the row,
+            # while the same-Machine stream has already announced success.
+            if intended_outcome:
+                finish_run(**intended_outcome)
+            else:
+                finish_run("error", error="Sync ended unexpectedly")
 
     async def sweep_enqueue(self, mode: str = "missing"):
         from db import get_identity_pool, enqueue_crawl_queue, get_missing_releases, user_scope
@@ -1510,11 +1984,15 @@ class CrawlManager:
             log.error("Judgment phase failed for %s: %s", username, e, exc_info=True)
             await broadcast({"status": "stock_judgment_error", "error": str(e)})
 
-    async def _run_plex_match(self, user_id: int, base_url: str, token: str, threshold: int):
+    async def _run_plex_match(
+        self, user_id: int, base_url: str, token: str, threshold: int,
+        run_token: Optional[str] = None,
+    ):
         import plex
         import plex_security
         from db import (
             user_scope, get_library_items_for_plex_match, set_plex_match, clear_plex_match,
+            record_library_sync_progress,
         )
 
         username = self._username_for_log(user_id)
@@ -1537,6 +2015,7 @@ class CrawlManager:
             with user_scope(user_id) as conn:
                 items = get_library_items_for_plex_match(conn, user_id)
                 matched = 0
+                last_checkpoint = time.monotonic()
                 for i, item in enumerate(items, start=1):
                     # Fuzzy-matching one release against the full album list is CPU-bound
                     # and, at real collection/library sizes, expensive enough per item to
@@ -1550,8 +2029,32 @@ class CrawlManager:
                         matched += 1
                     else:
                         clear_plex_match(conn, user_id, item["discogs_id"])
-                    if i % 25 == 0 or i == len(items):
+                    if (
+                        i % 25 == 0
+                        or i == len(items)
+                        or time.monotonic() - last_checkpoint >= SYNC_CHECKPOINT_MAX_SECONDS
+                    ):
+                        # When this phase follows a sync it is holding that
+                        # run's claim, and a library large enough to match
+                        # against can outlast the staleness window -- so the
+                        # heartbeat rides these commits, on this connection,
+                        # for the same reasons the sync's own checkpoint does.
+                        # And like the sync's, it is read rather than fired and
+                        # forgotten: this chunk's matches must not commit
+                        # alongside the sync that replaced this run.
+                        #
+                        # Bounded in wall-clock time as well as in items, for
+                        # the same reason the sync's checkpoint_due is: an item
+                        # here scans the whole album list, so the cost of 25 of
+                        # them is set by the Plex library's size rather than by
+                        # anything this loop controls, and a count alone cannot
+                        # keep the gap inside the window.
+                        if run_token is not None and not record_library_sync_progress(
+                            conn, user_id, run_token
+                        ):
+                            raise _ClaimLost()
                         conn.commit()
+                        last_checkpoint = time.monotonic()
                         # user_scope()'s set_config(..., true) is transaction-local and
                         # was just reverted by the commit above -- re-issue it so the
                         # remaining items in this same connection are still RLS-scoped
@@ -1561,6 +2064,18 @@ class CrawlManager:
 
             await broadcast({"status": "plex_match_complete", "matched": matched})
             log.info("Plex match complete for %s: %d/%d matched", username, matched, len(items))
+        except _ClaimLost:
+            # The run this phase was holding is somebody else's now; the
+            # uncommitted chunk rolls back with the exception on its way out of
+            # user_scope. Stopping here is the point -- the replacement sync is
+            # writing these same library_items rows.
+            log.warning(
+                "Plex match for %s was taken over by another instance; stopping", username
+            )
+            await broadcast({
+                "status": "plex_match_error",
+                "error": "Plex match was taken over by another instance",
+            })
         except Exception as e:
             if isinstance(e, plex_security.PlexUnsafeAddressError):
                 log.warning("Plex match rejected for %s: %s", username, e)

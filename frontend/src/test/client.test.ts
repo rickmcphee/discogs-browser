@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { postCrawlStart, postStockSyncStart, getUserSettings, saveUserSettings, logout, getStock, getStockArtists, getReleases, getArtists, postPlexMatchStart, refreshCollection, openCrawlStream, openLogsStream, importRecommendationsCsv, listInvites, createInvite, getUserHiddenCrawlers, postUserHiddenCrawlers, saveStockItem, unsaveStockItem, getStockStats, checkHealth, getQueueSummary, getQueueNext, getNotifications, getNotificationsUnread, markNotificationsRead } from '../api/client'
+import { ApiError, postCrawlStart, postStockSyncStart, getUserSettings, saveUserSettings, logout, getStock, getStockArtists, getReleases, getArtists, postPlexMatchStart, refreshCollection, openCrawlStream, openLogsStream, importRecommendationsCsv, listInvites, createInvite, getUserHiddenCrawlers, postUserHiddenCrawlers, saveStockItem, unsaveStockItem, getStockStats, checkHealth, getQueueSummary, getQueueNext, getNotifications, getNotificationsUnread, markNotificationsRead } from '../api/client'
 
 describe('crawl/user-settings client functions', () => {
   let fetchMock: ReturnType<typeof vi.fn>
@@ -502,6 +502,20 @@ describe('queue client functions', () => {
     await expect(getQueueNext(1)).rejects.toThrow('boom')
     fetchMock.mockResolvedValue({ ok: true, status: 200, json: async () => ({ items: [] }) })
     await expect(getQueueNext(1)).resolves.toEqual([])
+  })
+
+  it('rejects a refused refresh as an ApiError carrying the status', async () => {
+    // App tells a refused start (409) from a real failure by reading `status`
+    // off the rejection, and nothing else. The polling tests build that error
+    // by hand, so they would stay green if this threw a plain Error and every
+    // refused click reported "Sync failed" instead of going to look for the
+    // run. This is the only place that pins the contract they assume.
+    fetchMock.mockResolvedValue({
+      ok: false, status: 409, text: async () => '{"detail":"Collection sync already running"}',
+    })
+    const err = await refreshCollection('all').catch(e => e)
+    expect(err).toBeInstanceOf(ApiError)
+    expect(err.status).toBe(409)
   })
 
   it('releases the coalescing slot when a summary fails', async () => {

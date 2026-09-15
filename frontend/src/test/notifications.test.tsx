@@ -26,7 +26,7 @@ vi.mock('../api/client', () => ({
   getUserHiddenCrawlers: vi.fn().mockResolvedValue([]),
   postUserHiddenCrawlers: vi.fn().mockResolvedValue(undefined),
   refreshCollection: vi.fn().mockResolvedValue({ synced: 0, username: 'test' }),
-  getCollectionStatus: vi.fn().mockResolvedValue({ total: 0, last_synced: null }),
+  getCollectionStatus: vi.fn().mockResolvedValue({ total: 0, last_synced: null, sync: null }),
   getCrawlStatus: vi.fn().mockResolvedValue({ total: 0, missing: 0, oldest_checked: null }),
   postCrawlStart: vi.fn().mockResolvedValue({ started: true, running: true }),
   getCrawlers: vi.fn().mockResolvedValue([]),
