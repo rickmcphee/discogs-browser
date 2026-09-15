@@ -17,7 +17,7 @@ import { useIsMobile } from './hooks/useMediaQuery'
 import { navButtonClass, primaryButtonClass, secondaryButtonClass, dismissButtonClass } from './styles/buttons'
 import { refreshCollection, getCollectionStatus, openCrawlStream, getCrawlStatus, postCrawlStart, postStockSyncStart, postJudgmentStart, clearJudgments, exportRecommendationsCsv, importRecommendationsCsv, getCrawlers, getUserSettings, getUserHiddenCrawlers, postUserHiddenCrawlers, getJudgmentStatus, getPriceStatus, getNotificationsUnread, markNotificationsRead, checkHealth, getAuthStatus, setUnauthorizedHandler, hasAvatar } from './api/client'
 import type { StockSyncStartResult } from './api/client'
-import type { CrawlEvent, CrawlStatus, CollectionStatus, Crawler, AuthStatus } from './api/types'
+import type { CrawlEvent, CrawlStatus, CollectionStatus, CollectionSyncRun, Crawler, AuthStatus } from './api/types'
 
 type View = 'collection' | 'wantlist' | 'store' | 'settings' | 'logs' | 'queue' | 'account' | 'notifications'
 type LibraryView = Extract<View, 'collection' | 'wantlist' | 'store'>
@@ -66,6 +66,70 @@ const VIEW_AS_USER_KEY = 'discogs-browser.viewAsUser'
 // work the UI has lost track of is rejected by the server rather than starting
 // anything twice.
 const START_CLAIM_TIMEOUT_MS = 20_000
+
+// How often the collection tab asks Postgres how its sync is getting on.
+//
+// It has to ask, because it cannot rely on being told. The sync_* events that
+// narrate a run are broadcast in-process (CrawlManager's _subscribers), and
+// the deployment runs more than one Machine behind one hostname with no
+// affinity between requests -- so this browser's SSE stream and the POST
+// /collection/refresh it just sent need not have landed on the same one. When
+// they don't, no sync_started, no sync_progress and no sync_complete ever
+// reaches this tab: the button never spins, the banner stays empty, and the
+// collection table -- which refetches only when one of those arrives -- keeps
+// showing the library as it was before the sync, new Discogs additions and
+// all. The sync ran; nothing here heard it.
+//
+// The run is also written to a row both Machines can read (library_sync_runs),
+// which is what this polls. The SSE handlers stay as the same-Machine fast
+// path; both drive the same state, and a doubled progress tick costs one extra
+// refetch and nothing else.
+const COLLECTION_SYNC_POLL_MS = 3000
+
+// What a refused start says once the poll finds no sync to show for it.
+// Deliberately not "a sync is already running": POST /collection/refresh
+// answers 409 for every reason start_sync declines, and a Plex match for this
+// user is one of them -- in which case there is no collection sync to follow
+// and the click would otherwise pass in silence.
+// How many failed status reads the poll sits through before giving up, when
+// it is not yet following anything -- a refused start waiting to learn what
+// refused it, or the mount-time read looking for a sync already under way. A
+// sync being followed retries indefinitely instead: it is running, and its
+// outcome is worth waiting for.
+const POLL_READ_ATTEMPTS = 3
+
+const REFUSED_START_MESSAGE =
+  'Could not start a sync — another job is running for your account. Try again shortly.'
+
+function collectionSyncProgressMessage(run: CollectionSyncRun): string {
+  if (run.scope === 'wishlist') return 'Syncing wantlist…'
+  if (run.total_pages) {
+    return `Syncing collection… ${run.synced} records (page ${run.page}/${run.total_pages})`
+  }
+  return 'Syncing collection…'
+}
+
+// No username, unlike the sync_complete event's version of this line: the run
+// row records the sync, not who authenticated it, and the user reading their
+// own banner already knows.
+function collectionSyncOutcomeMessage(run: CollectionSyncRun): string {
+  // A run whose Machine restarted mid-sync stops heartbeating and never
+  // finishes. Saying so is the whole recovery -- the click that follows is
+  // no longer refused, because the claim has gone stale with it.
+  //
+  // Only while the *sync* is the phase that went quiet, though. A stale
+  // `plex_matching` row is a Plex match that died after the sync itself
+  // committed its rows and its final counts, and reporting that as an
+  // unfinished sync would send the user back to redo work that is already
+  // done. The sync's own outcome is the honest line there.
+  if (run.stale && run.status === 'running') {
+    return 'Sync stopped before it finished — sync again to pick up where it left off.'
+  }
+  if (run.status === 'error') return `Sync failed: ${run.error ?? 'unknown error'}`
+  if (run.scope === 'wishlist') return `Synced ${run.wishlist_synced ?? 0} wantlist items`
+  const wantlistPart = run.wishlist_synced != null ? `, ${run.wishlist_synced} wantlist items` : ''
+  return `Synced ${run.synced} records${wantlistPart}`
+}
 
 function formatElapsed(seconds: number | null): string {
   if (seconds === null) return 'unknown'
@@ -444,6 +508,16 @@ export default function App() {
         return
       }
       if (event.status === 'sync_complete') {
+        // Noted, not acted on: the stream has spoken an outcome, so the poll
+        // should not repeat it over whatever comes next (a plex_match_started
+        // from the phase that follows a sync, most immediately). Deliberately
+        // not a release of the follow -- routers/crawl.py replays this
+        // process's whole retained buffer on reconnect, so this event may
+        // belong to an earlier sync entirely, and dropping the follow on it
+        // would lose the refetch for the run actually in flight. The poll
+        // clears this again the moment it sees the run still running.
+        sseAnnouncedOutcomeRef.current = true
+        sseTerminalSeqRef.current += 1
         setSyncing(false)
         if (event.scope === 'wishlist') {
           setSyncStatus(`Synced ${event.wishlist_synced} wantlist items for ${event.username}`, event.id ?? null)
@@ -456,6 +530,8 @@ export default function App() {
         return
       }
       if (event.status === 'sync_error') {
+        sseAnnouncedOutcomeRef.current = true
+        sseTerminalSeqRef.current += 1
         setSyncing(false)
         setSyncStatus(`Sync failed: ${event.error}`, event.id ?? null)
         // Each page's writes (including price_paid) commit before the next page
@@ -672,14 +748,222 @@ export default function App() {
     return () => { cancelled = true }
   }, [backendUp])
 
+  // Follows the run row until it ends, and is what makes a refresh visible at
+  // all when this tab's SSE stream is served by the other Machine -- see
+  // COLLECTION_SYNC_POLL_MS. Restarted by bumping syncPollNonce; the ref
+  // carries what the restart means.
+  //
+  // `adoptTerminal` says whether a run that is already finished may be
+  // reported. A refresh the server accepted may well have finished before the
+  // first poll, and its outcome is this click's answer -- but only the click
+  // knows that, since the row itself looks the same as one from last week.
+  // `idleMessage` is the other half: a refused start whose refusal turns out
+  // not to be a running sync has to say *something*, or the click is the
+  // silent no-op this whole change exists to remove.
+  const [syncPollNonce, setSyncPollNonce] = useState(0)
+  const syncPollIntentRef = useRef<{ adoptTerminal: boolean; idleMessage: string | null } | null>(null)
+  const authed = authState?.state === 'authenticated'
+  // Outside the effect, because the effect restarts and the follow must not.
+  // `authState` is replaced with a fresh object after every backend down/up
+  // transition, so a blip mid-sync would otherwise reset these: the restarted
+  // loop would find a run that finished during the outage, take it for an old
+  // one, and return without refetching -- the stale collection this whole
+  // change exists to prevent, reached by a different road.
+  const followingSyncRef = useRef(false)
+  const lastSyncProgressRef = useRef('')
+  // The banner line is tracked apart from the progress signature, because the
+  // two move at different times. wishlist_synced advances at every wantlist
+  // checkpoint and appears in no rendered line -- collectionSyncProgressMessage
+  // reads page/total_pages/synced for a collection sync and returns a constant
+  // for a wantlist one. Writing the banner off the signature therefore rewrote
+  // it with identical text throughout the wantlist phase, which is invisible
+  // on its own and clobbers whatever the stock sync, judgment run or price
+  // refresh had put there since the last poll.
+  const lastSyncMessageRef = useRef('')
+
+  // Set when the stream speaks a terminal sync event, cleared the moment the
+  // poll sees a run still running. It says only "an outcome has just been
+  // published", which is all the poll needs to know not to publish it again;
+  // it is not evidence about *which* run ended, because a replayed event
+  // carries none.
+  const sseAnnouncedOutcomeRef = useRef(false)
+  // Bumped by the same terminal events. The flag says "an outcome was just
+  // published"; this says *when*, which is what a poll response needs in order
+  // to know whether it is still current. A status request reads the row before
+  // the sync closes and can resolve after the stream has already reported the
+  // ending -- and then the `running` it is holding is simply out of date.
+  const sseTerminalSeqRef = useRef(0)
+
+  // The run has been accounted for. Only the poll says this, and only about
+  // the row it just read.
+  const releaseSyncFollow = useCallback(() => {
+    followingSyncRef.current = false
+    lastSyncProgressRef.current = ''
+    lastSyncMessageRef.current = ''
+    sseAnnouncedOutcomeRef.current = false
+  }, [])
+
+  useEffect(() => {
+    if (!authed) return
+    let cancelled = false
+    const intent = syncPollIntentRef.current
+    syncPollIntentRef.current = null
+    // Only a run this tab has actually watched may write its outcome to the
+    // banner. Otherwise every page load would re-announce the last sync,
+    // however old -- the row is the most recent run, not a fresh event. A
+    // refresh the server accepted counts as watched: the claim is taken by the
+    // request itself, so the run is already there to find.
+    if (intent?.adoptTerminal) followingSyncRef.current = true
+    const idleMessage = intent?.idleMessage ?? null
+    let failedReads = 0
+
+    async function poll() {
+      while (!cancelled) {
+        let status: CollectionStatus | null = null
+        // Read before the request goes out: if a terminal event arrives while
+        // it is in flight, the reply is describing a moment before that ending
+        // and its `running` is stale, however fresh the response looks.
+        const terminalSeqAtRequest = sseTerminalSeqRef.current
+        try {
+          status = await getCollectionStatus()
+          failedReads = 0
+        } catch {
+          // A sync being followed is waited on for as long as it takes: it is
+          // running, and its outcome is worth having. Everything else gets a
+          // bounded number of tries -- a refused start, which has said nothing
+          // yet and would otherwise be the silent refresh this whole change
+          // exists to remove, and the mount-time read that discovers a sync
+          // already under way, which since this effect stopped restarting on
+          // revalidation has no second chance of its own.
+          failedReads += 1
+          if (!followingSyncRef.current && failedReads >= POLL_READ_ATTEMPTS) {
+            // Out of tries. Say what the server already told us with its 409,
+            // if it told us anything; a discovery read has nothing to report.
+            if (idleMessage) setSyncStatus(idleMessage)
+            return
+          }
+        }
+        if (cancelled) return
+        if (status) {
+          const run: CollectionSyncRun | null = status.sync
+          // No run at all: this user has never synced. Nothing here to follow.
+          if (!run) {
+            if (idleMessage) setSyncStatus(idleMessage)
+            return
+          }
+          if (run.running && sseTerminalSeqRef.current !== terminalSeqAtRequest) {
+            // The stream reported an ending while this request was in flight,
+            // so the row was read before the sync closed. Acting on it would
+            // undo the report: clearing the flag lets the next tick republish
+            // the outcome over whatever came after it (the Plex phase
+            // announces itself a beat later), and the progress line would talk
+            // over that same newer status. Wait for a reply that was issued
+            // after the ending instead -- the next tick's.
+          } else if (run.running) {
+            followingSyncRef.current = true
+            // Whatever outcome the stream announced, it was not this run's --
+            // this one is still going.
+            sseAnnouncedOutcomeRef.current = false
+            setSyncing(true)
+            const progress = `${run.page}/${run.total_pages}/${run.synced}/${run.wishlist_synced}`
+            if (progress !== lastSyncProgressRef.current) {
+              lastSyncProgressRef.current = progress
+              // Both writes are gated on the run having actually advanced, not
+              // just on having been asked again. The banner is shared with the
+              // stock sync, the judgment run and the price refresh, any of
+              // which may be running alongside this one and may have written
+              // to it since the last poll -- repeating an unchanged line every
+              // three seconds would talk over all of them. The SSE path has
+              // the same restraint for free: it only speaks when something
+              // happened.
+              //
+              // The refetch is gated on the signature and the banner on the
+              // line itself, because "the run advanced" and "there is
+              // something new to say" are not the same event. Rows committed
+              // under an unchanged line still have to be fetched; a line that
+              // has not changed has nothing to add and would only be talking
+              // over someone else.
+              const message = collectionSyncProgressMessage(run)
+              if (message !== lastSyncMessageRef.current) {
+                lastSyncMessageRef.current = message
+                setSyncStatus(message)
+              }
+              setSyncGeneration(g => g + 1)
+            }
+          } else if (followingSyncRef.current) {
+            const alreadySpoken = sseAnnouncedOutcomeRef.current
+            releaseSyncFollow()
+            setSyncing(false)
+            // The refetch happens either way -- it is the whole point, and the
+            // one thing that must not be lost. The line is skipped only when
+            // the stream has just said the same thing.
+            if (!alreadySpoken) setSyncStatus(collectionSyncOutcomeMessage(run))
+            // Unconditional, not gated on the counters having moved: this is
+            // the tick that pulls in everything the last page committed, and
+            // on a sync whose pages all landed between two polls it is the
+            // only one there is.
+            setSyncGeneration(g => g + 1)
+            fetchPriceStatus()
+            return
+          } else {
+            // Nothing is running, and the run on file is not ours to report.
+            // On a refused start that means the refusal was not a running
+            // sync after all -- POST /collection/refresh answers 409 for any
+            // reason start_sync declines, a Plex match for this user included.
+            if (idleMessage) {
+              setSyncStatus(idleMessage)
+              // ...and refetch regardless. A sync on the other Machine can
+              // finish between the 409 and this first read, and a run that
+              // ended in that gap is indistinguishable here from one that
+              // ended last week -- nothing on the row says which, because the
+              // refusal never named the run that caused it. Being wrong about
+              // *why* a click was refused costs a banner line; being wrong
+              // about the data leaves the table showing the library from
+              // before a sync that has just finished, which is precisely the
+              // failure this change exists to remove. So the cheap half of the
+              // trade is taken every time: one collection read, which on the
+              // ordinary refusal (a Plex match, nothing having finished) is
+              // all it costs.
+              setSyncGeneration(g => g + 1)
+            }
+            return
+          }
+        }
+        await new Promise(r => setTimeout(r, COLLECTION_SYNC_POLL_MS))
+      }
+    }
+    poll()
+    return () => { cancelled = true }
+    // Keyed on whether the user is signed in, not on the authState object:
+    // that object is replaced on every revalidation, and restarting the poll
+    // for one costs nothing but risks everything above.
+  }, [authed, syncPollNonce, setSyncStatus, fetchPriceStatus, releaseSyncFollow])
+
+  const followSyncRun = useCallback((intent: { adoptTerminal: boolean; idleMessage: string | null }) => {
+    syncPollIntentRef.current = intent
+    setSyncPollNonce(n => n + 1)
+  }, [])
+
   const startRefresh = useCallback(async (mode: 'all' | 'new') => {
     setCollectionStatus(null)
     try {
       await refreshCollection(mode)
     } catch (e: any) {
-      setSyncStatus(`Sync failed: ${e.message}`)
+      // 409 is a refused start, not a failed sync, and says no more than
+      // that: the server answers it for every reason start_sync declines --
+      // a sync already running (this tab's own earlier click, another tab's,
+      // or the other Machine's, which this tab could not have heard start) or
+      // a Plex match for this user. Which it was is what the poll below goes
+      // and reads; "Sync failed" would answer neither.
+      if (e?.status !== 409) {
+        setSyncStatus(`Sync failed: ${e.message}`)
+        return
+      }
+      followSyncRun({ adoptTerminal: false, idleMessage: REFUSED_START_MESSAGE })
+      return
     }
-  }, [setSyncStatus])
+    followSyncRun({ adoptTerminal: true, idleMessage: null })
+  }, [setSyncStatus, followSyncRun])
 
   const handleRefresh = useCallback(async (mode?: 'all' | 'new') => {
     if (mode) {
@@ -688,6 +972,13 @@ export default function App() {
     }
     try {
       const status = await getCollectionStatus()
+      // A sync is already under way -- this tab's, another tab's, or the other
+      // Machine's. Neither of the modal's choices could start anything, so
+      // show what is running instead of asking a question already answered.
+      if (status.sync?.running) {
+        followSyncRun({ adoptTerminal: true, idleMessage: null })
+        return
+      }
       if (status.total > 0) {
         setCollectionStatus(status)
         return
@@ -696,7 +987,7 @@ export default function App() {
       // fall through to full refresh
     }
     startRefresh('all')
-  }, [startRefresh])
+  }, [startRefresh, followSyncRun])
 
   // Wantlist tab's refresh has nothing analogous to the "N records already
   // loaded, refresh new or all?" choice that collectionStatus's modal offers --
@@ -706,9 +997,15 @@ export default function App() {
     try {
       await refreshCollection('all', 'wantlist')
     } catch (e: any) {
-      setSyncStatus(`Sync failed: ${e.message}`)
+      if (e?.status !== 409) {
+        setSyncStatus(`Sync failed: ${e.message}`)
+        return
+      }
+      followSyncRun({ adoptTerminal: false, idleMessage: REFUSED_START_MESSAGE })
+      return
     }
-  }, [setSyncStatus])
+    followSyncRun({ adoptTerminal: true, idleMessage: null })
+  }, [setSyncStatus, followSyncRun])
 
   // POST /crawl/start only enqueues, and the shared worker pool broadcasts no
   // lifecycle event when it later picks the work up (the `started` event went

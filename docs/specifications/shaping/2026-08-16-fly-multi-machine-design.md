@@ -73,6 +73,24 @@ Machines is just what server logs do — so they're left alone.
   a separate, larger piece of work, not folded into this change. Accepted
   as a real, known gap rather than silently shipped.
 
+  **Amendment (2026-09-13, branch `claude/practical-cerf-kvjwbf`):** still the
+  shape of things, with one exception carved out — the collection sync. The
+  "only the eventual effect is consistent" consolation above turns out to
+  depend on the view re-reading those rows by itself, which the Store tab does
+  and the collection table does not: its refetch is keyed on `syncGeneration`,
+  which only the `sync_*` SSE handlers bump. So for that one job the missing
+  narration was also the only thing that would ever have shown its result, and
+  a refresh handled by the other Machine looked exactly like a button that did
+  nothing — which is how it was reported. That sync now also writes its
+  progress and outcome to a `library_sync_runs` row, and the client polls it;
+  `CrawlManager.sync_running`'s per-process "already running" guard (which let
+  the other Machine start a *second* concurrent sync for the same user) is
+  backed by a claim on that row. Everything else here is unchanged: the stock
+  sync's and the crawl worker's narration still reach only the Machine
+  producing them, and the broadcast bridge is still the larger separate piece
+  of work. See
+  [`2026-09-13-collection-sync-run-visibility-design.md`](2026-09-13-collection-sync-run-visibility-design.md).
+
 ## Design
 
 ### `app_config` (global, replaces `config.json`)

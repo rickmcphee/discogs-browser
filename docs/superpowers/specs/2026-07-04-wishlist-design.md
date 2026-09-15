@@ -126,8 +126,19 @@ the reuse the original ask was after.
 - `routers/releases.py` (`/api/releases` and `/api/artists`) passes through a
   `scope` query param from the frontend to these functions.
 - No new routes. `/collection/status` and `/collection/refresh` keep their
-  existing semantics (`/collection/status`'s count stays scoped to
-  `in_collection = 1`, since it drives the "already loaded" collection modal).
+  existing semantics (~~`/collection/status`'s count stays scoped to
+  `in_collection = 1`~~, since it drives the "already loaded" collection modal).
+
+  **Correction (2026-09-13):** that parenthesis has not described the code for
+  some time — `collection_status` counts the caller's `library_items` rows with
+  no `in_collection` filter, so a wantlist-only library also opens the modal.
+  Left as it stands rather than "fixed": what the modal asks is whether there is
+  anything here already, and the two "Refresh New Only"/"Refresh All" choices
+  below it read the same either way. Noted because the reply *has* changed
+  shape since — it now also carries a `sync` object describing the current or
+  most recent collection sync, which the client polls because the events
+  narrating one never leave the Machine running it. See
+  [`2026-09-13-collection-sync-run-visibility-design.md`](../../specifications/shaping/2026-09-13-collection-sync-run-visibility-design.md).
 
 ---
 
