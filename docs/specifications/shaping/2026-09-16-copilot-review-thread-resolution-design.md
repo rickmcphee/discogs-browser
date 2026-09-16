@@ -184,7 +184,10 @@ instead — **if `required_review_thread_resolution` is ever enabled, threads on
 the promotion pull request are left for a human to resolve.** An agent still
 fixes what the finding names and still replies saying so; it just does not
 perform the resolve there, because with that setting on the resolve *is* the
-permit. While the setting stays off, a resolve carries no permission and the
+permit. Its completion is then reported by the running ledger comment rather
+than by thread state, for the reason set out under Consequences: the open thread
+is Copilot's either way, so on that pull request thread state no longer
+distinguishes finished from unfinished. While the setting stays off, a resolve carries no permission and the
 ordinary rule applies.
 
 Stated generally, because it is the whole reason this stays a convention rather
@@ -205,19 +208,30 @@ permit and stops being worth reading.
 
 ## Consequences
 
-- An open **Copilot** thread on a pull request now carries a meaning it did not
-  before: the agent is not finished with it.
-- The signal is over Copilot's threads specifically, **not** over GitHub's
-  unresolved-conversation badge, and the gap between the two is worth knowing
-  because the badge does not distinguish authors. Two cases above deliberately
-  leave a thread open after the agent is done with it: the owner's own threads,
-  which are the owner's to resolve, and — if `required_review_thread_resolution`
-  is ever enabled — promotion pull request threads, which are left for a human by
-  design. On a pull request carrying either, a nonzero badge is not evidence of
-  unfinished agent work, and the question to ask is whether any *Copilot* thread
-  is open. Where neither applies, which is the ordinary case, badge and signal
-  agree. That is a real cost to reading this at a glance, and it is the price of
-  the two exceptions rather than an oversight in them.
+- On an ordinary pull request — which is every pull request in this repository
+  today — an open **Copilot** thread now carries a meaning it did not before:
+  the agent is not finished with it.
+- That invariant is scoped, and the two limits on it are different in kind, which
+  is worth spelling out because collapsing them into one leaves a hole. The
+  first is about *authorship*: the signal is over Copilot's threads rather than
+  GitHub's unresolved-conversation badge, because the badge does not distinguish
+  authors and the owner's own threads stay open by design. A nonzero badge is
+  therefore not by itself evidence of unfinished agent work.
+- The second limit survives that filter, and an earlier draft of this document
+  missed it for exactly that reason. Should `required_review_thread_resolution`
+  ever be enabled, a promotion pull request's threads are left for a human to
+  resolve — and those are *Copilot's* threads, so an open one there means the
+  agent finished and declined to perform the resolve, not that it is still
+  working. Asking "is any Copilot thread open" returns the wrong answer, and no
+  refinement of *whose* threads to count fixes it, because the thread is
+  Copilot's and open in both the finished and unfinished cases.
+- So on that one pull request in that one configuration, thread state cannot
+  carry the signal at all, and the running ledger comment carries it instead —
+  kept there whether or not a round produced suppressed findings, and holding
+  the disposition of every finding rather than only the threadless ones. It is
+  already required, already edited in place each round, and already the thing a
+  reader consults when resolution is unavailable. Nothing new to maintain: the
+  case where the cheap signal fails is the case the expensive one already covers.
 - That meaning is only as good as the reply discipline above. A session that
   resolves without replying has not saved the owner a read, it has hidden one.
 - Suppressed findings get a written disposition they previously only got when
