@@ -306,9 +306,10 @@ next click is no longer refused.
 
 Every exit from `_sync_collection_blocking` closes it: the three early error
 returns (no user, no Discogs token, collection-fields fetch failed) now go
-through one `sync_error` helper that logs, records *and* broadcasts — the
-record before the broadcast, because the close is what reveals whether there
-is still a run of ours to speak for. A dispossessed worker can reach an ordinary exception, and
+through one `sync_error` helper that records, then logs *and* broadcasts — the
+record first, because the close is what reveals whether there is still a run of
+ours to speak for, and the log on the announcing side of that answer rather
+than ahead of it. A dispossessed worker can reach an ordinary exception, and
 announcing first tells every browser on this Machine that the run failed when
 the run belongs to the replacement and may be going perfectly well; a terminal
 sync event also sets the client's "an outcome was just published" flag, so the
@@ -333,6 +334,13 @@ the failure faithfully, to a banner, in a generic wording that named neither
 the fault nor the fix. What the run row says is now also what the log says,
 and for a Discogs error status both name the HTTP status — see
 `crawl_manager._discogs_request_error`.
+
+That placement is not cosmetic. A dispossessed worker reaching an ordinary
+exception must not write "Collection sync failed for alice" to the Logs tab
+either: the tab is shared rather than per-run, so the line would be the same
+false report the suppressed broadcast exists to prevent, in the one place a
+reader goes to check. What happened to that worker is still recorded — the
+caller's own "this sync's run was taken over" warning says it.
 
 The traceback is the one thing the two do not share, and it is withheld
 exactly where the message was sanitized. `logging_config`'s queue handler

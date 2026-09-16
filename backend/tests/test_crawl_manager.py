@@ -2555,14 +2555,19 @@ async def test_a_transient_release_failure_does_not_strand_the_claim(pg_schema, 
 
 
 @respx.mock
-async def test_a_dispossessed_worker_does_not_announce_a_failure_for_the_run_that_replaced_it(pg_schema, monkeypatch):
+async def test_a_dispossessed_worker_does_not_announce_a_failure_for_the_run_that_replaced_it(pg_schema, monkeypatch, caplog):
     """sync_error closes before it announces.
 
     A dispossessed worker can reach an ordinary exception. Announcing first
     tells every browser on this Machine that the run failed -- when the run
     belongs to the replacement now, and may be running perfectly well. A
     terminal sync event also sets the client's "an outcome was just published"
-    flag, so the false failure can swallow the replacement's real one."""
+    flag, so the false failure can swallow the replacement's real one.
+
+    The log line is held back on the same evidence. The Logs tab is shared
+    rather than per-run, so "Collection sync failed for alice" written from a
+    worker that no longer owns the run is that same false report, in the one
+    place a reader goes to check it."""
     import config
     monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
     monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "s")
@@ -2596,12 +2601,14 @@ async def test_a_dispossessed_worker_does_not_announce_a_failure_for_the_run_tha
     monkeypatch.setattr(discogs, "iter_collection_pages", _pages)
 
     manager = CrawlManager()
-    assert await manager.start_sync(user["id"], "all") is True
-    await manager._sync_tasks[user["id"]]
+    with caplog.at_level(logging.ERROR, logger="crawl_manager"):
+        assert await manager.start_sync(user["id"], "all") is True
+        await manager._sync_tasks[user["id"]]
 
     # Nothing on this Machine's stream claims a sync failed: the run this
     # worker would have been speaking for is the replacement's.
     assert "sync_error" not in [e["status"] for e in manager.recent_events()]
+    assert not [r for r in caplog.records if "Collection sync failed" in r.getMessage()]
     with db.user_scope(user["id"]) as conn:
         run = db.get_library_sync_run(conn, user["id"])
     assert (run["status"], run["running"]) == ("running", True)

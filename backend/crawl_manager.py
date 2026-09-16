@@ -1163,13 +1163,22 @@ class CrawlManager:
             Only a definite False silences it. A None means the close could not
             be attempted, which is no evidence of a takeover, and a run with no
             token never entered the claim protocol at all -- both still speak,
-            because staying quiet about a real failure is the worse error."""
-            log.error(
-                "Collection sync failed for %s: %s",
-                username or f"user {user_id}", message, exc_info=exc_info,
-            )
+            because staying quiet about a real failure is the worse error.
+
+            The log line sits under that same guard, and for the same reason:
+            a definite False means this worker was dispossessed, so the failure
+            is not the run's to report -- the replacement owns it and may be
+            running perfectly well. "Collection sync failed for alice" in the
+            Logs tab would be that false report in the one place a reader goes
+            to check, and the Logs tab is shared rather than per-run. What
+            happened to *this* worker is still recorded: the caller's own
+            "this sync's run was taken over" warning says it."""
             closed = finish_run("error", error=message)
             if not (run_token is not None and closed is False):
+                log.error(
+                    "Collection sync failed for %s: %s",
+                    username or f"user {user_id}", message, exc_info=exc_info,
+                )
                 broadcast({"status": "sync_error", "error": message})
             return closed
 
