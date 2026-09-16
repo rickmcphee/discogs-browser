@@ -4,7 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "crawlers"))
 
-from crawler import clean_search_text, strip_stop_words as _strip_stop_words, title_variants as _title_variants
+from crawler import clean_search_text, https_host, strip_stop_words as _strip_stop_words, title_variants as _title_variants
 from amazon import _amazon_format_keywords, Crawler
 
 
@@ -143,3 +143,37 @@ def test_artist_strips_colon():
 
 def test_artist_normal():
     assert Crawler._artist({"artist": "Miles Davis"}) == "Miles Davis"
+
+
+# ---------------------------------------------------------------------------
+# https_host
+# ---------------------------------------------------------------------------
+
+def test_https_host_returns_the_host_of_a_good_url():
+    assert https_host("https://m.media-amazon.com/images/I/x.jpg") == "m.media-amazon.com"
+    assert https_host("https://www.ebay.com/itm/123") == "www.ebay.com"
+
+
+def test_https_host_rejects_a_url_with_no_host():
+    # A prefix test passes this, and it is neither a link nor a picture. It
+    # matters more than it looks: the Store row *prefers* the listing image
+    # over the target's cover, so a host-less value beats good art and renders
+    # a broken thumbnail rather than falling back.
+    assert https_host("https:///image.jpg") is None
+
+
+def test_https_host_answers_none_rather_than_raising_on_a_malformed_authority():
+    # urlparse raises ValueError here ("https://[" is an unterminated IPv6
+    # literal). Parsing inline aborted the whole crawl over one bad string,
+    # which on the stock-item path reads to the consecutive-failure breaker as
+    # the site being down.
+    assert https_host("https://[") is None
+    assert https_host("https://[::1") is None
+
+
+def test_https_host_rejects_non_https_and_non_strings():
+    assert https_host("http://plain.example/x.jpg") is None
+    assert https_host("data:image/png;base64,iVBORw0KGgo=") is None
+    assert https_host("") is None
+    assert https_host(None) is None
+    assert https_host(123) is None

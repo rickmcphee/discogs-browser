@@ -4,6 +4,8 @@ import asyncio
 import random
 import re
 from pathlib import Path
+from typing import Optional
+from urllib.parse import urlparse
 
 from logging_config import get_logger
 
@@ -12,6 +14,34 @@ log = get_logger("crawler")
 
 class BotDetectedError(Exception):
     """Raised by a crawler when it detects an anti-bot interstitial."""
+
+
+def https_host(url) -> Optional[str]:
+    """The hostname of `url` when it is a well-formed https URL, else None.
+
+    Two hazards in one guard, both reachable from values a crawler reads off a
+    site or an API and hands to the browser as a link or an <img src>:
+
+    urlparse *raises* on a malformed authority -- "https://[" is an
+    unterminated IPv6 literal -- so a caller that parses inline aborts the
+    whole crawl over one bad string. On the stock-item path that reads to the
+    consecutive-failure breaker as the site being down.
+
+    And a prefix test passes "https:///x.jpg", which has no hostname and is
+    neither a link nor a picture. That one is not merely useless: a listing
+    image is *preferred* over the target's own cover, so a host-less value
+    wins over good art and renders a broken thumbnail.
+
+    Answering None for both lets every caller fall back, which is what each of
+    them already has in hand.
+    """
+    if not isinstance(url, str) or not url:
+        return None
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return None
+    return parsed.hostname if parsed.scheme == "https" else None
 
 
 def clean_search_text(text: str) -> str:

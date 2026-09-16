@@ -40,9 +40,10 @@ cover, not the listing's."
   raising; see the decision below. Amazon reports the search
   tile's `img.s-image`, captured beside the heading its artist/title check
   matched, because that tile is what was actually accepted; it takes the
-  `src` only when it is https, since a tile that has not finished loading
-  carries a base64 `data:` placeholder — the wrong picture, and kilobytes of
-  it on every row that stored it.
+  `src` only when it is https with a hostname, since a tile that has not
+  finished loading carries a base64 `data:` placeholder — the wrong picture,
+  and kilobytes of it on every row that stored it. Both crawlers read the
+  host through one `crawler.https_host` helper; see the decision below.
 - `backend/db.py` — `stock_items.listing_image_url` and
   `listings.listing_image_url` (both nullable TEXT, added via `ALTER TABLE
   ... ADD COLUMN IF NOT EXISTS` alongside `listing_title`). `upsert_listing`
@@ -121,20 +122,26 @@ Out of scope:
   thumbnail rendered at 40-56px. The tile's `img.s-image` is the picture
   beside the heading the match was made on, and capturing both together
   keeps them describing one item.
-- **Parsing a URL must not be able to fail the crawl.** `urlparse` *raises*
-  on a malformed authority — `"https://["` is an unterminated IPv6 literal —
-  so checking the scheme inline meant one bad string in an otherwise fine
-  response aborted the whole search, which on the stock-item path reads to
-  the consecutive-failure breaker as the site being down. It also skipped
-  past the fallback each caller carefully provides: a good `thumbnailImages`
-  entry under a malformed gallery image, and the `legacyItemId` URL under a
-  malformed `itemWebUrl`. `_https_host` parses inside a `try` and answers
-  None, so an unparseable value is merely *not* a URL and the caller falls
-  back. It also requires a hostname, since `"https:///x.jpg"` parses clean
-  without one and is neither a link nor a picture. `_is_ebay_item_url` reads
-  through the same helper: it had the identical inline parse on
-  `itemWebUrl`, predating this change, and one helper removes both rather
-  than leaving the crash one function above the fix.
+- **One `https_host` guard, in `crawler.py`, for every URL a crawler hands
+  the browser.** Two hazards, and checking them at each call site got both
+  wrong in a different way. `urlparse` *raises* on a malformed authority —
+  `"https://["` is an unterminated IPv6 literal — so checking the scheme
+  inline meant one bad string in an otherwise fine response aborted the whole
+  search, which on the stock-item path reads to the consecutive-failure
+  breaker as the site being down. It also skipped past the fallback each
+  caller carefully provides: a good `thumbnailImages` entry under a malformed
+  gallery image, and the `legacyItemId` URL under a malformed `itemWebUrl`.
+  Separately, a `startswith("https://")` prefix test — which is what the
+  Amazon tile used — passes `"https:///x.jpg"`, which has no hostname. That
+  one is not merely useless: the row *prefers* `listing_image_url` over
+  `cover_image_url`, so a host-less value beats the target's good art and
+  renders a broken thumbnail, which is precisely the fallback this design
+  promises. `https_host` parses inside a `try`, answers None rather than
+  raising, and requires a hostname, so every caller simply falls back. It
+  lives in `crawler.py` because `amazon.py` and `ebay_api.py` both already
+  import from there, and because the third caller — `_is_ebay_item_url`,
+  which had the identical inline parse on `itemWebUrl` and predates this
+  change — is the evidence that a per-call-site check does not stay right.
 - **Best-effort capture, never a failure.** A missing thumbnail leaves
   `matched_image` empty and the target's cover standing. It must not raise:
   on the stock-item path a raise is a site-health signal to the
@@ -167,6 +174,12 @@ Out of scope:
   text while the own row keeps the store's cover; a row with a
   `listing_title` but no `listing_image_url` falls back to the target's cover
   *and* to the target's title as that image's alt text.
-- Amazon's `search()` is Playwright-driven and, per `CLAUDE.md`, not
-  unit-tested; the tile thumbnail capture is a manual-verification item, as
-  the heading capture was.
+- `backend/tests/test_crawler_utils.py` — `https_host` directly: it returns
+  the host of a good URL, rejects a host-less `https:///…`, answers None
+  rather than raising on `"https://["`, and rejects non-https, empty and
+  non-string values. This is where the Amazon guard is actually covered:
+  `search()` is Playwright-driven and, per `CLAUDE.md`, not unit-tested, so
+  routing its check through a shared pure function is what makes it testable
+  at all.
+- Amazon's `search()` itself remains a manual-verification item for the tile
+  capture, as the heading capture was.

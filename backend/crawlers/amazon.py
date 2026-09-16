@@ -2,7 +2,7 @@ import asyncio
 import random
 import re
 from logging_config import get_logger
-from crawler import BotDetectedError, clean_search_text, strip_stop_words, title_variants
+from crawler import BotDetectedError, clean_search_text, https_host, strip_stop_words, title_variants
 
 log = get_logger("crawlers.amazon")
 
@@ -207,11 +207,15 @@ class Crawler:
                             img_el = item.locator("img.s-image").first
                             if await img_el.count():
                                 src = (await img_el.get_attribute("src")) or ""
-                                # https only: a tile that has not finished
-                                # loading carries a base64 data: placeholder,
-                                # which is both the wrong picture and kilobytes
-                                # of it to store on every row.
-                                if src.startswith("https://"):
+                                # https with a real host only. A tile that has
+                                # not finished loading carries a base64 data:
+                                # placeholder -- the wrong picture, and
+                                # kilobytes of it on every row that stored it.
+                                # A prefix test is not enough: it passes
+                                # "https:///x.jpg", and since the UI *prefers*
+                                # the listing image, a host-less value beats
+                                # the target's good cover and renders broken.
+                                if https_host(src):
                                     matched_image = src
                         except Exception:
                             matched_image = ""
