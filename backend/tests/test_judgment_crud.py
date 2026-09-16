@@ -886,6 +886,162 @@ def test_backfill_reconciles_an_identity_keyed_before_its_stock_row_came_back(pg
         assert db.backfill_stock_keys(conn) == 0
 
 
+def test_the_sweep_does_not_overwrite_a_key_a_worker_wrote_mid_sweep(pg_test_db, monkeypatch):
+    """The sweep reads a row, folds it in Python, then writes it back, and the
+    crawl worker pool takes no part in the stock-sync lock. Under READ
+    COMMITTED, one transaction is not isolation: a worker can write the row
+    between the read and the write, and an unconditional UPDATE would put the
+    fold of a title the row no longer has over the worker's own.
+
+    That leaves the two tables *equal* -- the identity pass copies the same
+    stale value -- so a later sweep, which now looks for disagreement, has
+    nothing to notice and the row keeps a key matching neither of its titles
+    for good. (Copilot, PR #368, round 11.)
+    """
+    import psycopg
+    import config
+
+    with db.get_admin_pool().connection() as conn:
+        item_key = _seed_release_crawler_item(
+            conn, "Marketplace", "https://m/a", "Album A Remixes"
+        )
+        conn.commit()
+        # The state an old binary leaves: no key on the stock row.
+        conn.execute("UPDATE stock_items SET record_key = NULL WHERE item_key = %s", [item_key])
+        conn.commit()
+
+    fired = []
+
+    def _worker_writes_first(title, artist=None):
+        # Stands in for the crawl worker: a separate, committed transaction
+        # landing between the sweep's SELECT and its UPDATE. Once only, so the
+        # sweep's own folds still happen.
+        if not fired:
+            fired.append(True)
+            worker = psycopg.connect(config.DATABASE_URL, autocommit=True)
+            try:
+                worker.execute(
+                    "UPDATE stock_items SET listing_title = %s, title_key = %s, record_key = %s "
+                    "WHERE item_key = %s",
+                    ["Album A Deluxe", title_key("Album A Deluxe", "Artist A"),
+                     record_key("Album A Deluxe", "Artist A"), item_key],
+                )
+                worker.execute(
+                    "UPDATE stock_item_identities SET record_key = %s WHERE item_key = %s",
+                    [record_key("Album A Deluxe", "Artist A"), item_key],
+                )
+            finally:
+                worker.close()
+        return record_key(title, artist)
+
+    monkeypatch.setattr(db, "record_key", _worker_writes_first)
+
+    with db.get_admin_pool().connection() as conn:
+        db.backfill_stock_keys(conn)
+        conn.commit()
+
+    monkeypatch.undo()
+
+    with db.get_admin_pool().connection() as conn:
+        stock = conn.execute(
+            "SELECT listing_title, record_key FROM stock_items WHERE item_key = %s", [item_key]
+        ).fetchone()
+        identity = conn.execute(
+            "SELECT record_key FROM stock_item_identities WHERE item_key = %s", [item_key]
+        ).fetchone()
+
+    assert fired, "the stand-in worker never ran; the test proves nothing"
+    # The worker's write stands: the sweep had nothing newer to say about a row
+    # somebody else had just keyed.
+    assert stock["listing_title"] == "Album A Deluxe"
+    assert stock["record_key"] == record_key("Album A Deluxe", "Artist A")
+    assert identity["record_key"] == stock["record_key"]
+
+
+class _FireAfter:
+    """Passes everything to a real connection, and runs `then` once, on a
+    separate committed connection, straight after a statement matching
+    `marker`. A stand-in for the crawl worker pool, which holds no part of the
+    stock-sync lock and so can commit between any two of the sweep's
+    statements."""
+
+    def __init__(self, conn, marker, then):
+        self._conn = conn
+        self._marker = marker
+        self._then = then
+        self.fired = False
+
+    def execute(self, sql, *args, **kwargs):
+        result = self._conn.execute(sql, *args, **kwargs)
+        if not self.fired and self._marker in str(sql):
+            self.fired = True
+            self._then()
+        return result
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
+def test_the_sweep_does_not_overwrite_an_identity_a_worker_rekeyed_mid_sweep(pg_test_db):
+    """The other half of the same window, on the identity pass.
+
+    Here the stock row is already keyed, so only the identity is out of step
+    and only the second pass acts. Its UPDATE cannot ask "is this still NULL"
+    -- replacing a non-NULL key is the whole point of the pass -- so it
+    compares against the value its own SELECT read instead. Without that, the
+    sweep writes the key it read moments ago over one a worker has since
+    computed from a newer title. (Copilot, PR #368, round 11.)
+    """
+    import psycopg
+    import config
+
+    with db.get_admin_pool().connection() as conn:
+        item_key = _seed_release_crawler_item(
+            conn, "Marketplace", "https://m/a", "Album A Remixes"
+        )
+        conn.commit()
+        # Keyed stock row, stale identity: the pair only the second pass fixes.
+        conn.execute(
+            "UPDATE stock_item_identities SET record_key = %s WHERE item_key = %s",
+            [record_key("Album A", "Artist A"), item_key],
+        )
+        conn.commit()
+
+    def _worker_rekeys_both():
+        worker = psycopg.connect(config.DATABASE_URL, autocommit=True)
+        try:
+            worker.execute(
+                "UPDATE stock_items SET listing_title = %s, title_key = %s, record_key = %s "
+                "WHERE item_key = %s",
+                ["Album A Deluxe", title_key("Album A Deluxe", "Artist A"),
+                 record_key("Album A Deluxe", "Artist A"), item_key],
+            )
+            worker.execute(
+                "UPDATE stock_item_identities SET record_key = %s WHERE item_key = %s",
+                [record_key("Album A Deluxe", "Artist A"), item_key],
+            )
+        finally:
+            worker.close()
+
+    with db.get_admin_pool().connection() as conn:
+        proxy = _FireAfter(conn, "FROM stock_item_identities i", _worker_rekeys_both)
+        db.backfill_stock_keys(proxy)
+        conn.commit()
+
+    assert proxy.fired, "the stand-in worker never ran; the test proves nothing"
+
+    with db.get_admin_pool().connection() as conn:
+        stock = conn.execute(
+            "SELECT record_key FROM stock_items WHERE item_key = %s", [item_key]
+        ).fetchone()
+        identity = conn.execute(
+            "SELECT record_key FROM stock_item_identities WHERE item_key = %s", [item_key]
+        ).fetchone()
+
+    assert identity["record_key"] == record_key("Album A Deluxe", "Artist A")
+    assert identity["record_key"] == stock["record_key"]
+
+
 def test_a_sibling_is_not_rebilled_after_an_identity_is_reconciled(pg_test_db):
     """The consequence of the above, end to end. A second shop's copy of the
     same record finds its verdict by matching its own record_key against the

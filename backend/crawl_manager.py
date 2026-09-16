@@ -2163,12 +2163,13 @@ class CrawlManager:
             # mis-billed whether this runs or not. What it buys is that such a
             # row takes part in *this* run instead of waiting for the next.
             #
-            # That holds only because the sweep keys a stock row and reconciles
-            # its identity in one transaction. A keyed stock row whose identity
-            # still holds a different key *would* be mis-billed -- the record
-            # match runs one against the other -- and the sweep is the only
-            # thing that can produce that pair, so it must never leave one
-            # behind. See backfill_stock_keys.
+            # That holds only because the sweep never commits a keyed stock
+            # row whose identity holds a different key. *That* pair would be
+            # mis-billed -- the record match runs one against the other -- and
+            # the sweep is the only thing that can produce it. What stops it
+            # is not the shared transaction, which buys atomicity and not
+            # isolation, but that both of its writes are conditional on the
+            # row still holding what it read. See backfill_stock_keys.
             #
             # Which is also why it does not need to be atomic with the queries
             # below. The crawl worker pool writes stock rows continuously and

@@ -1095,6 +1095,7 @@ def backfill_stock_keys(conn) -> int:
         "SELECT id, artist, title, listing_title FROM stock_items "
         "WHERE title_key IS NULL OR record_key IS NULL"
     ).fetchall()
+    keyed_rows = 0
     if rows:
         with conn.cursor() as cur:
             # Both columns rewritten whenever either is missing, rather than
@@ -1102,8 +1103,20 @@ def backfill_stock_keys(conn) -> int:
             # fields, so a row needing one is no cheaper to fix than a row
             # needing both, and the pair can never be left disagreeing about
             # which title they read.
+            #
+            # Still NULL, re-checked at write time, because the fold in
+            # between happens in Python and the crawl worker pool takes no
+            # part in the stock-sync lock. One transaction is not isolation
+            # here: under READ COMMITTED a worker can write this row after the
+            # SELECT above, and an unconditional UPDATE would put the fold of
+            # a title the row no longer has over the worker's own. A worker
+            # writes both keys, so a row it has touched no longer matches this
+            # predicate and its value stands. Nothing is lost by yielding:
+            # what the worker wrote is this sweep's answer, computed from a
+            # newer title.
             cur.executemany(
-                "UPDATE stock_items SET title_key = %s, record_key = %s WHERE id = %s",
+                "UPDATE stock_items SET title_key = %s, record_key = %s "
+                "WHERE id = %s AND (title_key IS NULL OR record_key IS NULL)",
                 [
                     (
                         title_key(row["listing_title"] or row["title"], row["artist"]),
@@ -1113,6 +1126,7 @@ def backfill_stock_keys(conn) -> int:
                     for row in rows
                 ],
             )
+            keyed_rows = cur.rowcount
     # Copied from the item's live stock row where it still has one, not folded
     # again from this table's own artist/title. The two tables' names disagree
     # on the release-crawler path: stock_items keys off `listing_title` (the
@@ -1133,7 +1147,8 @@ def backfill_stock_keys(conn) -> int:
     # back to its own name.
     identities = conn.execute(
         """
-        SELECT i.item_key, i.artist, i.title, s.record_key AS stock_record_key
+        SELECT i.item_key, i.artist, i.title, i.record_key,
+               s.record_key AS stock_record_key
         FROM stock_item_identities i
         LEFT JOIN LATERAL (
             SELECT record_key
@@ -1146,21 +1161,34 @@ def backfill_stock_keys(conn) -> int:
            OR (s.record_key IS NOT NULL AND s.record_key <> i.record_key)
         """
     ).fetchall()
+    keyed_identities = 0
     if identities:
         with conn.cursor() as cur:
+            # Compare-and-set on the value the SELECT read, for the same
+            # reason the stock pass re-checks its NULLs: a worker writing this
+            # identity between the two statements has written a key from a
+            # newer title, and overwriting it would leave the pair agreeing on
+            # a value matching neither table's current name -- which the
+            # disagreement test above, by construction, could never notice
+            # again. Here the old value cannot stand in for "untouched", since
+            # replacing a non-NULL one is the point, so the read value is
+            # carried into the predicate instead.
             cur.executemany(
-                "UPDATE stock_item_identities SET record_key = %s WHERE item_key = %s",
+                "UPDATE stock_item_identities SET record_key = %s "
+                "WHERE item_key = %s AND record_key IS NOT DISTINCT FROM %s",
                 [
                     (
                         row["stock_record_key"]
                         if row["stock_record_key"] is not None
                         else record_key(row["title"], row["artist"]),
                         row["item_key"],
+                        row["record_key"],
                     )
                     for row in identities
                 ],
             )
-    return len(rows) + len(identities)
+            keyed_identities = cur.rowcount
+    return keyed_rows + keyed_identities
 
 
 # Granting BYPASSRLS to a role requires the executing role to be a Postgres

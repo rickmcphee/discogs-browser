@@ -246,11 +246,28 @@ row lived — the same silent re-billing, now permanent. The identity pass
 therefore selects on *disagreement*: no key, or a key the live stock row does
 not share.
 
-Both passes are one transaction, and that is what lets the sweep stay a
-convenience rather than a correctness guard. An unkeyed stock row is skipped
-by everything; a keyed stock row whose identity disagrees is not, and the
-sweep is the only thing that can produce that pair — so it must never commit
-one.
+Third — and this is where the second version of it was still wrong — **both
+of its writes are conditional on the row still holding what it read.** The
+sweep reads, folds in Python, and writes back, and the crawl worker pool takes
+no part in the stock-sync lock, so a worker can commit in between. Running
+both passes in one transaction does not help: that buys atomicity, and what is
+wanted here is isolation, which `READ COMMITTED` does not give. An
+unconditional `UPDATE` puts the fold of a title the row no longer has over the
+worker's own — and because the identity pass then copies that same stale value
+across, the two end up *equal*, which is exactly the state the disagreement
+test above can never notice again. Permanent, and invisible.
+
+So the stock pass re-checks that the key is still NULL, which a worker's write
+(both keys, always together) makes false; and the identity pass, which cannot
+use that test because replacing a non-NULL key is its whole purpose, compares
+against the value its own `SELECT` returned. Either way the sweep yields, and
+yields nothing: what the worker wrote is the same answer computed from a newer
+title.
+
+With those three, the sweep stays a convenience rather than a correctness
+guard. An unkeyed stock row is skipped by everything; a keyed stock row whose
+identity disagrees is not, and the sweep is the only thing that can produce
+that pair — so it must never commit one.
 
 Populated by `replace_stock_items` and `upsert_stock_item_from_release`, and
 swept by the boot/end-of-sync backfill that today fills `title_key` only. That
@@ -547,6 +564,9 @@ user actually reads.
 - It also reconciles an identity whose key its live stock row does not share —
   the pair a boot sweep plus an old binary's restock leaves — and having done
   so, finds nothing left to do on the next call.
+- Neither pass overwrites what a worker committed between its own read and
+  write: one test races the stock pass, one races the identity pass, and each
+  asserts the worker's newer key survives in *both* tables.
 - A record whose judged listing is no longer stocked at all still answers
   "already judged" — the case a join through `stock_items` would miss.
 - Two simultaneous starts for one user produce one run, and two users'
