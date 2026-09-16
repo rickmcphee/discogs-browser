@@ -35,11 +35,17 @@ Audited on 2026-09-16, across the twelve most recently closed pull requests into
 
 So the convention below is mostly a transcription of what sessions have already
 been doing. Writing it down is still worth it, and the reason is the usual one:
-an undocumented habit holds exactly as long as each session happens to have it,
-and the first session that does not have it produces a pull request that looks
-identical to a handled one. The owner cannot tell "no open threads because
-everything was addressed" from "no open threads because this session never
-opened any" without reading the timeline again — which is the problem.
+an undocumented habit holds exactly as long as each session happens to have it.
+
+What it guards against is worth stating precisely, because the obvious version is
+wrong. A session that simply ignores the review does *not* produce a
+false "everything is handled" — Copilot opens the threads, so ignoring them
+leaves them open, and the signal reads correctly as unfinished work. Silence is
+the safe failure here. The two ways the signal can read "handled" when it is not
+are narrower: **a thread resolved with nothing said**, which is
+indistinguishable from an addressed one, and **a finding that never had a thread
+to leave open** — the body-only channel below. Both of those are what the rules
+that follow are built around.
 
 ## The half the signal misses
 
@@ -166,10 +172,20 @@ Where that actually bites is narrow, and saying so keeps the claim honest. On th
 owner's own pull requests the bypass waives the `pull_request` rule entire, so
 the setting binds nothing there either way. The one pull request it would bind is
 the bot-opened promotion from `integration` into `main` — the one that deploys,
-and the one that other document calls "the unattended one." So: an agent does not
-resolve threads on the promotion pull request to clear a merge gate. If a finding
-there needs addressing, it gets addressed, and the resolve follows the fix as
-everywhere else.
+and the one that other document calls "the unattended one."
+
+The carve-out therefore has to be mechanical rather than a statement of intent.
+An earlier draft of this document said an agent does not resolve promotion
+threads *to clear a merge gate*, and that is unenforceable: with the setting on,
+the resolve clears the gate whatever the agent meant by it, and no reader of the
+pull request can tell the two apart afterwards. A rule written on motive cannot
+bind an action whose effect is identical either way. So it is stated by effect
+instead — **if `required_review_thread_resolution` is ever enabled, threads on
+the promotion pull request are left for a human to resolve.** An agent still
+fixes what the finding names and still replies saying so; it just does not
+perform the resolve there, because with that setting on the resolve *is* the
+permit. While the setting stays off, a resolve carries no permission and the
+ordinary rule applies.
 
 Stated generally, because it is the whole reason this stays a convention rather
 than a setting: **resolution here is a report to the owner, not a permission to
