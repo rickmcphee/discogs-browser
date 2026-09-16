@@ -2062,9 +2062,10 @@ class CrawlManager:
 
         # Placeholder until the query below confirms the user still exists --
         # keeps the except block's own log line safe even if that query itself
-        # (or anything after it) is what raises. Defined out here, with
-        # broadcast, precisely so the handlers can never meet an unbound name:
-        # neither line can raise, and everything that can is inside the try.
+        # (or anything after it) is what raises. Defined out here, with the
+        # helpers, precisely so the handlers can never meet an unbound name:
+        # none of these definitions can raise, and everything that can --
+        # including the opening broadcast -- is inside the try.
         username = f"user {user_id}"
 
         async def broadcast(event: dict):
@@ -2127,8 +2128,16 @@ class CrawlManager:
                 return True
             return False
 
-        await broadcast({"status": "stock_judgment_started"})
         try:
+            # Inside the try, not before it, because the finally below is what
+            # closes this run's claimed row. This await is a cancellation
+            # point -- a shutdown, most plausibly -- and landing on it outside
+            # the try left the row saying 'running' with nothing to close it,
+            # refusing this user every later Refresh until the heartbeat went
+            # stale. The claim replaced an advisory lock that had the same
+            # exposure for the same reason; the mechanism changed and the
+            # hazard did not.
+            await broadcast({"status": "stock_judgment_started"})
             with get_identity_pool().connection() as conn:
                 user = conn.execute(
                     "SELECT discogs_username, anthropic_api_key, recommendation_item_limit FROM users WHERE id = %s",

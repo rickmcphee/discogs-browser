@@ -589,6 +589,11 @@ user actually reads.
 - It also refuses while another Machine holds `STOCK_SYNC_LOCK_KEY` with no
   local task running — leaving no run row behind — and starts anyway when the
   lock state cannot be read.
+- A run cancelled at its opening broadcast closes its claim. That broadcast
+  awaits, so it is a cancellation point, and it has to sit inside the `try`
+  whose `finally` closes the run's row. This branch had the same hazard
+  against the advisory lock the claim replaced, and lost the fix in the merge:
+  the mechanism changed, the exposure did not.
 - An artist name containing a separator ("AC/DC", "Earth, Wind & Fire") keys
   the same whether or not the store wrote it into the title.
 - So does an artist spelled with the punctuation `_artist_punct_fold_sql`

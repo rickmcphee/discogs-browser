@@ -7636,6 +7636,43 @@ async def test_simultaneous_starts_for_different_users_both_run(pg_schema, manag
     await asyncio.sleep(0.01)
 
 
+async def test_a_cancelled_run_closes_its_claim_even_at_the_first_broadcast(manager, judging_user):
+    """The opening stock_judgment_started broadcast awaits, so it is a
+    cancellation point, and the finally that closes this run's claimed row is
+    the only thing that can free the user afterwards.
+
+    Landing there outside the try left the row saying 'running' with nothing
+    to close it, refusing that user every later Refresh until the heartbeat
+    went stale. This branch had the same hazard against the advisory lock the
+    claim replaced, and lost the fix when the two were merged, so the test is
+    against the row rather than the lock. (Copilot, PR #368, round 12.)
+    """
+    at_broadcast = asyncio.Event()
+
+    async def _hang_on_first_broadcast(event):
+        at_broadcast.set()
+        await asyncio.Event().wait()  # never completes; the task is cancelled here
+
+    manager._broadcast = _hang_on_first_broadcast  # type: ignore
+
+    assert (await manager.start_judgment_only(judging_user))["started"] is True
+    await asyncio.wait_for(at_broadcast.wait(), timeout=2)
+
+    with db.user_scope(judging_user) as conn:
+        assert db.get_stock_judgment_run(conn, judging_user)["running"] is True
+
+    task = manager._judgment_tasks[judging_user]
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    with db.user_scope(judging_user) as conn:
+        run = db.get_stock_judgment_run(conn, judging_user)
+    assert run["running"] is False, (
+        "a run cancelled at its first await must not leave its claim standing"
+    )
+
+
 async def test_the_judgment_run_sweeps_missing_keys_before_it_counts(pg_schema, manager):
     """The sweep is a call ordering, so this pins the ordering rather than the
     end state.

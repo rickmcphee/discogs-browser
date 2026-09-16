@@ -1064,12 +1064,17 @@ def backfill_stock_keys(conn) -> int:
     returns how many rows were touched across both.
 
     Python-side rather than an UPDATE in TENANT_SCHEMA because both folds live
-    in title_key.py, and one copy of them is the point. Rows still NULL would
-    not merely sit out the Cheapest filter: the grouping treats every NULL as
-    one key, so they would all compete as a single record (COALESCE in
-    _cheapest_clause is the second guard). The same holds for record_key and
-    the judgment path, where a shared NULL would make every unkeyed row one
-    record and hand them all a single verdict.
+    in title_key.py, and one copy of them is the point.
+
+    The two columns need it for opposite reasons. A NULL `title_key` does not
+    merely sit the row out of the Cheapest filter: that grouping treats every
+    NULL as one key, so every unkeyed row would compete as a single pressing,
+    and `COALESCE(title_key, title)` in _cheapest_clause is the second guard
+    against it. A NULL `record_key` cannot do that -- every query reading it
+    requires it on both sides, so an unkeyed row is compared against nothing
+    and simply takes no part. What the sweep buys there is participation: the
+    row can be judged, and inherit, on the next run rather than waiting for a
+    live writer to touch it again.
 
     Run at boot for the rows that predate the column, and again at the end of
     every stock sync, because boot alone leaves a hole: the deployment is a
