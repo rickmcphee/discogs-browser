@@ -1,5 +1,6 @@
 import csv
 import io
+import os
 from datetime import datetime
 
 import pytest
@@ -299,6 +300,76 @@ def test_clear_stock_judgment_allowed_once_the_run_is_closed(pg_test_db, authed_
 
     client = authed_client_factory(user["id"])
     r = client.post("/api/stock/judge/clear", headers={"X-Requested-With": "fetch"})
+    assert r.json()["cleared"] is True
+
+
+@pytest.fixture
+def rls_enforced(pg_test_db, monkeypatch):
+    """Repoint the app pool at app_user, the RLS-enforcing role production
+    runs as.
+
+    Every other test in this file reaches Postgres as the superuser, which has
+    BYPASSRLS, so the tenant policies are never actually evaluated -- the same
+    harness property test_judgment_crud.py and the recommendations-import
+    design both record. That is usually only a gap in what a test *proves*. It
+    is a gap in what a test can *catch* for anything whose correctness depends
+    on app.user_id still being set, because the policy expression that reads it
+    is the only thing that ever fails.
+
+    Used after authed_client_factory has built its client, so the schema init
+    inside that fixture still runs as the superuser that owns it."""
+    import config as config_module
+    monkeypatch.setattr(
+        db.config, "APP_DATABASE_URL",
+        config_module._with_userinfo(
+            os.environ["TEST_DATABASE_URL"], "app_user", os.environ["APP_DB_PASSWORD"]
+        ),
+    )
+    if db._app_pool is not None:
+        db._app_pool.close()
+    db._app_pool = None
+    yield
+    if db._app_pool is not None:
+        db._app_pool.close()
+    db._app_pool = None
+
+
+def test_stop_stock_judgment_answers_under_real_row_level_security(
+    pg_test_db, authed_client_factory, rls_enforced
+):
+    """user_scope sets app.user_id with set_config(..., true), which is
+    transaction-local, so a commit drops the RLS scope and any query after it
+    evaluates a policy casting an empty string to int. A stop endpoint that
+    read its run after committing answered 500 to every successful stop in
+    production while passing every test in this file -- because the superuser
+    the rest of them use never evaluates the policy at all."""
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+    with db.user_scope(user["id"]) as conn:
+        db.claim_stock_judgment_run(conn, user["id"])
+        conn.commit()
+
+    client = authed_client_factory(user["id"])
+    r = client.post("/api/stock/judge/stop", headers={"X-Requested-With": "fetch"})
+    assert r.status_code == 200
+    assert r.json()["stopping"] is True
+    assert r.json()["run"]["stop_requested"] is True
+
+
+def test_stock_judge_endpoints_answer_under_real_row_level_security(
+    pg_test_db, authed_client_factory, rls_enforced
+):
+    """The same exposure for the reads beside it, which would fail the same way
+    if a commit were ever introduced ahead of them."""
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+    client = authed_client_factory(user["id"])
+
+    assert client.get("/api/stock/judge/status").json() == {"any_judged": False, "run": None}
+    r = client.post("/api/stock/judge/clear", headers={"X-Requested-With": "fetch"})
+    assert r.status_code == 200
     assert r.json()["cleared"] is True
 
 

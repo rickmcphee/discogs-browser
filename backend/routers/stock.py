@@ -145,8 +145,15 @@ def _judgment_running(conn, user_id: int) -> bool:
     this process's own tasks: the callers below are guarding writes to
     stock_item_judgments against the run that is writing them, and that run is
     on whichever Machine served its start. The row also expires, so a worker
-    that died mid-run cannot block a clear for ever."""
-    run = db.get_stock_judgment_run(conn, user_id)
+    that died mid-run cannot block a clear for ever.
+
+    Locks the row, and both callers then do their own write in the same
+    transaction. An unlocked read would be a check the answer outlives: a start
+    can claim the row in the gap between reading "idle" and deleting, and a
+    live run's next checkpoint can commit in the gap between reading "idle" and
+    importing -- in both cases leaving the write this guard exists to prevent
+    to happen anyway, just slightly later."""
+    run = db.get_stock_judgment_run(conn, user_id, for_update=True)
     return bool(run and run["running"])
 
 
@@ -213,8 +220,17 @@ def stop_stock_judgment(request: Request):
     user_id = request.state.user_id
     with db.user_scope(user_id) as conn:
         stopping = db.request_stock_judgment_stop(conn, user_id)
-        conn.commit()
+        # Read inside the same transaction as the write, before the commit,
+        # never after it. user_scope sets app.user_id with set_config(..., true)
+        # -- transaction-local -- so a commit here would drop the RLS scope and
+        # leave the next query evaluating a policy that casts an empty string to
+        # int, turning every successful stop into a 500. Nothing in the suite
+        # can catch that: the test harness connects as the Postgres superuser,
+        # which bypasses RLS, so the policy expression is never evaluated. The
+        # read sees this transaction's own uncommitted write, which is exactly
+        # the state the caller is asking about.
         run = _judgment_run(conn, user_id)
+        conn.commit()
     return {"stopping": stopping, "run": run}
 
 
@@ -283,9 +299,6 @@ async def import_stock_judgments_endpoint(request: Request, file: UploadFile = F
     # shape rather than an error status.
     if crawl_manager.stock_sync_running:
         return {**empty, "running": True}
-    with db.user_scope(user_id) as conn:
-        if _judgment_running(conn, user_id):
-            return {**empty, "running": True}
 
     # Read cap+1, not the whole body, so an oversized upload isn't buffered
     # in full -- same pattern as upload_avatar in routers/session.py.
@@ -304,7 +317,17 @@ async def import_stock_judgments_endpoint(request: Request, file: UploadFile = F
     except recommendations_import.InvalidImportError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
+    # The judgment-run guard belongs here rather than up front, in the same
+    # transaction as the write it protects: checked before the upload was even
+    # read, it answered a question about a moment that had passed by the time
+    # the rows landed, and a run claimed during the parse would write
+    # concurrently anyway. The lock it takes holds until this commits, so a
+    # start waits rather than interleaving. The cost is that a malformed file
+    # is now rejected on its own merits before the busy check rather than
+    # after, which is the better order in any case.
     with db.user_scope(user_id) as conn:
+        if _judgment_running(conn, user_id):
+            return {**empty, "running": True}
         imported, updated, applied_keys = db.import_stock_judgments(conn, user_id, judgments)
         matched = db.count_matching_stock_items(conn, applied_keys)
         conn.commit()

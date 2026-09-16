@@ -9,7 +9,13 @@ guard described below no longer reads
 `stock_judgment_runs` row, and the guard reads that instead — it is racing the
 run's writes to `stock_item_judgments`, and with two Machines behind one
 hostname that run is on whichever one served its start, invisible to this
-process's task map. The `crawl_manager.stock_sync_running` half is unchanged,
+process's task map. It also moved: it now runs inside the same transaction as
+the import itself, taking the run row `FOR UPDATE`, rather than ahead of the
+upload being read. Checked before the file was even parsed, it answered a
+question about a moment that had passed by the time the rows landed, and a run
+claimed during the parse wrote concurrently anyway. One visible consequence: a
+malformed file is now rejected on its own merits *before* the busy check rather
+than after it. The `crawl_manager.stock_sync_running` half is unchanged,
 and so is everything the guard does once it fires: still a `200` carrying
 `{"imported": 0, ..., "running": True}`, still writing nothing. See
 [`2026-09-16-stop-recommendation-run-design.md`](2026-09-16-stop-recommendation-run-design.md).

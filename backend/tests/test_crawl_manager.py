@@ -5743,6 +5743,11 @@ async def test_judgment_phase_stops_when_its_claim_is_taken_over(pg_schema):
     assert "stock_judgment_complete" not in statuses
     assert "stock_judgment_stopped" not in statuses
     assert "stock_judgment_error" not in statuses
+    # Not even progress: the row and the narration both belong to the
+    # replacement now, and a progress line for the batch this worker finished
+    # would show every browser on this Machine a count from a run that is no
+    # longer the one running.
+    assert "stock_judgment_progress" not in statuses
 
     with db.user_scope(user_id) as conn:
         run = db.get_stock_judgment_run(conn, user_id)
@@ -6240,14 +6245,20 @@ async def test_start_judgment_only_refused_by_a_run_this_process_never_started(
     assert await manager.start_judgment_only(judging_user) is False
 
 
-async def test_start_judgment_only_cancels_a_local_task_whose_claim_it_takes_over(
+async def test_start_judgment_only_leaves_a_taken_over_local_task_to_stop_itself(
     manager, judging_user, monkeypatch
 ):
     """A claim granted over a stale row means whatever this Machine still has
-    running is working a run that is no longer its own. Its fencing would stop
-    it at the next batch boundary -- but a worker that never reaches one is
-    exactly how a claim goes stale, so it is cancelled rather than left to
-    notice."""
+    running is working a run that is no longer its own -- and it is left alone
+    to find that out at its next checkpoint, unlike start_sync, which cancels
+    its predecessor.
+
+    Cancelling here would be destructive rather than protective: the worker is
+    almost certainly inside asyncio.to_thread(judge_batch), which a cancelled
+    await does not interrupt, so the Anthropic call completes and is billed
+    either way -- and the only thing cancellation changes is that its answer is
+    discarded before it can be committed, leaving those items for the
+    replacement to pay for a second time."""
     monkeypatch.setattr(db, "JUDGMENT_RUN_STALE_MINUTES", 0)
     monkeypatch.setattr(
         db, "_JUDGMENT_RUN_STALE_SQL",
@@ -6264,7 +6275,8 @@ async def test_start_judgment_only_cancels_a_local_task_whose_claim_it_takes_ove
 
     assert await manager.start_judgment_only(judging_user) is True
     await asyncio.sleep(0.01)
-    assert stalled.cancelled()
+    assert not stalled.cancelled()
+    assert not stalled.done()
     assert manager._judgment_tasks[judging_user] is not stalled
     wedged.set()
     await asyncio.sleep(0.01)

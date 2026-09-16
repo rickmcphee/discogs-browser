@@ -165,9 +165,19 @@ row by the run that just honoured it would stop the *next* run at its first
 checkpoint, before it judged anything.
 
 When the claim is granted and this Machine still holds a task for that user,
-that task is working a run that is no longer its own. Its own fencing stops it
-at the next batch boundary — but a worker that never reaches one is exactly how
-a claim goes stale, so it is cancelled outright, as `start_sync` does.
+that task is working a run that is no longer its own — and it is left alone to
+find that out at its next checkpoint, deliberately unlike `start_sync`, which
+cancels its predecessor outright.
+
+The difference is what the two workers do next. A dispossessed sync worker goes
+on to destructive wantlist cleanup driven by a stale snapshot, so stopping it
+late is not good enough. A dispossessed judgment worker's only write is an
+idempotent upsert of judgments already paid for. Cancelling it cannot stop the
+Anthropic call it is inside, for the same reason a stop cannot (below), so the
+money is spent either way; all the cancellation achieves is discarding the
+answer before it can be committed, leaving those items for the replacement to
+buy a second time. Letting it finish the batch and stop at the checkpoint keeps
+what the user has already paid for.
 
 `judgment_running()` itself stays, and stays per-process: `_events_to_replay`
 uses it to decide whether *this* Machine's replay buffer has anything worth
@@ -192,10 +202,36 @@ batch boundary — the ownership question for the same reason the sync asks it
 replacement, not just stop writing bookkeeping), the stop flag because that is
 the whole feature.
 
-Judgments already committed are never rolled back on either answer. Unlike the
-sync — whose loss-of-claim path exists partly to keep a dispossessed worker out
-of `delete_orphaned_releases` — a judgment write is an idempotent upsert of
-something already paid for, and discarding it would only mean paying again.
+Judgments are never discarded on either answer, committed or in hand. Unlike
+the sync — whose loss-of-claim path exists partly to keep a dispossessed worker
+out of `delete_orphaned_releases` — a judgment write is an idempotent upsert of
+something already paid for, and dropping it would only mean paying again. So
+the batch in hand is written even when the checkpoint that shares its
+transaction says the run has been taken over.
+
+The checkpoint goes **first** within that transaction, though, ahead of the
+upsert. Its `UPDATE` takes the run row's lock, and holding that lock until the
+commit is what serialises the batch against the two things that read the row to
+decide whether they may touch `stock_item_judgments` — clearing and importing.
+Read without the lock, "is a run under way" is a check the answer outlives: a
+start can claim the row between reading *idle* and deleting, and a live run's
+next checkpoint can commit between reading *idle* and importing, in both cases
+letting exactly the interleaving those guards exist to prevent happen anyway,
+a moment later. So both take the row `FOR UPDATE` and do their own write in the
+same transaction.
+
+That serialisation covers a live run, not an expired one: a checkpoint whose
+claim has lapsed matches no row and therefore takes no lock, so a stale
+worker's last batch can still land just after a clear. That is the accepted
+side of the same trade — a stale worker only exists at all if one batch
+outlasted the staleness window, and a stray judgment surviving a clear is
+cheaper than a discarded batch, and is fixed by clicking Clear again.
+
+A run that finds it has been taken over stops **silently**: no terminal event,
+and no progress line either. The row and the narration both belong to the
+replacement now, so a progress broadcast for the batch this worker happened to
+finish would show every browser on this Machine a count from a run that is no
+longer the one running.
 
 ### Staleness, because a claim that cannot expire is a trap
 
@@ -224,6 +260,24 @@ happened rather than silently going idle. An abandoned run says `running` in
 its status column for ever; a client that believed it would show **Stop** on a
 run nothing is doing, and clicking it would flag a row no worker will ever
 read.
+
+### Reading a run is not allowed to follow a commit
+
+`user_scope` establishes the RLS scope with `set_config('app.user_id', …,
+true)` — **transaction-local**. A commit inside the `with` block therefore
+drops it, and the next query on that connection evaluates a policy that casts
+an empty string to `int`, which raises. So the stop endpoint reads its run
+inside the same transaction as the write, before the commit, where it also
+sees that write.
+
+This deserves its own heading because the suite cannot catch it. Every router
+test reaches Postgres as the superuser, which has `BYPASSRLS`, so the policy
+expression is never evaluated and the broken order passes every assertion while
+answering `500` to every successful stop in production. `test_stock_router.py`
+therefore grows an `rls_enforced` fixture that repoints the app pool at
+`app_user` after the schema is built, and the stop endpoint is exercised
+through it. Confirmed by reverting the order: that test fails, and nothing else
+does.
 
 ### The API
 
@@ -277,6 +331,32 @@ poll or from a response to a click; the SSE handlers update the same state when
 they do arrive, which on the co-located Machine simply makes the flip
 immediate.
 
+Three things follow from an event carrying no run identity, all of them cases
+where the event is right about *a* run and wrong about the current one:
+
+- **A `started` event never clears an optimistic stop.** It can be queued
+  before a Stop click and delivered after it, and clearing the flag there turns
+  the disabled **Stopping…** back into **Stop** over a row whose flag is set,
+  inviting a second click that does nothing. Only the row clears it.
+- **A terminal event is confirmed against the row.** `complete`/`stopped`/
+  `error` clear the flags — right nearly always, and wrong exactly when a newer
+  run has started since, where it would take Stop away from a run still
+  spending *and* tear down the poll that would have noticed. So one read
+  follows, which restores the flags if a run is in fact still going.
+- **A superseded status read is not an answer.** The poll decides whether to
+  stop from the read it just made, so a reply about an older run arriving after
+  a newer start would end the follow for a run that is still going. A read
+  whose sequence has been overtaken returns nothing at all rather than a
+  stale verdict.
+
+The poll also drives the Store's refresh generations from the counters it can
+see. Those bumps live on the `stock_judgment_*` handlers, which is precisely
+what does not arrive on the other Machine — so without this an already-open
+Store tab on the Recommended filter never refetches the judgments the run is
+writing. Gated on the run having actually moved (`status`/`judged` changing),
+or it would refetch every few seconds for the length of a run, and skipped for
+the first read, which is a page load rather than movement.
+
 The banner is left to SSE alone. A run whose events reach this browser narrates
 itself as it always did; one whose events go elsewhere says nothing, as it
 always did — and crucially says nothing *consistently*, so there is no stale
@@ -302,15 +382,21 @@ progress line for the poll to have to clear.
 - a stop flag set before the first batch stops the run without an Anthropic
   call;
 - a run that loses its claim mid-flight stops without finishing the remaining
-  batches;
+  batches, says nothing at all — progress included — and still commits the
+  batch it had in hand;
+- `start_judgment_only` leaves a stalled local task running rather than
+  cancelling it when it takes its claim over;
 - a completed run closes its row `complete`; a failed one closes it `error`
   with the message;
-- `start_judgment_only` refuses when a live row holds the claim and cancels a
-  local task whose claim it takes over.
+- `start_judgment_only` refuses when a live row holds the claim, including one
+  this process never started.
 
 `backend/tests/test_stock_router.py`
 - `POST /stock/judge/stop` flags the calling user's run and cannot touch
   another user's;
+- the stop endpoint answers under a pool authenticated as `app_user`, with the
+  tenant policies actually enforced (`rls_enforced`) — the one test in the file
+  that can catch a read placed after a commit;
 - the start response and the status endpoint carry the run;
 - clear and import refuse against a live row.
 
@@ -320,7 +406,13 @@ progress line for the poll to have to clear.
 - clicking Stop posts once and does not post a start;
 - a run already under way at mount shows Stop without any event arriving;
 - the button returns to Refresh when the poll reports the run ended, and when
-  a `stock_judgment_stopped` event arrives.
+  a `stock_judgment_stopped` event arrives;
+- a `started` event delivered after a stop click leaves the button on
+  Stopping…, asserted on that event's own flush with no poll allowed in
+  between (a test that waited would pass against the bug);
+- a terminal event the row contradicts restores Stop, asserted on the
+  confirming read rather than on the label;
+- the poll refetches the Store when it sees the run's count advance.
 
 ## Amendments to other specs
 

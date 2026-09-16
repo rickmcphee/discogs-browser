@@ -4083,7 +4083,7 @@ def request_stock_judgment_stop(conn, user_id: int) -> bool:
     return cursor.rowcount > 0
 
 
-def get_stock_judgment_run(conn, user_id: int) -> Optional[dict]:
+def get_stock_judgment_run(conn, user_id: int, for_update: bool = False) -> Optional[dict]:
     """The user's current or most recent recommendation run, or None if they
     have never started one.
 
@@ -4091,13 +4091,23 @@ def get_stock_judgment_run(conn, user_id: int) -> Optional[dict]:
     saying 'running' for ever, and a client that believed it would sit on a
     Stop button for a run nothing is doing -- and flag a row no worker will
     ever read. `stale` is carried separately so the UI can say what happened
-    instead of silently going idle."""
+    instead of silently going idle.
+
+    `for_update` locks the row for the rest of the caller's transaction, which
+    is what turns "is a run under way" from a glance into a decision that holds
+    while the caller acts on it. A reader that only glances is racing two
+    writers it cannot see: claim_stock_judgment_run (whose upsert takes the
+    same row) and a live run's own checkpoint (whose progress write does too).
+    Without the lock, clearing or importing judgments can read "idle" and then
+    have a run claimed underneath it, which is the interleaving both of those
+    guards exist to prevent."""
     return conn.execute(
         f"""
         SELECT *,
                (status = 'running' AND NOT ({_JUDGMENT_RUN_STALE_SQL})) AS running,
                (status = 'running' AND {_JUDGMENT_RUN_STALE_SQL}) AS stale
         FROM stock_judgment_runs WHERE user_id = %s
+        {"FOR UPDATE" if for_update else ""}
         """,
         [user_id],
     ).fetchone()

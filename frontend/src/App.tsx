@@ -234,6 +234,11 @@ export default function App() {
   // writers of these flags, and a slow read must not land on top of a newer
   // answer. Every direct writer bumps this first.
   const latestJudgmentRunSeq = useRef(0)
+  // The last (status, judged) the poll saw, so it can tell a run that has
+  // advanced from one it has merely been asked about again. Starts null so the
+  // first read -- which is just "what is the state on load" -- does not count
+  // as movement and refetch the Store on every page load.
+  const lastJudgmentRunSeen = useRef<string | null>(null)
   const [serverReady, setServerReady] = useState(false)
   const [backendUp, setBackendUp] = useState<boolean | null>(null)
   const [authRevalidating, setAuthRevalidating] = useState(false)
@@ -439,9 +444,29 @@ export default function App() {
       // writers that can overtake it differ -- a clear writes hasJudgedItems
       // and says nothing about the run, a stop response the reverse -- so a
       // single guard would let either discard the half it knows nothing about.
-      if (runSeq === latestJudgmentRunSeq.current) {
-        setRecommendationRunning(Boolean(s.run?.running))
-        setRecommendationStopping(Boolean(s.run?.running && s.run.stop_requested))
+      if (runSeq !== latestJudgmentRunSeq.current) {
+        // Superseded. Returning it anyway would let the poll below read a
+        // terminal answer about an *older* run -- one that arrived after a
+        // newer start had already set the flags -- and stop following the run
+        // that is actually spending, leaving its button stuck on Stop.
+        return null
+      }
+      setRecommendationRunning(Boolean(s.run?.running))
+      setRecommendationStopping(Boolean(s.run?.running && s.run.stop_requested))
+      // The judgments this run has written are invisible to an already-open
+      // Store tab unless something tells it to refetch, and on the Machine
+      // that is not running the job nothing does: the generation bumps live on
+      // the stock_judgment_* handlers, which never arrive there. So the poll
+      // makes them too, from the counters it can see -- gated on the run
+      // having actually moved, or the poll would refetch every few seconds for
+      // as long as a run lasts.
+      const seen = `${s.run?.status ?? 'none'}/${s.run?.judged ?? 0}`
+      if (s.run && seen !== lastJudgmentRunSeen.current) {
+        if (lastJudgmentRunSeen.current !== null) {
+          setStockSyncGeneration(g => g + 1)
+          setStockJudgmentGeneration(g => g + 1)
+        }
+        lastJudgmentRunSeen.current = seen
       }
       return s
     } catch {
@@ -664,9 +689,14 @@ export default function App() {
         // run start, so it need not wait for the poll's first tick. A run
         // whose events go to the other Machine's subscribers reaches the same
         // state a beat later, through GET /stock/judge/status.
+        //
+        // `stopping` is deliberately left alone. This event can be queued
+        // before a Stop click and delivered after it, and clearing the flag
+        // there would turn the disabled "Stopping…" back into "Stop" while the
+        // row's flag is still set -- inviting a second click that does
+        // nothing. The row clears it, through the poll or a terminal event.
         latestJudgmentRunSeq.current++
         setRecommendationRunning(true)
-        setRecommendationStopping(false)
         setSyncStatus('Finding recommendations for Store items…', event.id ?? null)
         return
       }
@@ -688,6 +718,14 @@ export default function App() {
         latestJudgmentRunSeq.current++
         setRecommendationRunning(false)
         setRecommendationStopping(false)
+        // A judgment event names no run, so an ending delivered late -- this
+        // Machine's buffer replaying it, or a slow queue -- is indistinguishable
+        // from the current run's. Clearing the flags on it is right nearly
+        // always and wrong exactly when a newer run has started since, where it
+        // would take Stop away from a run still spending and stop the poll that
+        // would have noticed. So the row gets the last word: one read, which
+        // restores the flags if a run is in fact still going.
+        refreshJudgmentStatus()
         if ((event.judged ?? 0) > 0) {
           latestHasJudgedItemsSeq.current++
           setHasJudgedItems(true)
@@ -710,6 +748,8 @@ export default function App() {
         latestJudgmentRunSeq.current++
         setRecommendationRunning(false)
         setRecommendationStopping(false)
+        // Confirmed against the row, same as the two endings above.
+        refreshJudgmentStatus()
         setSyncStatus(`Finding recommendations failed: ${event.error}`, event.id ?? null)
         return
       }
@@ -767,7 +807,7 @@ export default function App() {
       source?.close()
       clearTimeout(reconnectTimer)
     }
-  }, [authState, setSyncStatus, fetchPriceStatus])
+  }, [authState, setSyncStatus, fetchPriceStatus, refreshJudgmentStatus])
 
   // Rides priceGeneration rather than a notification-specific SSE event: a
   // per-user event would have to be tagged with an owner, and the crawl worker
