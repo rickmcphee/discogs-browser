@@ -1280,7 +1280,16 @@ class CrawlManager:
                 try:
                     fields = discogs.fetch_collection_fields(oauth_token, oauth_secret, username)
                 except discogs.HTTPStatusError as e:
-                    sync_error(_discogs_request_error(e), exc_info=True)
+                    # No exc_info: the traceback would carry the very things
+                    # the message leaves out. logging_config's queue handler
+                    # appends a formatted traceback to the stored message, and
+                    # an HTTPStatusError's last line is the status, the full
+                    # request URL and the response detail -- so attaching one
+                    # would sanitize the sentence and then write the original
+                    # underneath it. The status is already in the message, and
+                    # for a failure this path has classified there is nothing
+                    # else in the traceback worth the leak.
+                    sync_error(_discogs_request_error(e))
                     return
                 price_field_id = next((fid for fid, name in fields.items() if name.lower() == "price"), None)
 
@@ -1511,12 +1520,14 @@ class CrawlManager:
             # token surfaces here instead, and the same fault answering with
             # a raw transport string on one tab and an actionable sentence on
             # the other sends the reader looking in two different places.
-            message = (
-                _discogs_request_error(e)
-                if isinstance(e, discogs.HTTPStatusError)
-                else str(e)
-            )
-            closed = sync_error(message, exc_info=True)
+            sanitized = isinstance(e, discogs.HTTPStatusError)
+            message = _discogs_request_error(e) if sanitized else str(e)
+            # The traceback rides along for an exception nothing has
+            # classified, where it is the only account of what happened, and
+            # is withheld for one this path has just sanitized -- there it
+            # would restore the URL and response detail underneath the
+            # sentence written to omit them. See the fields-fetch handler.
+            closed = sync_error(message, exc_info=not sanitized)
             # Fenced like the successful close and the Plex release. Failing is
             # not the same as still owning the run: an expired or dispossessed
             # worker can reach an ordinary exception, and restoring rows from

@@ -334,6 +334,16 @@ the fault nor the fix. What the run row says is now also what the log says,
 and for a Discogs error status both name the HTTP status — see
 `crawl_manager._discogs_request_error`.
 
+The traceback is the one thing the two do not share, and it is withheld
+exactly where the message was sanitized. `logging_config`'s queue handler
+appends a formatted traceback to the stored message, and an
+`HTTPStatusError`'s carries the full request URL and the response detail —
+the two things `_discogs_request_error` exists to leave out. Attaching one to
+a failure that path has already classified would write the original into
+`app_logs` underneath the sentence written to omit it. An exception nothing
+has classified keeps its traceback, because there it is the only account of
+what happened.
+
 Best effort throughout, on its own connection: failing to *narrate* a sync must
 never be what ends one, and the connection the page loop was using may be in a
 failed transaction by the time the error path runs.

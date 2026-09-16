@@ -1445,7 +1445,7 @@ def create_user(conn, discogs_user_id: int, discogs_username: str, invited_by: O
 
 def update_user_discogs_credentials(
     conn, user_id: int, discogs_username: str,
-    oauth_token_encrypted: str, oauth_secret_encrypted: str,
+    oauth_token_encrypted: bytes, oauth_secret_encrypted: bytes,
 ):
     """Replace the Discogs identity a user's row authenticates with.
 

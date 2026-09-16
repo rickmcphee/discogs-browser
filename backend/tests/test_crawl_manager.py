@@ -1691,16 +1691,24 @@ async def test_sync_collection_picks_up_a_release_added_since_the_last_sync(
     query the Collection tab reads -- under either option the refresh modal
     offers. Verified by hand when the sync-visibility work went in and left
     untested, which is why the write path kept being re-suspected every time
-    the button looked inert for some other reason."""
+    the button looked inert for some other reason.
+
+    The addition lands on the *second* page, which is where a real one tends
+    to: the collection is walked page by page, and in mode="new" every record
+    on the pages before it is matched against the already-synced set and
+    skipped. A single-page fixture would exercise none of that."""
     _discogs_config(monkeypatch)
     user = _oauth_user()
 
-    _collection_pages([[_collection_item(111)]])
+    _collection_pages([[_collection_item(111)], [_collection_item(112)]])
     await CrawlManager()._sync_collection(user["id"], "all")
 
     # The user adds a record on discogs.com, then presses Refresh.
     respx.mock.reset()
-    _collection_pages([[_collection_item(111), _collection_item(222, title="New Album")]])
+    _collection_pages([
+        [_collection_item(111)],
+        [_collection_item(112), _collection_item(222, title="New Album")],
+    ])
     manager = CrawlManager()
     await manager._sync_collection(user["id"], mode)
 
@@ -1708,6 +1716,10 @@ async def test_sync_collection_picks_up_a_release_added_since_the_last_sync(
     with db.user_scope(user["id"]) as conn:
         listed = db.get_library_releases(conn, user["id"], scope="discogs")
     assert "r222" in [r["discogs_id"] for r in listed["releases"]]
+    # mode="new" counts only what it actually fetched; mode="all" re-syncs
+    # every record on every page. Both have to reach the new one.
+    complete = [e for e in manager.recent_events() if e["status"] == "sync_complete"]
+    assert complete[-1]["synced"] == (1 if mode == "new" else 3)
 
 
 @respx.mock
@@ -1739,9 +1751,18 @@ async def test_sync_collection_reports_a_refused_discogs_token(pg_schema, monkey
     assert "401" in errors[0]["error"]
     assert "sign in with discogs again" in errors[0]["error"].lower()
 
-    logged = [r.getMessage() for r in caplog.records if "Collection sync failed" in r.getMessage()]
-    assert len(logged) == 1
-    assert "alice" in logged[0] and "401" in logged[0]
+    records = [r for r in caplog.records if "Collection sync failed" in r.getMessage()]
+    assert len(records) == 1
+    assert "alice" in records[0].getMessage() and "401" in records[0].getMessage()
+
+    # Sanitized in the log too, not just in the banner. logging_config's queue
+    # handler appends a formatted traceback to the stored message, and an
+    # HTTPStatusError's reads "Client error '401 Unauthorized' for url
+    # 'https://api.discogs.com/users/alice/collection/fields'" -- so a record
+    # carrying exc_info would write the URL and response detail straight into
+    # app_logs underneath the sentence written to leave them out.
+    assert not records[0].exc_info
+    assert "api.discogs.com" not in records[0].getMessage()
 
     with db.user_scope(user["id"]) as conn:
         run = db.get_library_sync_run(conn, user["id"])
@@ -1794,6 +1815,28 @@ async def test_sync_collection_reports_a_non_auth_discogs_failure_with_its_statu
     assert errors[0]["error"] == "Discogs request failed (HTTP 500)"
     assert "sign in" not in errors[0]["error"].lower()
     assert any("Collection sync failed" in r.getMessage() for r in caplog.records)
+
+
+@respx.mock
+async def test_sync_collection_keeps_the_traceback_for_an_unclassified_failure(
+    pg_schema, monkeypatch, caplog
+):
+    """The other side of withholding it: an exception nothing has classified
+    has no sanitized sentence standing in for it, so the traceback is the only
+    account of what happened and must survive."""
+    _discogs_config(monkeypatch)
+    user = _oauth_user()
+    respx.get("https://api.discogs.com/users/alice/collection/fields").mock(
+        side_effect=ValueError("something unexpected")
+    )
+
+    manager = CrawlManager()
+    with caplog.at_level(logging.ERROR, logger="crawl_manager"):
+        await manager._sync_collection(user["id"], "new")
+
+    records = [r for r in caplog.records if "Collection sync failed" in r.getMessage()]
+    assert len(records) == 1
+    assert records[0].exc_info
 
 
 async def test_sync_collection_logs_when_the_account_has_no_stored_token(
