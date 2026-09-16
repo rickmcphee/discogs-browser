@@ -287,6 +287,88 @@ def test_stock_item_judgments_insert_with_mismatched_user_id_is_rejected(pg_test
             conn.commit()
 
 
+def test_stock_judgment_runs_is_rls_isolated_per_user(pg_test_db, monkeypatch):
+    """The structural check above proves the policy is enabled; this proves it
+    isolates. Both would pass against a permissive USING clause, and the
+    router's own cross-user test passes because request_stock_judgment_stop
+    filters by user_id rather than because the policy does anything. Same shape
+    as test_stock_item_judgments_is_rls_isolated_per_user."""
+    db.init_global_schema()
+    db.init_tenant_schema()
+    monkeypatch.setattr(
+        config,
+        "APP_DATABASE_URL",
+        config._with_userinfo(
+            os.environ["TEST_DATABASE_URL"], "app_user", os.environ["APP_DB_PASSWORD"]
+        ),
+    )
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=942, discogs_username="rlsruntestalice")
+        bob = db.create_user(conn, discogs_user_id=943, discogs_username="rlsruntestbob")
+        conn.execute(
+            "INSERT INTO stock_judgment_runs (user_id, status, run_token) VALUES (%s, %s, %s)",
+            [alice["id"], "running", "alice-token"],
+        )
+        conn.commit()
+
+    try:
+        with db.user_scope(bob["id"]) as conn:
+            assert conn.execute("SELECT * FROM stock_judgment_runs").fetchall() == []
+            # Not merely invisible: unreachable by a write that names it, which
+            # is what POST /stock/judge/stop issues -- "stop whatever is running
+            # for me" carries no run token, so the policy is the whole of what
+            # keeps "me" honest.
+            cursor = conn.execute(
+                "UPDATE stock_judgment_runs SET stop_requested = TRUE WHERE user_id = %s",
+                [alice["id"]],
+            )
+            assert cursor.rowcount == 0
+            conn.commit()
+
+        with db.user_scope(alice["id"]) as conn:
+            rows = conn.execute("SELECT * FROM stock_judgment_runs").fetchall()
+        assert len(rows) == 1
+        assert rows[0]["run_token"] == "alice-token"
+        assert rows[0]["stop_requested"] is False
+    finally:
+        with db.get_admin_pool().connection() as conn:
+            conn.execute("DELETE FROM stock_judgment_runs WHERE user_id IN (%s, %s)", [alice["id"], bob["id"]])
+            conn.execute("DELETE FROM users WHERE id IN (%s, %s)", [alice["id"], bob["id"]])
+            conn.commit()
+
+
+def test_stock_judgment_runs_insert_with_mismatched_user_id_is_rejected(pg_test_db, monkeypatch):
+    """WITH CHECK on stock_judgment_runs_isolation must reject a run claimed
+    for somebody else -- the write-side counterpart to the test above."""
+    db.init_global_schema()
+    db.init_tenant_schema()
+    monkeypatch.setattr(
+        config,
+        "APP_DATABASE_URL",
+        config._with_userinfo(
+            os.environ["TEST_DATABASE_URL"], "app_user", os.environ["APP_DB_PASSWORD"]
+        ),
+    )
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=944, discogs_username="rlsrunwritealice")
+        bob = db.create_user(conn, discogs_user_id=945, discogs_username="rlsrunwritebob")
+        conn.commit()
+
+    try:
+        with db.user_scope(alice["id"]) as conn:
+            with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                conn.execute(
+                    "INSERT INTO stock_judgment_runs (user_id, status, run_token) "
+                    "VALUES (%s, %s, %s)",
+                    [bob["id"], "running", "stolen"],
+                )
+    finally:
+        with db.get_admin_pool().connection() as conn:
+            conn.execute("DELETE FROM stock_judgment_runs WHERE user_id IN (%s, %s)", [alice["id"], bob["id"]])
+            conn.execute("DELETE FROM users WHERE id IN (%s, %s)", [alice["id"], bob["id"]])
+            conn.commit()
+
+
 def test_stock_item_saves_is_rls_isolated_per_user(pg_test_db, monkeypatch):
     # Same pattern as test_stock_item_judgments_is_rls_isolated_per_user
     # above: init the schema first (this test must pass standalone), then

@@ -234,6 +234,14 @@ export default function App() {
   // writers of these flags, and a slow read must not land on top of a newer
   // answer. Every direct writer bumps this first.
   const latestJudgmentRunSeq = useRef(0)
+  // Counts *user actions* on the run -- a Refresh or a Stop click -- and
+  // nothing else. Separate from the counter above because that one is also
+  // bumped by every status read, including a handler's own recovery read: a
+  // handler comparing against it after awaiting its own read always finds
+  // itself superseded, and silently drops the verdict it went to fetch. What a
+  // handler actually needs to know is whether the *user* has since asked for
+  // something else.
+  const latestJudgmentActionSeq = useRef(0)
   // The last (status, judged) the poll saw, so it can tell a run that has
   // advanced from one it has merely been asked about again. Null means "no
   // read yet", and only that very first read is exempt from the bump -- it is
@@ -494,13 +502,22 @@ export default function App() {
   // arrives, and the poll below only runs once a run is already believed to be
   // in flight -- so one dropped request leaves the button reading Refresh for
   // the whole of a paid run, with no way to stop it.
-  const discoverJudgmentRun = useCallback(async () => {
+  // `waitForRun` is what a *failed start* needs and a page load does not. On a
+  // page load, "no run" is a complete answer. After a start request that threw,
+  // it is not: the POST can fail at the client while the server is still
+  // committing the claim, so an immediate read can win that race and answer
+  // `run: null` about a run that is about to exist. Ending there would hide it
+  // for good, since nothing else is coming. Returns whether a run is under way.
+  const discoverJudgmentRun = useCallback(async (waitForRun = false): Promise<boolean> => {
     for (let attempt = 0; attempt < POLL_READ_ATTEMPTS; attempt++) {
-      if (await refreshJudgmentStatus()) return
+      const status = await refreshJudgmentStatus()
+      if (status?.run?.running) return true
+      if (status && !waitForRun) return false
       if (attempt < POLL_READ_ATTEMPTS - 1) {
         await new Promise(r => setTimeout(r, JUDGMENT_RUN_POLL_MS))
       }
     }
+    return false
   }, [refreshJudgmentStatus])
 
   // Continuous, unconditional health poll -- drives `backendUp`, which gates
@@ -1272,9 +1289,11 @@ export default function App() {
     // this POST is still in flight -- and this reply's snapshot predates both,
     // so advancing the sequence on arrival would make a stale answer the
     // newest writer and turn a disabled "Stopping…" back into "Stop".
+    const action = ++latestJudgmentActionSeq.current
     const seq = ++latestJudgmentRunSeq.current
     try {
       const r = await postJudgmentStart()
+      if (action !== latestJudgmentActionSeq.current) return
       if (seq !== latestJudgmentRunSeq.current) return
       // The reply carries the row, so the button flips to Stop on the response
       // alone. Waiting for stock_judgment_started would leave it reading
@@ -1292,15 +1311,26 @@ export default function App() {
       // both the message and the recovery read below would then talk over that
       // newer state -- the read especially, since its snapshot can predate the
       // stop commit and would turn the disabled "Stopping…" back into "Stop".
-      if (seq !== latestJudgmentRunSeq.current) return
-      setSyncStatus(`Refresh recommendations failed to start: ${e.message}`)
+      if (action !== latestJudgmentActionSeq.current) return
       // A failed request is not a failed start. The server may have claimed
       // the run and created the task before the connection dropped, in which
       // case a run is under way, spending the user's key, with nothing here
       // polling it and a button still reading Refresh. So the row is asked
-      // instead of assumed -- and if it says a run is going, that read starts
-      // the poll and flips the button.
-      discoverJudgmentRun()
+      // instead of assumed -- and the verdict waits for that answer rather
+      // than announcing a failure the recovery may be about to contradict,
+      // which would leave "failed to start" on screen beside a live Stop
+      // button.
+      setSyncStatus('Checking whether the recommendation run started…')
+      const running = await discoverJudgmentRun(true)
+      // Against the action counter, not the read counter: the recovery read
+      // above bumps the latter itself, so comparing against it here would
+      // discard this verdict every time.
+      if (action !== latestJudgmentActionSeq.current) return
+      setSyncStatus(
+        running
+          ? 'That request failed, but the recommendation run did start — use Stop to end it.'
+          : `Refresh recommendations failed to start: ${e.message}`,
+      )
     }
   }, [setSyncStatus, discoverJudgmentRun])
 
@@ -1311,10 +1341,12 @@ export default function App() {
     // the row before the flag was written, a start response whose snapshot
     // predates this click -- cannot land on top of it and flick the button
     // back to Stop, and claimed again on arrival for the same reason.
+    const action = ++latestJudgmentActionSeq.current
     const seq = ++latestJudgmentRunSeq.current
     setRecommendationStopping(true)
     try {
       const r = await postJudgmentStop()
+      if (action !== latestJudgmentActionSeq.current) return
       if (seq !== latestJudgmentRunSeq.current) return
       latestJudgmentRunSeq.current++
       setRecommendationRunning(Boolean(r.run?.running))
@@ -1333,7 +1365,7 @@ export default function App() {
             : 'No recommendation run to stop — it had already finished.',
       )
     } catch (e: any) {
-      if (seq !== latestJudgmentRunSeq.current) return
+      if (action !== latestJudgmentActionSeq.current) return
       setRecommendationStopping(false)
       setSyncStatus(`Stop recommendations failed: ${e.message}`)
     }

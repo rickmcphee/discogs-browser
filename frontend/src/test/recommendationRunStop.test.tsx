@@ -421,6 +421,50 @@ describe('stopping a recommendation run from the profile page', () => {
     expect(screen.queryByText(/failed to start/)).not.toBeInTheDocument()
   })
 
+  it('keeps looking when the first read after a failed start says no run yet', async () => {
+    // The POST can fail at the client while the server is still committing the
+    // claim, so the immediate read can win that race and answer about a run
+    // that is about to exist. Stopping there would hide it for good.
+    postJudgmentStart.mockRejectedValue(new Error('network'))
+    getJudgmentStatus.mockResolvedValueOnce({ any_judged: false, run: null })
+      .mockResolvedValueOnce({ any_judged: false, run: null })
+      .mockResolvedValue({ any_judged: false, run: run({ judged: 0 }) })
+
+    const row = await openProfile()
+    fireEvent.click(within(row).getByRole('button'))
+    await vi.advanceTimersByTimeAsync(PAST_ONE_POLL * 2)
+
+    await waitFor(() => expect(within(row).getByRole('button')).toHaveTextContent('Stop'))
+  })
+
+  it('does not report a failed start once recovery finds the run running', async () => {
+    // "Failed to start" beside a live Stop button is a contradiction, and the
+    // recovery is what resolves it -- so the verdict waits for it.
+    postJudgmentStart.mockRejectedValue(new Error('network'))
+    getJudgmentStatus.mockResolvedValueOnce({ any_judged: false, run: null })
+      .mockResolvedValue({ any_judged: false, run: run({ judged: 0 }) })
+
+    const row = await openProfile()
+    fireEvent.click(within(row).getByRole('button'))
+    await vi.advanceTimersByTimeAsync(PAST_ONE_POLL)
+
+    await screen.findByText(/the recommendation run did start/)
+    expect(screen.queryByText(/failed to start: network/)).not.toBeInTheDocument()
+    await waitFor(() => expect(within(row).getByRole('button')).toHaveTextContent('Stop'))
+  })
+
+  it('still reports a start that really did fail', async () => {
+    postJudgmentStart.mockRejectedValue(new Error('network'))
+    getJudgmentStatus.mockResolvedValue({ any_judged: false, run: null })
+
+    const row = await openProfile()
+    fireEvent.click(within(row).getByRole('button'))
+    await vi.advanceTimersByTimeAsync(PAST_ONE_POLL * 3)
+
+    await screen.findByText(/failed to start: network/)
+    expect(within(row).getByRole('button')).toHaveTextContent('Refresh')
+  })
+
   it('says so when a start is refused by a run already under way', async () => {
     postJudgmentStart.mockResolvedValue({ started: false, running: true, run: run() })
     const row = await openProfile()
