@@ -141,9 +141,27 @@ reader checks, in order:
 | State | Reading |
 | --- | --- |
 | No review on the current head | Not readable yet — the matching review hasn't landed |
-| A review on the current head, no record | Not processed |
-| Record names an earlier head | Not processed for this head |
-| Record names the current head, no open Copilot thread | Done |
+| A Copilot review the record does not name | Not processed |
+| Record names the newest Copilot review, no open Copilot thread | Done, as of that review |
+
+The unit there is the **review**, not the head, and that correction was forced by
+evidence. A head is the obvious proxy for "has the current state been looked
+at", and it is wrong, because Copilot can review the same commit more than once
+with no push in between. PR #337 has two of them on `b4607e5`: review
+5161031901 carrying `🟢 Approved`, and review 5179396360 thirty-eight hours
+later carrying `🟡 Changes recommended` and four findings. A test that asks
+"is there a review on this head" is satisfied by the first and blind to the
+second, so the proxy fails in the direction that matters.
+
+Naming the review subsumes the head comparison rather than adding to it: a
+record is stale if any Copilot review exists that it does not name, whether that
+review sits on a newer head or on the same one. One test, and the head becomes
+informational.
+
+It also bounds what the signal can claim. "Done" means done as of the newest
+review seen, never that no further review will arrive — #337's second round
+landed a day and a half later. That is a real limit, and stating it is better
+than implying a permanence the mechanism cannot deliver.
 
 The cost is one comment on a pull request that would otherwise carry none, which
 is the narrow case of a review raising nothing whatsoever. Worth paying: an
