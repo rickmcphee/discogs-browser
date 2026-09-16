@@ -281,7 +281,9 @@ has fallen behind: `listing_title`
 ([`2026-08-16-store-saved-items-design.md`](2026-08-16-store-saved-items-design.md))
 and now `recommended` — the judgment verdict beside `reason`, see
 [`2026-09-07-recommendation-info-popup-design.md`](2026-09-07-recommendation-info-popup-design.md)
-— have all been added since. `frontend/src/api/types.ts` is the live shape;
+— have all been added since. **(2026-09-16:** `listing_image_url` too, the
+picture counterpart of `listing_title`, see
+[`2026-09-16-marketplace-listing-image-design.md`](2026-09-16-marketplace-listing-image-design.md).**)** `frontend/src/api/types.ts` is the live shape;
 read this one for what the split established, not for the current interface.
 
 `frontend/src/views/StockBrowser.tsx`:
