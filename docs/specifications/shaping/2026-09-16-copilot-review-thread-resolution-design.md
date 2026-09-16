@@ -319,7 +319,7 @@ permit and stops being worth reading.
   not that it is still working. Asking "is any Copilot thread open" returns the wrong answer, and no
   refinement of *whose* threads to count fixes it, because the thread is
   Copilot's and open in both the finished and unfinished cases.
-- So on that one pull request in that one configuration, thread state cannot
+- So on that one pull request, thread state cannot
   carry the signal at all, and the running ledger comment carries it instead —
   kept there whether or not a round produced suppressed findings, and holding
   the disposition of every finding rather than only the threadless ones. It is
