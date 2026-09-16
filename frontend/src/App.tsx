@@ -466,7 +466,11 @@ export default function App() {
       // read look like the first one, so a short cross-Machine run that began
       // and ended between two reads suppressed the very bump it should have
       // caused.
-      const seen = `${s.run?.status ?? 'none'}/${s.run?.judged ?? 0}`
+      // started_at is in the key, not just status and count: two runs can end
+      // identically -- a previous `complete/40` and a fresh one-batch run that
+      // also reaches `complete/40` between two reads are indistinguishable
+      // without it, and the Store would sit on the older run's judgments.
+      const seen = `${s.run?.started_at ?? 'none'}/${s.run?.status ?? 'none'}/${s.run?.judged ?? 0}`
       if (seen !== lastJudgmentRunSeen.current) {
         if (lastJudgmentRunSeen.current !== null) {
           setStockSyncGeneration(g => g + 1)
@@ -1267,8 +1271,15 @@ export default function App() {
       }
     } catch (e: any) {
       setSyncStatus(`Refresh recommendations failed to start: ${e.message}`)
+      // A failed request is not a failed start. The server may have claimed
+      // the run and created the task before the connection dropped, in which
+      // case a run is under way, spending the user's key, with nothing here
+      // polling it and a button still reading Refresh. So the row is asked
+      // instead of assumed -- and if it says a run is going, that read starts
+      // the poll and flips the button.
+      refreshJudgmentStatus()
     }
-  }, [setSyncStatus])
+  }, [setSyncStatus, refreshJudgmentStatus])
 
   const handleStopRecommendations = useCallback(async () => {
     // Optimistic, and corrected by the reply a moment later: the click has to
@@ -1285,10 +1296,18 @@ export default function App() {
       latestJudgmentRunSeq.current++
       setRecommendationRunning(Boolean(r.run?.running))
       setRecommendationStopping(Boolean(r.run?.running && r.run.stop_requested))
+      // Three outcomes, not two. A refused stop is usually a run that finished
+      // in the moment before the click -- but it is also how a run whose
+      // Machine died since the last poll answers, and that one did not finish,
+      // it stopped responding. Saying so names the state the staleness window
+      // exists to recover from, rather than reporting a completion that never
+      // happened.
       setSyncStatus(
         r.stopping
           ? 'Stopping the recommendation run — finishing the batch already paid for…'
-          : 'No recommendation run to stop — it had already finished.',
+          : r.run?.stale
+            ? 'That recommendation run stopped responding — nothing is running now, and Refresh will start a fresh one.'
+            : 'No recommendation run to stop — it had already finished.',
       )
     } catch (e: any) {
       if (seq !== latestJudgmentRunSeq.current) return

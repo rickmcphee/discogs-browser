@@ -320,6 +320,64 @@ describe('stopping a recommendation run from the profile page', () => {
     await waitFor(() => expect(within(row).getByRole('button')).toHaveTextContent('Refresh'))
   })
 
+  it('refetches the Store when a new run ends identically to the last one', async () => {
+    // Two runs can be indistinguishable by status and count alone. Without the
+    // run's own identity in the key, the Store sits on the older one's
+    // judgments.
+    getJudgmentStatus.mockResolvedValue({
+      any_judged: true,
+      run: run({ status: 'complete', running: false, judged: 40, started_at: '2026-09-16T01:00:00' }),
+    })
+    const row = await openProfile()
+    fireEvent.click(await screen.findByRole('button', { name: /store/i }))
+    await waitFor(() => expect(getStock).toHaveBeenCalled())
+    const beforeRun = getStock.mock.calls.length
+
+    // A different run, same shape.
+    getJudgmentStatus.mockResolvedValue({
+      any_judged: true,
+      run: run({ status: 'complete', running: false, judged: 40, started_at: '2026-09-16T02:00:00' }),
+    })
+    fireEvent.click(await screen.findByRole('button', { name: /profile/i }))
+    fireEvent.click(within(row).getByRole('button'))
+    await waitFor(() => expect(postJudgmentStart).toHaveBeenCalled())
+    await vi.advanceTimersByTimeAsync(PAST_ONE_POLL)
+
+    await waitFor(() => expect(getStock.mock.calls.length).toBeGreaterThan(beforeRun))
+  })
+
+  it('follows the run when the start request fails but the claim was taken', async () => {
+    // The server can commit the claim and create the task before the
+    // connection drops. Assuming the start failed would leave a paid run
+    // going with nothing polling it and the button reading Refresh.
+    postJudgmentStart.mockRejectedValue(new Error('network'))
+    getJudgmentStatus.mockResolvedValueOnce({ any_judged: false, run: null })
+      .mockResolvedValue({ any_judged: false, run: run({ judged: 0 }) })
+
+    const row = await openProfile()
+    fireEvent.click(within(row).getByRole('button'))
+
+    await waitFor(() => expect(within(row).getByRole('button')).toHaveTextContent('Stop'))
+  })
+
+  it('says a stale run stopped responding rather than that it finished', async () => {
+    getJudgmentStatus.mockResolvedValue({ any_judged: true, run: run() })
+    postJudgmentStop.mockResolvedValue({
+      stopping: false,
+      run: run({ running: false, stale: true }),
+    })
+    const row = await openProfile()
+    await waitFor(() => expect(within(row).getByRole('button')).toHaveTextContent('Stop'))
+
+    getJudgmentStatus.mockResolvedValue({
+      any_judged: true, run: run({ running: false, stale: true }),
+    })
+    fireEvent.click(within(row).getByRole('button'))
+
+    await screen.findByText(/stopped responding/)
+    await waitFor(() => expect(within(row).getByRole('button')).toHaveTextContent('Refresh'))
+  })
+
   it('says so when a start is refused by a run already under way', async () => {
     postJudgmentStart.mockResolvedValue({ started: false, running: true, run: run() })
     const row = await openProfile()
