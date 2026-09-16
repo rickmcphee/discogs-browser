@@ -15,9 +15,9 @@ import NotificationBell from './components/NotificationBell'
 import Sheet from './components/Sheet'
 import { useIsMobile } from './hooks/useMediaQuery'
 import { navButtonClass, primaryButtonClass, secondaryButtonClass, dismissButtonClass } from './styles/buttons'
-import { refreshCollection, getCollectionStatus, openCrawlStream, getCrawlStatus, postCrawlStart, postStockSyncStart, postJudgmentStart, clearJudgments, exportRecommendationsCsv, importRecommendationsCsv, getCrawlers, getUserSettings, getUserHiddenCrawlers, postUserHiddenCrawlers, getJudgmentStatus, getPriceStatus, getNotificationsUnread, markNotificationsRead, checkHealth, getAuthStatus, setUnauthorizedHandler, hasAvatar } from './api/client'
+import { refreshCollection, getCollectionStatus, openCrawlStream, getCrawlStatus, postCrawlStart, postStockSyncStart, postJudgmentStart, postJudgmentStop, clearJudgments, exportRecommendationsCsv, importRecommendationsCsv, getCrawlers, getUserSettings, getUserHiddenCrawlers, postUserHiddenCrawlers, getJudgmentStatus, getPriceStatus, getNotificationsUnread, markNotificationsRead, checkHealth, getAuthStatus, setUnauthorizedHandler, hasAvatar } from './api/client'
 import type { StockSyncStartResult } from './api/client'
-import type { CrawlEvent, CrawlStatus, CollectionStatus, CollectionSyncRun, Crawler, AuthStatus } from './api/types'
+import type { CrawlEvent, CrawlStatus, CollectionStatus, CollectionSyncRun, Crawler, AuthStatus, JudgmentStatus } from './api/types'
 
 type View = 'collection' | 'wantlist' | 'store' | 'settings' | 'logs' | 'queue' | 'account' | 'notifications'
 type LibraryView = Extract<View, 'collection' | 'wantlist' | 'store'>
@@ -97,6 +97,14 @@ const COLLECTION_SYNC_POLL_MS = 3000
 // sync being followed retries indefinitely instead: it is running, and its
 // outcome is worth waiting for.
 const POLL_READ_ATTEMPTS = 3
+
+// Same gap, same remedy, for the recommendation run: stock_judgment_* events
+// reach only the Machine running the job, so the Refresh/Stop button cannot be
+// driven by them alone -- half the time none of them arrive. This polls
+// stock_judgment_runs through GET /stock/judge/status, and only while a run is
+// believed to be under way; the SSE handlers stay as the same-Machine fast
+// path, and both write the same two flags.
+const JUDGMENT_RUN_POLL_MS = 3000
 
 const REFUSED_START_MESSAGE =
   'Could not start a sync — another job is running for your account. Try again shortly.'
@@ -214,6 +222,39 @@ export default function App() {
   // cancelled by that discarded response's own cleanup.
   const latestStatusOwnerSeq = useRef(0)
   const latestHasJudgedItemsSeq = useRef(0)
+  // The recommendation run, reduced to the two things the button renders.
+  // `stopping` is not a UI affectation: a stop is a flag the run reads between
+  // batches, so the batch in flight has to finish first, and a button that
+  // snapped straight back to Refresh would invite a second start against a run
+  // that is still going -- which the claim would then refuse, silently.
+  const [recommendationRunning, setRecommendationRunning] = useState(false)
+  const [recommendationStopping, setRecommendationStopping] = useState(false)
+  // Same race, same fix, as latestHasJudgedItemsSeq guards for hasJudgedItems:
+  // the poll, the start and stop responses, and the SSE handlers are four
+  // writers of these flags, and a slow read must not land on top of a newer
+  // answer. Every direct writer bumps this first.
+  const latestJudgmentRunSeq = useRef(0)
+  // Counts *user actions* on the run -- a Refresh or a Stop click -- and
+  // nothing else. Separate from the counter above because that one is also
+  // bumped by every status read, including a handler's own recovery read: a
+  // handler comparing against it after awaiting its own read always finds
+  // itself superseded, and silently drops the verdict it went to fetch. What a
+  // handler actually needs to know is whether the *user* has since asked for
+  // something else.
+  const latestJudgmentActionSeq = useRef(0)
+  // True while a stop the user asked for is in flight. A status read issued in
+  // that window is not authoritative about the stop flag -- it can reach the
+  // row before the stop commits and answer "not stopping" about a stop that is
+  // already on its way -- so it is allowed to refresh everything else and not
+  // these two flags. Without this the poll re-enables the button mid-request
+  // and the stop's own reply, being older than that read, is then discarded.
+  const judgmentStopPending = useRef(false)
+  // The last (status, judged) the poll saw, so it can tell a run that has
+  // advanced from one it has merely been asked about again. Null means "no
+  // read yet", and only that very first read is exempt from the bump -- it is
+  // "what is the state on load" rather than movement, and would otherwise
+  // refetch the Store on every page load.
+  const lastJudgmentRunSeen = useRef<string | null>(null)
   const [serverReady, setServerReady] = useState(false)
   const [backendUp, setBackendUp] = useState<boolean | null>(null)
   const [authRevalidating, setAuthRevalidating] = useState(false)
@@ -409,13 +450,84 @@ export default function App() {
   // handlers and the clear handler bump it before writing directly (they
   // already know the answer, no fetch needed), so a slower fetch that was
   // already in flight loses the race and its stale result is discarded.
-  const refreshJudgmentStatus = useCallback(() => {
-    const seq = ++latestHasJudgedItemsSeq.current
-    getJudgmentStatus().then((s) => {
-      if (seq !== latestHasJudgedItemsSeq.current) return
-      setHasJudgedItems(s.any_judged)
-    }).catch(() => {})
+  const refreshJudgmentStatus = useCallback(async (): Promise<JudgmentStatus | null> => {
+    const judgedSeq = ++latestHasJudgedItemsSeq.current
+    const runSeq = ++latestJudgmentRunSeq.current
+    try {
+      const s = await getJudgmentStatus()
+      if (judgedSeq === latestHasJudgedItemsSeq.current) setHasJudgedItems(s.any_judged)
+      // Two counters, not one: the same reply carries both answers, but the
+      // writers that can overtake it differ -- a clear writes hasJudgedItems
+      // and says nothing about the run, a stop response the reverse -- so a
+      // single guard would let either discard the half it knows nothing about.
+      if (runSeq !== latestJudgmentRunSeq.current) {
+        // Superseded. Returning it anyway would let the poll below read a
+        // terminal answer about an *older* run -- one that arrived after a
+        // newer start had already set the flags -- and stop following the run
+        // that is actually spending, leaving its button stuck on Stop.
+        return null
+      }
+      if (!judgmentStopPending.current) {
+        setRecommendationRunning(Boolean(s.run?.running))
+        setRecommendationStopping(Boolean(s.run?.running && s.run.stop_requested))
+      }
+      // The judgments this run has written are invisible to an already-open
+      // Store tab unless something tells it to refetch, and on the Machine
+      // that is not running the job nothing does: the generation bumps live on
+      // the stock_judgment_* handlers, which never arrive there. So the poll
+      // makes them too, from the counters it can see -- gated on the run
+      // having actually moved, or the poll would refetch every few seconds for
+      // as long as a run lasts.
+      // "no run" is a baseline like any other, not a reason to record nothing:
+      // leaving the ref null through a mount-time `run: null` made the *next*
+      // read look like the first one, so a short cross-Machine run that began
+      // and ended between two reads suppressed the very bump it should have
+      // caused.
+      // started_at is in the key, not just status and count: two runs can end
+      // identically -- a previous `complete/40` and a fresh one-batch run that
+      // also reaches `complete/40` between two reads are indistinguishable
+      // without it, and the Store would sit on the older run's judgments.
+      const seen = `${s.run?.started_at ?? 'none'}/${s.run?.status ?? 'none'}/${s.run?.judged ?? 0}`
+      if (seen !== lastJudgmentRunSeen.current) {
+        if (lastJudgmentRunSeen.current !== null) {
+          setStockSyncGeneration(g => g + 1)
+          setStockJudgmentGeneration(g => g + 1)
+        }
+        lastJudgmentRunSeen.current = seen
+      }
+      return s
+    } catch {
+      // Never throws: every caller treats a failed read as "nothing new to
+      // say", and the poll below decides for itself whether to keep trying.
+      return null
+    }
   }, [])
+
+  // The discovery read, retried a bounded number of times, in the shape the
+  // collection sync's own discovery poll already uses.
+  //
+  // A single attempt is not enough anywhere this is called. On the Machine that
+  // is not running the job nothing else is coming -- no stock_judgment_* event
+  // arrives, and the poll below only runs once a run is already believed to be
+  // in flight -- so one dropped request leaves the button reading Refresh for
+  // the whole of a paid run, with no way to stop it.
+  // `waitForRun` is what a *failed start* needs and a page load does not. On a
+  // page load, "no run" is a complete answer. After a start request that threw,
+  // it is not: the POST can fail at the client while the server is still
+  // committing the claim, so an immediate read can win that race and answer
+  // `run: null` about a run that is about to exist. Ending there would hide it
+  // for good, since nothing else is coming. Returns whether a run is under way.
+  const discoverJudgmentRun = useCallback(async (waitForRun = false): Promise<boolean> => {
+    for (let attempt = 0; attempt < POLL_READ_ATTEMPTS; attempt++) {
+      const status = await refreshJudgmentStatus()
+      if (status?.run?.running) return true
+      if (status && !waitForRun) return false
+      if (attempt < POLL_READ_ATTEMPTS - 1) {
+        await new Promise(r => setTimeout(r, JUDGMENT_RUN_POLL_MS))
+      }
+    }
+    return false
+  }, [refreshJudgmentStatus])
 
   // Continuous, unconditional health poll -- drives `backendUp`, which gates
   // BackendDownScreen for both "backend not up yet" and "backend went down
@@ -475,10 +587,10 @@ export default function App() {
     getUserSettings().then((s) => {
       setHasAnthropicKey(Boolean(s.anthropic_api_key))
     }).catch(() => {})
-    refreshJudgmentStatus()
+    discoverJudgmentRun()
     fetchPriceStatus()
     hasAvatar().then((exists) => setAvatarVersion(exists ? Date.now() : 0)).catch(() => {})
-  }, [authState, backendUp, serverReady, setSyncStatus, fetchPriceStatus, refreshJudgmentStatus])
+  }, [authState, backendUp, serverReady, setSyncStatus, fetchPriceStatus, discoverJudgmentRun])
 
   // Persistent SSE connection — reconnects on error. Gated on authState only
   // (not backendUp) -- it reconnects through any backend outage on its own
@@ -626,6 +738,18 @@ export default function App() {
       }
       if (event.status === 'stock_judgment_started') {
         setSyncing(true)
+        // The same-Machine fast path for the button: this browser heard the
+        // run start, so it need not wait for the poll's first tick. A run
+        // whose events go to the other Machine's subscribers reaches the same
+        // state a beat later, through GET /stock/judge/status.
+        //
+        // `stopping` is deliberately left alone. This event can be queued
+        // before a Stop click and delivered after it, and clearing the flag
+        // there would turn the disabled "Stopping…" back into "Stop" while the
+        // row's flag is still set -- inviting a second click that does
+        // nothing. The row clears it, through the poll or a terminal event.
+        latestJudgmentRunSeq.current++
+        setRecommendationRunning(true)
         setSyncStatus('Finding recommendations for Store items…', event.id ?? null)
         return
       }
@@ -634,24 +758,51 @@ export default function App() {
           latestHasJudgedItemsSeq.current++
           setHasJudgedItems(true)
         }
+        latestJudgmentRunSeq.current++
+        setRecommendationRunning(true)
         setStockSyncGeneration(g => g + 1)
         setStockJudgmentGeneration(g => g + 1)
         setSyncStatus(`Finding recommendations for Store items… ${event.judged}/${event.total}`, event.id ?? null)
         return
       }
-      if (event.status === 'stock_judgment_complete') {
+      if (event.status === 'stock_judgment_complete' || event.status === 'stock_judgment_stopped') {
+        const stopped = event.status === 'stock_judgment_stopped'
         setSyncing(false)
+        latestJudgmentRunSeq.current++
+        setRecommendationRunning(false)
+        setRecommendationStopping(false)
+        // A judgment event names no run, so an ending delivered late -- this
+        // Machine's buffer replaying it, or a slow queue -- is indistinguishable
+        // from the current run's. Clearing the flags on it is right nearly
+        // always and wrong exactly when a newer run has started since, where it
+        // would take Stop away from a run still spending and stop the poll that
+        // would have noticed. So the row gets the last word: one read, which
+        // restores the flags if a run is in fact still going.
+        refreshJudgmentStatus()
         if ((event.judged ?? 0) > 0) {
           latestHasJudgedItemsSeq.current++
           setHasJudgedItems(true)
         }
         setStockSyncGeneration(g => g + 1)
         setStockJudgmentGeneration(g => g + 1)
-        setSyncStatus(`Finished finding recommendations — ${event.judged} items checked`, event.id ?? null)
+        setSyncStatus(
+          stopped
+            // Says what was kept, not just that it ended: the items judged
+            // before the stop stay judged and are not paid for again, and the
+            // rest are simply still unjudged for the next run to pick up.
+            ? `Recommendation run stopped — ${event.judged} of ${event.total} items checked`
+            : `Finished finding recommendations — ${event.judged} items checked`,
+          event.id ?? null,
+        )
         return
       }
       if (event.status === 'stock_judgment_error') {
         setSyncing(false)
+        latestJudgmentRunSeq.current++
+        setRecommendationRunning(false)
+        setRecommendationStopping(false)
+        // Confirmed against the row, same as the two endings above.
+        refreshJudgmentStatus()
         setSyncStatus(`Finding recommendations failed: ${event.error}`, event.id ?? null)
         return
       }
@@ -709,7 +860,7 @@ export default function App() {
       source?.close()
       clearTimeout(reconnectTimer)
     }
-  }, [authState, setSyncStatus, fetchPriceStatus])
+  }, [authState, setSyncStatus, fetchPriceStatus, refreshJudgmentStatus])
 
   // Rides priceGeneration rather than a notification-specific SSE event: a
   // per-user event would have to be tagged with an owner, and the crawl worker
@@ -939,6 +1090,32 @@ export default function App() {
     // for one costs nothing but risks everything above.
   }, [authed, syncPollNonce, setSyncStatus, fetchPriceStatus, releaseSyncFollow])
 
+  // Follows a run to its end over HTTP, because the events that narrate one
+  // reach only the Machine running it. Keyed on the flag rather than on the
+  // run object, so a poll that finds the run still going does not restart its
+  // own effect; it stops the moment a read says the run has ended, and the
+  // next start (or a stock_judgment_started that did reach this browser)
+  // starts it again.
+  useEffect(() => {
+    if (!authed || !recommendationRunning) return
+    let cancelled = false
+    async function poll() {
+      while (!cancelled) {
+        await new Promise(r => setTimeout(r, JUDGMENT_RUN_POLL_MS))
+        if (cancelled) return
+        const status = await refreshJudgmentStatus()
+        if (cancelled) return
+        // A failed read says nothing, so it is not taken as an ending: the run
+        // is spending the user's Anthropic key and the Stop button has to stay
+        // reachable through a dropped request. Unlike the collection poll's
+        // bounded retries, there is no refused-start case here to give up on.
+        if (status && !status.run?.running) return
+      }
+    }
+    poll()
+    return () => { cancelled = true }
+  }, [authed, recommendationRunning, refreshJudgmentStatus])
+
   const followSyncRun = useCallback((intent: { adoptTerminal: boolean; idleMessage: string | null }) => {
     syncPollIntentRef.current = intent
     setSyncPollNonce(n => n + 1)
@@ -1116,10 +1293,99 @@ export default function App() {
   )
 
   const handleRefreshRecommendations = useCallback(async () => {
+    // Claimed before the request goes out, not after it comes back. The worker
+    // can broadcast stock_judgment_started, and the user can click Stop, while
+    // this POST is still in flight -- and this reply's snapshot predates both,
+    // so advancing the sequence on arrival would make a stale answer the
+    // newest writer and turn a disabled "Stopping…" back into "Stop".
+    const action = ++latestJudgmentActionSeq.current
+    const seq = ++latestJudgmentRunSeq.current
     try {
-      await postJudgmentStart()
+      const r = await postJudgmentStart()
+      if (action !== latestJudgmentActionSeq.current) return
+      if (seq !== latestJudgmentRunSeq.current) return
+      // The reply carries the row, so the button flips to Stop on the response
+      // alone. Waiting for stock_judgment_started would leave it reading
+      // Refresh for the whole of a run whose events went to the other Machine.
+      setRecommendationRunning(r.running)
+      setRecommendationStopping(Boolean(r.run?.running && r.run.stop_requested))
+      // A refused start used to pass in silence, which is the same
+      // "did that do anything?" the button's own faces exist to answer.
+      if (!r.started && r.running) {
+        setSyncStatus('A recommendation run is already under way — use Stop to end it.')
+      }
     } catch (e: any) {
-      setSyncStatus(`Refresh recommendations failed to start: ${e.message}`)
+      // Fenced exactly like the success path above. A rejection can arrive
+      // after a started event has enabled Stop and the user has clicked it, and
+      // both the message and the recovery read below would then talk over that
+      // newer state -- the read especially, since its snapshot can predate the
+      // stop commit and would turn the disabled "Stopping…" back into "Stop".
+      if (action !== latestJudgmentActionSeq.current) return
+      // A failed request is not a failed start. The server may have claimed
+      // the run and created the task before the connection dropped, in which
+      // case a run is under way, spending the user's key, with nothing here
+      // polling it and a button still reading Refresh. So the row is asked
+      // instead of assumed -- and the verdict waits for that answer rather
+      // than announcing a failure the recovery may be about to contradict,
+      // which would leave "failed to start" on screen beside a live Stop
+      // button.
+      setSyncStatus('Checking whether the recommendation run started…')
+      const running = await discoverJudgmentRun(true)
+      // Against the action counter, not the read counter: the recovery read
+      // above bumps the latter itself, so comparing against it here would
+      // discard this verdict every time.
+      if (action !== latestJudgmentActionSeq.current) return
+      setSyncStatus(
+        running
+          ? 'That request failed, but the recommendation run did start — use Stop to end it.'
+          : `Refresh recommendations failed to start: ${e.message}`,
+      )
+    }
+  }, [setSyncStatus, discoverJudgmentRun])
+
+  const handleStopRecommendations = useCallback(async () => {
+    // Optimistic, and corrected by the reply a moment later: the click has to
+    // change the button now, or it reads as ignored for as long as the request
+    // takes. Claimed first so anything already in flight -- a poll that read
+    // the row before the flag was written, a start response whose snapshot
+    // predates this click -- cannot land on top of it and flick the button
+    // back to Stop, and claimed again on arrival for the same reason.
+    const action = ++latestJudgmentActionSeq.current
+    latestJudgmentRunSeq.current++
+    judgmentStopPending.current = true
+    setRecommendationStopping(true)
+    try {
+      const r = await postJudgmentStop()
+      if (action !== latestJudgmentActionSeq.current) return
+      // No read-sequence check here: a poll tick during this request bumps that
+      // counter, and checking it would discard the one answer that actually
+      // knows whether the stop landed. The bump instead, so a read still in
+      // flight is superseded by this reply rather than the other way round.
+      latestJudgmentRunSeq.current++
+      setRecommendationRunning(Boolean(r.run?.running))
+      setRecommendationStopping(Boolean(r.run?.running && r.run.stop_requested))
+      // Three outcomes, not two. A refused stop is usually a run that finished
+      // in the moment before the click -- but it is also how a run whose
+      // Machine died since the last poll answers, and that one did not finish,
+      // it stopped responding. Saying so names the state the staleness window
+      // exists to recover from, rather than reporting a completion that never
+      // happened.
+      setSyncStatus(
+        r.stopping
+          ? 'Stopping the recommendation run — finishing the batch already paid for…'
+          : r.run?.stale
+            ? 'That recommendation run stopped responding — nothing is running now, and Refresh will start a fresh one.'
+            : 'No recommendation run to stop — it had already finished.',
+      )
+    } catch (e: any) {
+      if (action !== latestJudgmentActionSeq.current) return
+      latestJudgmentRunSeq.current++
+      setRecommendationStopping(false)
+      setSyncStatus(`Stop recommendations failed: ${e.message}`)
+    } finally {
+      // Only the newest stop releases the suppression; an older one losing the
+      // race must not re-open the window its successor is still inside.
+      if (action === latestJudgmentActionSeq.current) judgmentStopPending.current = false
     }
   }, [setSyncStatus])
 
@@ -1383,6 +1649,9 @@ export default function App() {
             viewingAsUser={viewAsUser}
             onToggleViewAsUser={toggleViewAsUser}
             onRefreshRecommendations={handleRefreshRecommendations}
+            onStopRecommendations={handleStopRecommendations}
+            recommendationRunning={recommendationRunning}
+            recommendationStopping={recommendationStopping}
             onExportRecommendations={handleExportRecommendations}
             onImportRecommendations={handleImportRecommendations}
             onClearRecommendations={handleClearRecommendations}

@@ -484,3 +484,237 @@ def test_applied_keys_excludes_unchanged_rows_even_when_they_are_in_stock(pg_tes
         assert applied_keys == [new_key]
         assert db.count_matching_stock_items(conn, applied_keys) == 0
         assert db.count_matching_stock_items(conn, [in_stock_key, new_key]) == 1
+
+
+# ---------------------------------------------------------------------------
+# stock_judgment_runs -- the recommendation run as a row both Machines can read
+# ---------------------------------------------------------------------------
+
+def _alice(conn):
+    return db.create_user(conn, discogs_user_id=1, discogs_username="alice")["id"]
+
+
+def _expire_heartbeat(user_id):
+    """Push the run's heartbeat past the staleness window, as a Machine that
+    died mid-run leaves it."""
+    with db.get_admin_pool().connection() as conn:
+        conn.execute(
+            "UPDATE stock_judgment_runs SET heartbeat_at = clock_timestamp() "
+            f"- INTERVAL '{db.JUDGMENT_RUN_STALE_MINUTES + 1} minutes' WHERE user_id = %s",
+            [user_id],
+        )
+        conn.commit()
+
+
+def test_claim_stock_judgment_run_refuses_a_second_live_claim(pg_test_db):
+    with db.get_admin_pool().connection() as conn:
+        user_id = _alice(conn)
+        conn.commit()
+
+    with db.user_scope(user_id) as conn:
+        first = db.claim_stock_judgment_run(conn, user_id)
+        conn.commit()
+        assert first is not None
+        # The refusal that matters is this one: it holds for a run the other
+        # Machine is working, which no process-local task map can see.
+        assert db.claim_stock_judgment_run(conn, user_id) is None
+        conn.commit()
+
+        assert db.finish_stock_judgment_run(conn, user_id, first, "complete") is True
+        conn.commit()
+        assert db.claim_stock_judgment_run(conn, user_id) is not None
+
+
+def test_claim_stock_judgment_run_takes_over_a_run_whose_heartbeat_lapsed(pg_test_db):
+    with db.get_admin_pool().connection() as conn:
+        user_id = _alice(conn)
+        conn.commit()
+    with db.user_scope(user_id) as conn:
+        abandoned = db.claim_stock_judgment_run(conn, user_id)
+        conn.commit()
+    _expire_heartbeat(user_id)
+
+    with db.user_scope(user_id) as conn:
+        # A claim that could not expire would be a trap: the row would refuse
+        # every later Refresh for good, and pin the button on Stop.
+        assert db.get_stock_judgment_run(conn, user_id)["running"] is False
+        assert db.get_stock_judgment_run(conn, user_id)["stale"] is True
+        taken_over = db.claim_stock_judgment_run(conn, user_id)
+        conn.commit()
+    assert taken_over is not None and taken_over != abandoned
+
+
+def test_claim_stock_judgment_run_clears_the_previous_runs_stop_flag(pg_test_db):
+    with db.get_admin_pool().connection() as conn:
+        user_id = _alice(conn)
+        conn.commit()
+    with db.user_scope(user_id) as conn:
+        first = db.claim_stock_judgment_run(conn, user_id)
+        assert db.request_stock_judgment_stop(conn, user_id) is True
+        assert db.finish_stock_judgment_run(conn, user_id, first, "stopped") is True
+        conn.commit()
+
+        # Without the reset, the flag the last run honoured would stop this one
+        # at its first checkpoint, having judged nothing.
+        second = db.claim_stock_judgment_run(conn, user_id)
+        conn.commit()
+        assert db.record_stock_judgment_progress(
+            conn, user_id, second, total=10
+        ) == {"stop_requested": False}
+
+
+def test_record_stock_judgment_progress_is_fenced_on_the_claim(pg_test_db):
+    with db.get_admin_pool().connection() as conn:
+        user_id = _alice(conn)
+        conn.commit()
+    with db.user_scope(user_id) as conn:
+        token = db.claim_stock_judgment_run(conn, user_id)
+        conn.commit()
+
+        assert db.record_stock_judgment_progress(conn, user_id, token, judged=40, total=300) == {
+            "stop_requested": False
+        }
+        # A worker that lost its claim must find out, or it goes on spending
+        # the user's Anthropic key alongside the run that replaced it.
+        assert db.record_stock_judgment_progress(conn, user_id, "somebody-else", judged=80) is None
+        conn.commit()
+        assert db.get_stock_judgment_run(conn, user_id)["judged"] == 40
+
+
+def test_record_stock_judgment_progress_reports_a_requested_stop(pg_test_db):
+    with db.get_admin_pool().connection() as conn:
+        user_id = _alice(conn)
+        conn.commit()
+    with db.user_scope(user_id) as conn:
+        token = db.claim_stock_judgment_run(conn, user_id)
+        assert db.request_stock_judgment_stop(conn, user_id) is True
+        conn.commit()
+        assert db.record_stock_judgment_progress(conn, user_id, token, judged=40) == {
+            "stop_requested": True
+        }
+
+
+def test_a_run_past_the_staleness_window_cannot_revive_its_row(pg_test_db):
+    """Expiry has to be irreversible: a worker that went quiet long enough to
+    be taken over must not come back and write over a row the client has
+    already been told is finished."""
+    with db.get_admin_pool().connection() as conn:
+        user_id = _alice(conn)
+        conn.commit()
+    with db.user_scope(user_id) as conn:
+        token = db.claim_stock_judgment_run(conn, user_id)
+        conn.commit()
+    _expire_heartbeat(user_id)
+
+    with db.user_scope(user_id) as conn:
+        assert db.record_stock_judgment_progress(conn, user_id, token, judged=99) is None
+        assert db.finish_stock_judgment_run(conn, user_id, token, "complete") is False
+        conn.commit()
+        assert db.get_stock_judgment_run(conn, user_id)["running"] is False
+
+
+def test_request_stock_judgment_stop_reports_nothing_to_stop(pg_test_db):
+    with db.get_admin_pool().connection() as conn:
+        user_id = _alice(conn)
+        conn.commit()
+    with db.user_scope(user_id) as conn:
+        # Never run.
+        assert db.request_stock_judgment_stop(conn, user_id) is False
+        token = db.claim_stock_judgment_run(conn, user_id)
+        assert db.finish_stock_judgment_run(conn, user_id, token, "complete") is True
+        conn.commit()
+        # Already finished.
+        assert db.request_stock_judgment_stop(conn, user_id) is False
+        conn.commit()
+    _expire_heartbeat(user_id)
+    with db.user_scope(user_id) as conn:
+        # And a stale row, which no worker is reading, is not flagged either.
+        db.claim_stock_judgment_run(conn, user_id)
+        conn.commit()
+    _expire_heartbeat(user_id)
+    with db.user_scope(user_id) as conn:
+        assert db.request_stock_judgment_stop(conn, user_id) is False
+
+
+def test_one_users_run_is_not_another_users(pg_test_db):
+    """The row is per-user, so bob's run neither shows up as alice's nor
+    refuses her claim. (Cross-tenant isolation through the API, under
+    app_user's RLS rather than this fixture's superuser connection, is covered
+    by test_stock_router.py.)"""
+    with db.get_admin_pool().connection() as conn:
+        alice = _alice(conn)
+        bob = db.create_user(conn, discogs_user_id=2, discogs_username="bob")["id"]
+        conn.commit()
+    with db.user_scope(bob) as conn:
+        db.claim_stock_judgment_run(conn, bob)
+        conn.commit()
+
+    with db.user_scope(alice) as conn:
+        assert db.get_stock_judgment_run(conn, alice) is None
+        assert db.claim_stock_judgment_run(conn, alice) is not None
+        assert db.request_stock_judgment_stop(conn, alice) is True
+        conn.commit()
+    with db.user_scope(bob) as conn:
+        assert db.get_stock_judgment_run(conn, bob)["stop_requested"] is False
+
+
+def test_lock_stock_judgment_run_excludes_a_second_holder_before_any_row_exists(pg_test_db):
+    """The lock has to work for a user whose first Refresh and first import
+    race each other, which is precisely when there is no run row to lock -- the
+    case a SELECT ... FOR UPDATE degrades to no lock at all."""
+    with db.get_admin_pool().connection() as conn:
+        user_id = _alice(conn)
+        conn.commit()
+
+    with db.user_scope(user_id) as holder:
+        assert db.get_stock_judgment_run(holder, user_id) is None
+        db.lock_stock_judgment_run(holder, user_id)
+
+        # A second session, while the first still holds it.
+        with db.user_scope(user_id) as contender:
+            got = contender.execute(
+                "SELECT pg_try_advisory_xact_lock(%s, %s) AS got",
+                [db.JUDGMENT_RUN_LOCK_KEY, user_id],
+            ).fetchone()["got"]
+            assert got is False
+            # A different user's lock is a different lock.
+            other = contender.execute(
+                "SELECT pg_try_advisory_xact_lock(%s, %s) AS got",
+                [db.JUDGMENT_RUN_LOCK_KEY, user_id + 1],
+            ).fetchone()["got"]
+            assert other is True
+        holder.commit()
+
+    # Released with the transaction that took it.
+    with db.user_scope(user_id) as conn:
+        got = conn.execute(
+            "SELECT pg_try_advisory_xact_lock(%s, %s) AS got",
+            [db.JUDGMENT_RUN_LOCK_KEY, user_id],
+        ).fetchone()["got"]
+        assert got is True
+
+
+def test_claim_and_checkpoint_hold_the_run_lock(pg_test_db):
+    """Both are on the write path a clear or an import has to be excluded from,
+    so both have to be holding the lock those guards take -- not merely
+    respecting the row."""
+    with db.get_admin_pool().connection() as conn:
+        user_id = _alice(conn)
+        conn.commit()
+
+    def _lock_is_held_by_someone_else():
+        with db.user_scope(user_id) as probe:
+            return probe.execute(
+                "SELECT pg_try_advisory_xact_lock(%s, %s) AS got",
+                [db.JUDGMENT_RUN_LOCK_KEY, user_id],
+            ).fetchone()["got"] is False
+
+    with db.user_scope(user_id) as conn:
+        token = db.claim_stock_judgment_run(conn, user_id)
+        assert _lock_is_held_by_someone_else()
+        conn.commit()
+
+    with db.user_scope(user_id) as conn:
+        db.record_stock_judgment_progress(conn, user_id, token, judged=40)
+        assert _lock_is_held_by_someone_else()
+        conn.commit()

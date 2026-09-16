@@ -62,6 +62,7 @@ vi.mock('../api/client', () => ({
   getStockArtists: vi.fn().mockResolvedValue([]),
   postStockSyncStart: (...args: unknown[]) => postStockSyncStart(...args),
   postJudgmentStart: (...args: unknown[]) => postJudgmentStart(...args),
+  postJudgmentStop: vi.fn().mockResolvedValue({ stopping: false, run: null }),
   clearJudgments: (...args: unknown[]) => clearJudgments(...args),
   exportRecommendationsCsv: (...args: unknown[]) => exportRecommendationsCsv(...args),
   getJudgmentStatus: (...args: unknown[]) => getJudgmentStatus(...args),
@@ -799,7 +800,7 @@ describe('In Stock tab', () => {
     getUserSettings.mockResolvedValue({ ...defaultUserSettings, anthropic_api_key: 'sk-ant-test' })
     render(<App />)
     fireEvent.click(await screen.findByRole('button', { name: /profile/i }))
-    const description = await screen.findByText('Evaluate unprocessed Store items for recommendation, without a full catalog re-crawl.')
+    const description = await screen.findByText(/Evaluate unprocessed Store items for recommendation/)
     const row = description.closest('tr') as HTMLElement
     fireEvent.click(within(row).getByText('Refresh'))
     await waitFor(() => expect(postJudgmentStart).toHaveBeenCalled())
@@ -813,7 +814,7 @@ describe('In Stock tab', () => {
   })
 
   it('calls exportRecommendationsCsv when Export is clicked', async () => {
-    getJudgmentStatus.mockResolvedValue({ any_judged: true })
+    getJudgmentStatus.mockResolvedValue({ any_judged: true, run: null })
     render(<App />)
     fireEvent.click(await screen.findByRole('button', { name: /profile/i }))
     await waitFor(() => expect(screen.getByText('Export').closest('button')).not.toBeDisabled())
@@ -830,7 +831,7 @@ describe('In Stock tab', () => {
   })
 
   it('does not call clearJudgments when the confirm dialog is cancelled', async () => {
-    getJudgmentStatus.mockResolvedValue({ any_judged: true })
+    getJudgmentStatus.mockResolvedValue({ any_judged: true, run: null })
     vi.spyOn(window, 'confirm').mockReturnValue(false)
     render(<App />)
     fireEvent.click(await screen.findByRole('button', { name: /profile/i }))
@@ -843,7 +844,7 @@ describe('In Stock tab', () => {
   })
 
   it('calls clearJudgments and reports the count when confirmed', async () => {
-    getJudgmentStatus.mockResolvedValue({ any_judged: true })
+    getJudgmentStatus.mockResolvedValue({ any_judged: true, run: null })
     vi.spyOn(window, 'confirm').mockReturnValue(true)
     render(<App />)
     fireEvent.click(await screen.findByRole('button', { name: /profile/i }))
@@ -856,7 +857,7 @@ describe('In Stock tab', () => {
   })
 
   it('surfaces the running message when clear is refused because a run is in progress', async () => {
-    getJudgmentStatus.mockResolvedValue({ any_judged: true })
+    getJudgmentStatus.mockResolvedValue({ any_judged: true, run: null })
     clearJudgments.mockResolvedValue({ cleared: false, running: true })
     vi.spyOn(window, 'confirm').mockReturnValue(true)
     render(<App />)
@@ -870,7 +871,7 @@ describe('In Stock tab', () => {
 
   it('enables Recommended in Store only once a key is configured and a judgment has completed', async () => {
     getUserSettings.mockResolvedValue({ ...defaultUserSettings, anthropic_api_key: 'sk-ant-test' })
-    getJudgmentStatus.mockResolvedValue({ any_judged: true })
+    getJudgmentStatus.mockResolvedValue({ any_judged: true, run: null })
     render(<App />)
     await waitFor(() => expect(screen.getByText('Store')).toBeInTheDocument())
     fireEvent.click(screen.getByText('Store'))
@@ -882,7 +883,7 @@ describe('In Stock tab', () => {
 
   it('keeps Recommended enabled in Store while a judgment run is in progress', async () => {
     getUserSettings.mockResolvedValue({ ...defaultUserSettings, anthropic_api_key: 'sk-ant-test' })
-    getJudgmentStatus.mockResolvedValue({ any_judged: true })
+    getJudgmentStatus.mockResolvedValue({ any_judged: true, run: null })
     render(<App />)
     await waitFor(() => expect(screen.getByText('Store')).toBeInTheDocument())
     fireEvent.click(screen.getByText('Store'))
