@@ -125,6 +125,31 @@ where a flag goes stale only if whoever pushed remembered to flip it, and the
 whole failure being fixed here is a signal that reads "done" because nobody
 updated it.
 
+**The ledger is a closeout record rather than a suppressed-findings appendix,
+and its absence has to mean something.** A review can carry body-only findings
+and open no thread at all — PR #337's review 5180040053 did exactly that, four
+suppressed findings and nothing inline. Before the agent writes anything, such a
+pull request has no open thread *and* no ledger: both halves of the signal are
+silent while the findings sit unread, and silence is what a reader takes for
+"nothing to do."
+
+So the record is written when the first review on a pull request is processed,
+whether or not that round produced suppressed findings, and it always names the
+review and head it covers. Its absence then says something definite. What a
+reader checks, in order:
+
+| State | Reading |
+| --- | --- |
+| No review on the current head | Not readable yet — the matching review hasn't landed |
+| A review on the current head, no record | Not processed |
+| Record names an earlier head | Not processed for this head |
+| Record names the current head, no open Copilot thread | Done |
+
+The cost is one comment on a pull request that would otherwise carry none, which
+is the narrow case of a review raising nothing whatsoever. Worth paying: an
+ambiguous silence is the expensive half of this, because it is the half a reader
+resolves in the wrong direction.
+
 **The owner's own review threads are left alone.** The owner resolving their own
 comment means "I am satisfied"; the agent resolving one would mean "I believe I
 have satisfied you." Those are different claims, and the distinction is worth
