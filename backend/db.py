@@ -1019,18 +1019,45 @@ def backfill_stock_keys(conn) -> int:
     name a different pressing than the target), else the title, with the
     artist along to strip a leading "Artist - ".
     """
+    # Keyed from the item's live stock row where it still has one, not from
+    # this table's own artist/title. The two disagree on the release-crawler
+    # path: stock_items keys off `listing_title` (the marketplace's name for
+    # what it matched), while the identity stores the catalog target's name,
+    # and the live writers reconcile that by putting one computed value in
+    # both. A backfill reading only this table would not, and the mismatch is
+    # silent and expensive -- _judged_record_sql matches identity to stock
+    # row, so a historical judgment whose two keys disagree stops being found
+    # and the item is billed again. An item with no stock row left has no
+    # listing_title to recover and falls back to its own name.
     identities = conn.execute(
-        "SELECT item_key, artist, title FROM stock_item_identities WHERE record_key IS NULL"
+        """
+        SELECT i.item_key, i.artist, i.title,
+               s.artist AS stock_artist, s.title AS stock_title, s.listing_title
+        FROM stock_item_identities i
+        LEFT JOIN LATERAL (
+            SELECT artist, title, listing_title
+            FROM stock_items s
+            WHERE s.item_key = i.item_key
+            ORDER BY s.last_seen DESC, s.id
+            LIMIT 1
+        ) s ON TRUE
+        WHERE i.record_key IS NULL
+        """
     ).fetchall()
     if identities:
-        # No listing_title here -- this table never had one -- so an old
-        # identity is keyed from the target's own name. That is what its
-        # stock row was keyed from too on the catalog path, and on the
-        # release path the live writers now put the same value in both.
         with conn.cursor() as cur:
             cur.executemany(
                 "UPDATE stock_item_identities SET record_key = %s WHERE item_key = %s",
-                [(record_key(row["title"], row["artist"]), row["item_key"]) for row in identities],
+                [
+                    (
+                        record_key(
+                            row["listing_title"] or row["stock_title"] or row["title"],
+                            row["stock_artist"] or row["artist"],
+                        ),
+                        row["item_key"],
+                    )
+                    for row in identities
+                ],
             )
     rows = conn.execute(
         "SELECT id, artist, title, listing_title FROM stock_items "
@@ -2937,6 +2964,29 @@ def queue_next_for_crawler(conn, crawler_id: int, limit: int, library_only: bool
         """,
         {"crawler_id": crawler_id, "limit": limit},
     ).fetchall()
+
+
+def advisory_lock_held(conn, key: int) -> bool:
+    """Whether *any* session on this database holds session-level advisory
+    lock `key` -- this process's or another Machine's.
+
+    Read out of pg_locks rather than probed with pg_try_advisory_lock: a probe
+    would have to take the lock to learn it was free, and the microsecond it
+    held one would make a genuine sync start report itself as running on
+    another instance. A single-bigint key is stored split across classid (high
+    32 bits) and objid (low 32), with objsubid 1; the two-int form uses 2.
+    """
+    return conn.execute(
+        """
+        SELECT EXISTS (
+            SELECT 1 FROM pg_locks
+            WHERE locktype = 'advisory' AND granted AND objsubid = 1
+              AND classid = %(classid)s AND objid = %(objid)s
+              AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+        ) AS held
+        """,
+        {"classid": (key >> 32) & 0xFFFFFFFF, "objid": key & 0xFFFFFFFF},
+    ).fetchone()["held"]
 
 
 def compute_item_key(artist: str, title: str, url: str) -> str:

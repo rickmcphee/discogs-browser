@@ -1123,7 +1123,7 @@ export default function App() {
       if (!result.started) {
         setSyncStatus(
           result.stock_sync_running
-            ? 'In-stock sync running — recommendations refresh once it finishes.'
+            ? 'In-stock sync running — try Refresh again once it finishes.'
             : 'Recommendations are already refreshing.',
         )
       }

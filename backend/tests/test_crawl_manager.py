@@ -6007,7 +6007,7 @@ async def test_start_judgment_only_returns_true_when_idle(manager):
 
     manager._run_judgment_phase = _fake_judgment_phase  # type: ignore
     started = await manager.start_judgment_only(1)
-    assert started is True
+    assert started == {"started": True, "stock_sync_running": False}
     await asyncio.sleep(0.01)
 
 
@@ -6021,7 +6021,7 @@ async def test_start_judgment_only_returns_false_when_already_running(manager, p
     await manager.start_judgment_only(1)
     assert manager.judgment_running(1) is True
     second = await manager.start_judgment_only(1)
-    assert second is False
+    assert second["started"] is False
     event.set()
     await asyncio.sleep(0.01)
 
@@ -6041,16 +6041,16 @@ async def test_judgment_running_for_one_user_does_not_block_another_users_judgme
 
     manager._run_judgment_phase = _fake_judgment_phase  # type: ignore
     alice_started = await manager.start_judgment_only(1)
-    assert alice_started is True
+    assert alice_started["started"] is True
     assert manager.judgment_running(1) is True
 
     bob_started = await manager.start_judgment_only(2)
-    assert bob_started is True
+    assert bob_started["started"] is True
     assert manager.judgment_running(2) is True
 
     # Alice's own second concurrent call is still refused.
     alice_second = await manager.start_judgment_only(1)
-    assert alice_second is False
+    assert alice_second["started"] is False
 
     event.set()
     await asyncio.sleep(0.01)
@@ -6073,7 +6073,7 @@ async def test_start_stock_sync_runs_while_a_users_judgment_is_in_flight(pg_test
     manager._sync_stock = _fake_sync_stock  # type: ignore
     manager._run_judgment_phase = _fake_judgment_phase  # type: ignore
 
-    assert await manager.start_judgment_only(1) is True
+    assert (await manager.start_judgment_only(1))["started"] is True
     result = await manager.start_stock_sync()
     assert result["started"] is True
     assert manager.stock_sync_running is True
@@ -6101,13 +6101,14 @@ async def test_start_judgment_only_is_refused_while_a_stock_sync_runs(pg_test_db
     manager._run_judgment_phase = _fake_judgment_phase  # type: ignore
 
     await manager.start_stock_sync()
-    assert await manager.start_judgment_only(1) is False
+    refused = await manager.start_judgment_only(1)
+    assert refused == {"started": False, "stock_sync_running": True}
     assert manager.judgment_running(1) is False
 
     stock_event.set()
     await asyncio.sleep(0.01)
     # And starts normally once the sync is out of the way.
-    assert await manager.start_judgment_only(1) is True
+    assert (await manager.start_judgment_only(1))["started"] is True
     await asyncio.sleep(0.01)
 
 
@@ -7121,3 +7122,57 @@ async def test_a_second_judgment_run_over_an_unchanged_catalog_calls_nothing(pg_
     with db.user_scope(alice["id"]) as conn:
         rows = db.get_recommended_stock_items(conn, alice["id"])
         assert [(r["url"], r["price"]) for r in rows] == [("https://s/a-2026", 8.0)]
+
+
+async def test_start_judgment_only_is_refused_while_another_machine_holds_the_sync_lock(
+    pg_test_db, manager
+):
+    """`stock_sync_running` is this process's `_stock_task` and nothing more,
+    but stock sync is serialized across Machines by an advisory lock. A
+    judgment request routed to the Machine that is *not* syncing saw an idle
+    process and started anyway, re-opening the cost leak the guard closes.
+    (Copilot, PR #368.)
+    """
+    import psycopg
+    import config
+    from crawl_manager import STOCK_SYNC_LOCK_KEY
+
+    async def _fake_judgment_phase(user_id):
+        pass
+
+    manager._run_judgment_phase = _fake_judgment_phase  # type: ignore
+
+    holder = psycopg.connect(config.APP_DATABASE_URL, autocommit=True)
+    try:
+        assert holder.execute(
+            "SELECT pg_try_advisory_lock(%s)", [STOCK_SYNC_LOCK_KEY]
+        ).fetchone()[0] is True
+        # No local task, so the old guard would have waved this through.
+        assert manager.stock_sync_running is False
+        refused = await manager.start_judgment_only(1)
+        assert refused == {"started": False, "stock_sync_running": True}
+        assert manager.judgment_running(1) is False
+    finally:
+        holder.execute("SELECT pg_advisory_unlock(%s)", [STOCK_SYNC_LOCK_KEY])
+        holder.close()
+
+    assert (await manager.start_judgment_only(1))["started"] is True
+    await asyncio.sleep(0.01)
+
+
+async def test_judgment_starts_when_the_lock_state_cannot_be_read(pg_test_db, manager, monkeypatch):
+    """Fails open. A cost guard that turns a database hiccup into a dead
+    Refresh button is worse than one that occasionally lets a run through."""
+    import db as db_module
+
+    async def _fake_judgment_phase(user_id):
+        pass
+
+    manager._run_judgment_phase = _fake_judgment_phase  # type: ignore
+
+    def _boom(conn, key):
+        raise RuntimeError("no connection")
+
+    monkeypatch.setattr(db_module, "advisory_lock_held", _boom)
+    assert (await manager.start_judgment_only(1))["started"] is True
+    await asyncio.sleep(0.01)

@@ -168,6 +168,56 @@ _BRACKETED = re.compile(r"[(\[{][^)\]}]*[)\]}]")
 _SEGMENT_SPLIT = re.compile(r"\s+-\s+|\s*[–—|/]\s*|\s*,\s*")
 
 
+def _artist_raw_forms(artist: str) -> list:
+    """`_artist_forms`' spellings, unfolded — needed because record_key has to
+    cut the artist off the *raw* title, where the folded string's offsets do
+    not apply."""
+    base = artist.strip()
+    low = base.casefold()
+    forms = {base}
+    if low.startswith("the "):
+        forms.add(base[4:])
+    if low.endswith(", the"):
+        bare = base[:-5]
+        forms.update({bare, "The " + bare})
+    return sorted((f for f in forms if f), key=len, reverse=True)
+
+
+_LEADING_SEP = re.compile(_ARTIST_SEP_RE)
+
+
+def _split_leading_artist(title: str, artist: Optional[str]):
+    """`(artist_prefix, remainder)` when the title leads with the artist, else
+    `(None, title)`; the middle case is `("", title)`, meaning "an artist
+    prefix is there but I could not find where it ends".
+
+    record_key must know this before it splits anything, because an artist
+    name can *contain* the separators it splits on -- "AC/DC", "Earth, Wind &
+    Fire", "Emerson, Lake & Palmer". Splitting first tore those in half, and
+    the halves no longer matched the artist title_key was later asked to
+    strip, so one record keyed two ways depending on whether the store wrote
+    the artist into the name.
+    """
+    if not artist:
+        return None, title
+    for form in _artist_raw_forms(artist):
+        if title[:len(form)].casefold() != form.casefold():
+            continue
+        sep = _LEADING_SEP.match(title, len(form))
+        if sep and title[sep.end():].strip():
+            return title[:sep.end()], title[sep.end():]
+    # The raw spellings disagree (an accent, an apostrophe) but the folded
+    # ones may not. Folding can change length, so the boundary is not
+    # recoverable in raw offsets -- report the prefix as present-but-unlocated
+    # and let the caller leave the title unsplit for title_key to handle.
+    folded = _fold(title)
+    for form in _artist_forms(artist):
+        rest = re.sub(r"^\s*" + re.escape(form) + _ARTIST_SEP_RE, "", folded, count=1)
+        if rest != folded and rest.strip():
+            return "", title
+    return None, title
+
+
 def _is_variant_segment(text: str) -> bool:
     """Whether `text` says only which pressing this is, and nothing about
     which record it is."""
@@ -206,13 +256,21 @@ def record_key(title: str, artist: Optional[str] = None) -> str:
     the words to drop can only be recognised while the title still has the
     punctuation that fences them, and a token set has thrown that away.
     """
-    stripped = _BRACKETED.sub(lambda m: "" if _is_variant_segment(m.group()) else m.group(), title)
+    prefix, body = _split_leading_artist(title, artist)
+    stripped = _BRACKETED.sub(lambda m: "" if _is_variant_segment(m.group()) else m.group(), body)
+    if prefix == "":
+        # An artist prefix is in there somewhere and we cannot see where it
+        # ends, so splitting could cut the name itself. Hand the title on
+        # unsplit and let title_key strip it: the cost is one variant not
+        # folded away, which bills a record twice at worst -- the direction
+        # this module errs in on purpose.
+        return title_key(stripped if stripped.strip() else title, artist)
     parts = _SEGMENT_SPLIT.split(stripped)
     while len(parts) > 1 and _is_variant_segment(parts[-1]):
         parts.pop()
-    # Rejoined with the separator title_key looks for, so an artist written
-    # into the front of the name is still stripped from what's left.
     rebuilt = " - ".join(p for p in parts if p.strip()).strip()
     if not rebuilt:
         return title_key(title, artist)
+    # The artist is already off the front when prefix is truthy, so title_key
+    # finds nothing to strip and keys the remainder as the bare title it is.
     return title_key(rebuilt, artist)

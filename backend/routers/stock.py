@@ -149,14 +149,16 @@ async def start_stock_sync(body: Optional[StockSyncStartRequest] = None):
 @router.post("/stock/judge/start")
 async def start_stock_judgment(request: Request):
     user_id = request.state.user_id
-    started = await crawl_manager.start_judgment_only(user_id)
-    # Read only to tell the caller which of the two guards in
-    # start_judgment_only turned it away, so the button can say so rather than
-    # looking like it did nothing. The guard itself is not here.
+    # start_judgment_only reports which of its two guards turned the request
+    # away, so the button can say so rather than looking like it did nothing.
+    # Taken from its answer rather than re-read here: crawl_manager's own
+    # stock_sync_running is this process's flag, and the sync may be running
+    # on another Machine.
+    result = await crawl_manager.start_judgment_only(user_id)
     return {
-        "started": started,
+        "started": result["started"],
         "running": crawl_manager.judgment_running(user_id),
-        "stock_sync_running": crawl_manager.stock_sync_running,
+        "stock_sync_running": result["stock_sync_running"],
     }
 
 

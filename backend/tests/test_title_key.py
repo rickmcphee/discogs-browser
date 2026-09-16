@@ -175,3 +175,30 @@ def test_a_fenced_segment_with_real_words_in_it_is_kept():
     # "Live at Leeds" is not a pressing variant, however it is punctuated.
     assert record_key("Something (Live at Leeds)") != record_key("Something")
     assert record_key("Songs of Love, and Hate") == title_key("Songs of Love, and Hate")
+
+
+# An artist name can contain the separators record_key splits on. Splitting
+# first tore "AC/DC" in half, and the halves no longer matched the artist
+# title_key was then asked to strip -- so one record keyed two ways depending
+# on whether the store wrote the artist into the name. (Copilot, PR #368.)
+@pytest.mark.parametrize("artist,written", [
+    ("AC/DC", "AC/DC / Back in Black - Red Vinyl"),
+    ("AC/DC", "AC/DC - Back in Black (Black Vinyl)"),
+    ("Earth, Wind & Fire", "Earth, Wind & Fire - Back in Black (Red)"),
+    ("Emerson, Lake & Palmer", "Emerson, Lake & Palmer - Back in Black - LP Black"),
+    ("Sam | Dave", "Sam | Dave - Back in Black [Deluxe]"),
+])
+def test_an_artist_containing_a_separator_survives_the_split(artist, written):
+    assert record_key(written, artist) == record_key("Back in Black", artist)
+
+
+def test_an_artist_spelled_differently_from_the_title_still_folds_the_variant():
+    # Raw spellings disagree, so the prefix cannot be located in raw offsets;
+    # the title goes to title_key unsplit rather than being cut in the wrong
+    # place, and the bracketed variant still comes off.
+    assert record_key("Björk - Post (Red)", "Bjork") == record_key("Post", "Bjork")
+
+
+def test_an_artist_that_is_not_a_prefix_does_not_suppress_the_split():
+    # No artist prefix at all, so the trailing-variant pop still applies.
+    assert record_key("Back in Black - Red Vinyl", "AC/DC") == record_key("Back in Black", "AC/DC")

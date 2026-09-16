@@ -216,9 +216,9 @@ def test_stock_judge_start_returns_false_when_already_running_for_calling_user(
 
     async def _fake_start_judgment_only(user_id):
         if user_id in running_for:
-            return False
+            return {"started": False, "stock_sync_running": False}
         running_for.add(user_id)
-        return True
+        return {"started": True, "stock_sync_running": False}
 
     monkeypatch.setattr(crawl_manager, "start_judgment_only", _fake_start_judgment_only)
     monkeypatch.setattr(crawl_manager, "judgment_running", lambda uid: uid in running_for)
@@ -247,9 +247,9 @@ def test_stock_judge_start_for_one_user_does_not_block_another_users_judge_start
 
     async def _fake_start_judgment_only(user_id):
         if user_id in running_for:
-            return False
+            return {"started": False, "stock_sync_running": False}
         running_for.add(user_id)
-        return True
+        return {"started": True, "stock_sync_running": False}
 
     monkeypatch.setattr(crawl_manager, "start_judgment_only", _fake_start_judgment_only)
     monkeypatch.setattr(crawl_manager, "judgment_running", lambda uid: uid in running_for)

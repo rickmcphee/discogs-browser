@@ -1901,10 +1901,42 @@ class CrawlManager:
         task = self._judgment_tasks.get(user_id)
         return task is not None and not task.done()
 
-    async def start_judgment_only(self, user_id: int) -> bool:
+    def _stock_sync_running_anywhere(self) -> bool:
+        """The local flag plus the cross-Machine one. Blocking; call it off
+        the event loop.
+
+        `stock_sync_running` reads this process's `_stock_task` and nothing
+        else, so on the deployment this app actually runs -- more than one
+        Machine, one shared catalog, serialized by STOCK_SYNC_LOCK_KEY -- a
+        judgment request that lands on the Machine *not* running the sync sees
+        an idle process and starts anyway. That is the whole leak the guard
+        exists to close, reopened by routing. The advisory lock is the only
+        thing that knows the truth, so ask it.
+
+        Fails open: a cost guard that turns a database hiccup into a dead
+        Refresh button is worse than one that occasionally lets a run through.
+        """
+        if self.stock_sync_running:
+            return True
+        from db import get_app_pool, advisory_lock_held
+        try:
+            with get_app_pool().connection() as conn:
+                return advisory_lock_held(conn, STOCK_SYNC_LOCK_KEY)
+        except Exception:
+            log.warning("Could not read the stock sync lock; allowing judgment to start", exc_info=True)
+            return False
+
+    async def start_judgment_only(self, user_id: int) -> dict:
+        """Returns `{"started": bool, "stock_sync_running": bool}`.
+
+        A dict for the same reason start_stock_sync returns one: this method
+        is the only place that knows *which* refusal happened, and the caller
+        cannot re-derive it -- `stock_sync_running` is the local flag, which
+        reads false for a sync running on another Machine.
+        """
         if self.judgment_running(user_id):
             log.warning("Judgment already running for %s, ignoring start request", self._username_for_log(user_id))
-            return False
+            return {"started": False, "stock_sync_running": False}
         # A stock sync replaces each crawler's whole snapshot, so judging
         # against one in progress spends the user's own Anthropic credit on
         # items that are about to be deleted. Held here rather than in the
@@ -1912,14 +1944,14 @@ class CrawlManager:
         # guard on start_stock_sync is deliberately *not* restored with it:
         # judgment is per-user and the sync is global, so one user's run must
         # not be able to hold up everyone's catalog refresh.
-        if self.stock_sync_running:
+        if await run_in_threadpool(self._stock_sync_running_anywhere):
             log.warning(
                 "Stock sync running, ignoring judgment start request for %s",
                 self._username_for_log(user_id),
             )
-            return False
+            return {"started": False, "stock_sync_running": True}
         self._judgment_tasks[user_id] = asyncio.create_task(self._run_judgment_phase(user_id))
-        return True
+        return {"started": True, "stock_sync_running": False}
 
     async def _run_judgment_phase(self, user_id: int):
         from db import (

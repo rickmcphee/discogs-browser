@@ -811,7 +811,7 @@ describe('In Stock tab', () => {
   it.each([
     [
       { started: false, running: false, stock_sync_running: true },
-      /In-stock sync running — recommendations refresh once it finishes\./,
+      /In-stock sync running — try Refresh again once it finishes\./,
     ],
     [
       { started: false, running: true, stock_sync_running: false },

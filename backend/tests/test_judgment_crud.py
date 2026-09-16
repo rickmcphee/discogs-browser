@@ -731,3 +731,91 @@ def test_backfill_fills_a_null_record_key_beside_an_existing_title_key(pg_test_d
         assert row["title_key"] == title_key("Album A (Black Vinyl)", "Artist A")
         assert row["record_key"] != row["title_key"]
         assert db.backfill_stock_keys(conn) == 0
+
+
+def test_backfill_keys_an_identity_from_its_stock_rows_listing_title(pg_test_db):
+    """The release-crawler path stores the marketplace's name for what it
+    matched on the stock row and the catalog target's name on the identity.
+    Keying the identity from its own title would put a different record_key in
+    each table, and _judged_record_sql matches one against the other -- so a
+    historical judgment would stop being found and be billed again.
+    (Copilot, PR #368.)
+    """
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Marketplace", "/m.py")
+        crawler_id = conn.execute(
+            "SELECT id FROM crawlers WHERE site_name = 'Marketplace'"
+        ).fetchone()["id"]
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "Artist A", "title": "Album A", "year": None,
+            "label": None, "format": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        catalog_release = conn.execute(
+            "SELECT * FROM catalog WHERE discogs_id = 'r1'"
+        ).fetchone()
+        db.upsert_stock_item_from_release(conn, "r1", crawler_id, catalog_release, {
+            "url": "https://m/a", "price": 10.0, "currency": "USD",
+            "title": "Album A (Black Vinyl)",
+        })
+        conn.commit()
+
+        # Both written from one value by the live path; wipe them to force the
+        # backfill down the path an existing deployment takes.
+        conn.execute("UPDATE stock_items SET record_key = NULL")
+        conn.execute("UPDATE stock_item_identities SET record_key = NULL")
+        conn.commit()
+        db.backfill_stock_keys(conn)
+        conn.commit()
+
+        # Scoped by item_key: stock_item_identities is not FK-linked to
+        # crawlers, so _clean_tables' TRUNCATE ... CASCADE never reaches it
+        # and rows from earlier tests in this file are still there.
+        item_key = db.compute_item_key("Artist A", "Album A", "https://m/a")
+        stock = conn.execute(
+            "SELECT artist, record_key FROM stock_items WHERE item_key = %s", [item_key]
+        ).fetchone()
+        identity = conn.execute(
+            "SELECT record_key FROM stock_item_identities WHERE item_key = %s", [item_key]
+        ).fetchone()
+        assert identity["record_key"] == stock["record_key"]
+        assert stock["record_key"] == record_key("Album A (Black Vinyl)", stock["artist"])
+
+
+def test_a_judgment_survives_the_backfill_for_a_release_crawler_row(pg_test_db):
+    """The consequence of the above, end to end: the item must still read as
+    judged after a backfill, not fall back into the billable set."""
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        db.register_crawler(conn, "Marketplace", "/m.py")
+        crawler_id = conn.execute(
+            "SELECT id FROM crawlers WHERE site_name = 'Marketplace'"
+        ).fetchone()["id"]
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "Artist A", "title": "Album A", "year": None,
+            "label": None, "format": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        catalog_release = conn.execute("SELECT * FROM catalog WHERE discogs_id = 'r1'").fetchone()
+        db.upsert_stock_item_from_release(conn, "r1", crawler_id, catalog_release, {
+            "url": "https://m/a", "price": 10.0, "currency": "USD",
+            "title": "Album A (Black Vinyl)",
+        })
+        conn.commit()
+
+    item_key = db.compute_item_key("Artist A", "Album A", "https://m/a")
+    with db.user_scope(alice["id"]) as conn:
+        db.upsert_stock_judgments(conn, alice["id"], [
+            {"item_key": item_key, "recommended": True, "reason": "fits"},
+        ])
+        conn.commit()
+
+    with db.get_admin_pool().connection() as conn:
+        conn.execute("UPDATE stock_items SET record_key = NULL")
+        conn.execute("UPDATE stock_item_identities SET record_key = NULL")
+        conn.commit()
+        db.backfill_stock_keys(conn)
+        conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        assert db.count_unjudged_stock_items(conn, alice["id"]) == 0

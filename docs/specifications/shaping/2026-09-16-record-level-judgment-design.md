@@ -132,6 +132,22 @@ falling back to `title_key(title, artist)` whenever stripping would leave
 nothing — a listing titled only `"Black Vinyl"` keeps its own key rather than
 joining a bucket of every such row.
 
+**The artist comes off the front before anything is split.** An artist name
+can contain the very separators the fence rule splits on — "AC/DC", "Earth,
+Wind & Fire", "Emerson, Lake & Palmer" — and splitting first tore those in
+half, leaving halves that no longer matched the artist `title_key` was then
+asked to strip. One record keyed two ways depending on whether the store wrote
+the artist into the name, which is the bug this whole design is about,
+reintroduced one layer down. `_split_leading_artist` cuts the prefix off the
+raw title first.
+
+It has a third answer besides "found it" and "no artist here": *present but
+unlocated*. Folding can change a string's length, so when the raw spellings
+disagree ("Björk" against a stored "Bjork") the boundary is not recoverable in
+raw offsets. There the title goes on unsplit for `title_key` to strip, costing
+one variant not folded away — a record billed twice at worst, which is the
+direction this module errs in on purpose.
+
 The artist half is not folded into `record_key`. Grouping is
 `(_artist_sort_sql(artist), record_key)` — the same pair `_cheapest_clause`
 groups by, with `record_key` in place of `title_key`. Reusing the proven SQL
@@ -159,6 +175,17 @@ are matched to records through it.
 Both write paths compute the key once and put the identical value in both
 tables, so the two can never drift into disagreeing about which record an
 item_key belongs to.
+
+The backfill has to reconcile them too, and this is easy to get wrong: on the
+release-crawler path the two tables' own titles genuinely differ, since
+`stock_items` keys off `listing_title` (the marketplace's name for what it
+matched) while the identity stores the catalog target's name. A backfill
+reading each table's own columns would put a different key in each, and since
+the judgment path matches identity against stock row, a historical judgment
+whose two keys disagree simply stops being found — and is billed again,
+silently. So the backfill keys an identity from its live stock row where it
+still has one, falling back to its own name only for an item that no longer
+has one.
 
 Populated by `replace_stock_items` and `upsert_stock_item_from_release`, and
 swept by the boot/end-of-sync backfill that today fills `title_key` only. That
@@ -260,6 +287,26 @@ does **not** regain its `judgment_running` check: dropping that one was
 deliberate and follows from the per-user change, since one user's judgment run
 must not block a global stock refresh.
 
+But `stock_sync_running` alone is not the guard it looks like. It reads this
+process's `_stock_task` and nothing else, while stock sync is serialized
+*across Machines* by `STOCK_SYNC_LOCK_KEY` — the whole `on_another_instance`
+apparatus in `start_stock_sync` exists because more than one Machine serves
+this app. A judgment request routed to the Machine that is not syncing sees an
+idle process and starts anyway, which is the leak reopened by routing rather
+than closed. So the guard asks the lock as well, via `db.advisory_lock_held`,
+reading `pg_locks` rather than probing with `pg_try_advisory_lock` — a probe
+would have to take the lock to learn it was free, and the moment it held one a
+genuine sync start would report itself as running on another instance.
+
+It fails open. A cost guard that turns a database hiccup into a dead Refresh
+button is worse than one that occasionally lets a run through.
+
+`start_judgment_only` therefore returns `{"started", "stock_sync_running"}`
+rather than a bool, for the reason `start_stock_sync`'s docstring already
+gives for its own dict: it is the only place that knows which refusal
+happened, and the caller cannot re-derive it — the local flag reads false for
+a sync on another Machine.
+
 The client does need a change, and skipping it would reintroduce a failure
 this app has already had once. `handleRefreshRecommendations` discards the
 response, so a `started: false` would render as nothing at all — the exact
@@ -322,5 +369,12 @@ message.
   "already judged" — the case a join through `stock_items` would miss.
 - `start_judgment_only` returns `started: false` while a stock sync runs, and
   starts normally once it finishes.
+- It also refuses while another Machine holds `STOCK_SYNC_LOCK_KEY` with no
+  local task running, and starts anyway when the lock state cannot be read.
+- An artist name containing a separator ("AC/DC", "Earth, Wind & Fire") keys
+  the same whether or not the store wrote it into the title.
+- The backfill gives an identity and its stock row the same `record_key` on
+  the release-crawler path, and a judgment made before it still reads as
+  judged afterwards.
 - The Refresh Recommendations click renders a reason when the start is
   rejected, and distinguishes a running sync from a running judgment.
