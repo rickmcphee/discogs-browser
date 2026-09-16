@@ -140,3 +140,79 @@ def title_key(title: str, artist: Optional[str] = None) -> str:
     if not tokens:
         tokens = set(words) or {folded.strip() or title.strip()}
     return " ".join(sorted(tokens))
+
+
+# What title_key deliberately keeps and record_key drops: the vocabulary that
+# names *which* pressing a listing is. Kept out of _NOISE_WORDS because the
+# Cheapest filter must let "Kid A (Red)" and "Kid A (Black)" stand as separate
+# rows -- see this module's opening note on false merges.
+_VARIANT_WORDS = frozenset("""
+    black white red blue green yellow orange purple violet pink rose
+    gold golden silver grey gray clear amber bronze copper cream crystal
+    turquoise teal magenta maroon olive navy sky ruby emerald sapphire coke
+    bottle
+    opaque translucent transparent splatter splattered marble marbled swirl
+    swirled smoke smoky smoked glitter neon glow galaxy cloudy haze hazy
+    milky picture shaped etched
+    deluxe expanded remaster remastered remasters anniversary indie
+    exclusive exclusives signed autographed numbered special collectors
+    collector super mono stereo digipak digipack box boxset set slipcase
+    half speed halfspeed audiophile
+""".split())
+
+# A bracketed aside, and the separators a store puts a variant behind when it
+# does not bracket it. The bare hyphen needs whitespace on both sides or
+# "Non-Stop" would split into two segments; the typographic dashes, pipe,
+# slash and comma do not.
+_BRACKETED = re.compile(r"[(\[{][^)\]}]*[)\]}]")
+_SEGMENT_SPLIT = re.compile(r"\s+-\s+|\s*[–—|/]\s*|\s*,\s*")
+
+
+def _is_variant_segment(text: str) -> bool:
+    """Whether `text` says only which pressing this is, and nothing about
+    which record it is."""
+    folded = _fold(text)
+    had_words = bool(_words(folded))
+    for pattern in _PHRASE_NOISE:
+        folded = pattern.sub(" ", folded)
+    words = _words(folded)
+    if not words:
+        # Emptied by the phrase list alone -- "180g", "12 inch" -- which is a
+        # variant segment if it was anything at all.
+        return had_words
+    return all(w in _NOISE_WORDS or w in _VARIANT_WORDS or w.isdigit() for w in words)
+
+
+def record_key(title: str, artist: Optional[str] = None) -> str:
+    """The comparison key for the *record* `title` is a pressing of.
+
+    `title_key` answers "is this the same pressing", and keeps colour and
+    edition words so the Cheapest filter can show a red and a black copy as
+    two rows. A taste judgment asks a question about the record, where those
+    words change nothing: the verdict on a black copy is the verdict on the
+    red one, and paying for both is paying twice for one answer.
+
+    So this drops them -- but only where a store has fenced them off, in a
+    bracketed aside or behind a trailing separator. That restraint is the
+    whole design. A bare word list would fold "Purple Rain" into "Rain" and
+    "Black Sabbath" into "Sabbath", and a false merge here is not the cheap
+    mistake it is for a filter: the merged record inherits a verdict, and a
+    reason written about a different album. A false *split* only costs one
+    more judgment, which is what happens today anyway. Stores write the
+    variant as an aside overwhelmingly often, so the conservative rule
+    catches nearly all of the saving and none of the damage.
+
+    Not built on title_key's output, though it delegates the folding to it:
+    the words to drop can only be recognised while the title still has the
+    punctuation that fences them, and a token set has thrown that away.
+    """
+    stripped = _BRACKETED.sub(lambda m: "" if _is_variant_segment(m.group()) else m.group(), title)
+    parts = _SEGMENT_SPLIT.split(stripped)
+    while len(parts) > 1 and _is_variant_segment(parts[-1]):
+        parts.pop()
+    # Rejoined with the separator title_key looks for, so an artist written
+    # into the front of the name is still stripped from what's left.
+    rebuilt = " - ".join(p for p in parts if p.strip()).strip()
+    if not rebuilt:
+        return title_key(title, artist)
+    return title_key(rebuilt, artist)

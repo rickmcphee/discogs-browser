@@ -1,6 +1,6 @@
 import pytest
 
-from title_key import title_key
+from title_key import title_key, record_key
 
 
 # The user's own examples: one pressing, worded three ways by three stores.
@@ -117,3 +117,61 @@ def test_an_artist_that_is_also_a_title_word_is_left_alone():
     assert title_key("Black Sabbath", "Black Sabbath") == "black sabbath"
     assert title_key("Aphex Twin - Selected Ambient Works") == title_key("Aphex Twin: Selected Ambient Works")
     assert title_key("Aphex Twin - Selected Ambient Works") != title_key("Selected Ambient Works")
+
+
+# --- record_key: the coarser fold a taste judgment is billed per ------------
+
+
+@pytest.mark.parametrize("title", [
+    "Kid A",
+    "Kid A (Black Vinyl)",
+    "Kid A (Red)",
+    "Kid A [Deluxe Reissue]",
+    "Kid A - LP Black",
+    "Kid A - 180g Half-Speed",
+    "Kid A, Indie Exclusive Blue",
+    "Kid A (Remastered) (Picture Disc)",
+])
+def test_every_pressing_of_one_record_keys_the_same(title):
+    assert record_key(title, "Radiohead") == record_key("Kid A", "Radiohead")
+
+
+def test_an_artist_written_into_the_name_is_still_stripped():
+    assert record_key("Radiohead - Kid A - Black", "Radiohead") == record_key("Kid A", "Radiohead")
+
+
+def test_variants_title_key_separates_are_merged_here():
+    # The whole point of the coarser key: title_key must keep these apart so
+    # the Cheapest filter shows both, and a taste verdict must not pay twice.
+    assert title_key("Kid A (Red)", "Radiohead") != title_key("Kid A (Black)", "Radiohead")
+    assert record_key("Kid A (Red)", "Radiohead") == record_key("Kid A (Black)", "Radiohead")
+
+
+@pytest.mark.parametrize("a,b", [
+    ("Purple Rain", "Rain"),
+    ("Black Sabbath", "Sabbath"),
+    ("The Black Parade", "Parade"),
+    ("Blue Monday", "Monday"),
+])
+def test_an_unfenced_colour_word_is_part_of_the_title(a, b):
+    # A false merge here would hand one record another's verdict *and* a
+    # reason written about a different album, so a colour only counts as a
+    # variant where the store fenced it off.
+    assert record_key(a) != record_key(b)
+
+
+@pytest.mark.parametrize("title", ["Blue", "Red", "Black Vinyl", "180g", "2LP"])
+def test_a_title_that_is_all_variant_words_keeps_a_key_of_its_own(title):
+    assert record_key(title) == title_key(title)
+    assert record_key(title) != ""
+
+
+def test_genuinely_different_records_stay_apart():
+    assert record_key("Greatest Hits") != record_key("Greatest Hits Volume 2")
+    assert record_key("Sabbath Bloody Sabbath") != record_key("Black Sabbath")
+
+
+def test_a_fenced_segment_with_real_words_in_it_is_kept():
+    # "Live at Leeds" is not a pressing variant, however it is punctuated.
+    assert record_key("Something (Live at Leeds)") != record_key("Something")
+    assert record_key("Songs of Love, and Hate") == title_key("Songs of Love, and Hate")

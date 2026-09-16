@@ -1,0 +1,326 @@
+# Judge a record once, not every listing of it
+
+Date: 2026-09-16
+Branch: `claude/wizardly-goldberg-mxvey2`
+
+## Problem
+
+A judgment is billed per `item_key`, and `item_key` is
+`sha256(artist|title|url)` (`db.compute_item_key`). The URL in that hash is
+what costs money.
+
+Judgments themselves already persist correctly across a scheduled re-crawl.
+`replace_stock_items` deletes and re-inserts a crawler's whole snapshot, but
+`stock_item_judgments` carries no foreign key on `item_key`, so verdicts
+survive; `get_unjudged_stock_items` filters on `j.item_key IS NULL`, so a
+re-appearing item is never re-sent; and price is not in the hash, so a
+repriced item keys identically. That contract is stated in the
+[store-recommended-filter design](../../superpowers/specs/2026-07-06-store-recommended-filter-design.md)
+and holds.
+
+What does not hold is the identity the contract is keyed on. Three ways one
+record gets billed more than once:
+
+1. **A re-listing at a new URL.** A shop changes a product slug, moves an item
+   to a variant page, or appends a tracking parameter. Same record, same
+   shop, new digest, billed again. Nothing in the app can tell this apart from
+   a genuinely new product.
+2. **A second shop stocking the same record.** Two stores, two URLs, two
+   digests, two paid judgments on near-identical input for the same user.
+3. **A different pressing of the same record.** The taste question is "does
+   this look like something I'd like" — a question about the record. The
+   answer for a black pressing and a red one is the same answer, paid for
+   twice.
+
+The [token-cost design](2026-09-07-recommendation-judgment-token-cost-design.md)
+deferred exactly this, noting it "changes the judgment's identity and its
+interaction with `_not_owned_clause`, so it needs its own design." This is
+that design.
+
+It also carries a fourth, unrelated leak recorded as still open in Amendment 7
+of the store-recommended-filter design: `start_judgment_only` lost its
+`stock_sync_running` cross-guard in the crawl-queue refactor, so a user
+pressing Refresh mid-sync judges a partially-replaced catalog and pays for
+items about to be deleted.
+
+## What already works, and must not be "fixed"
+
+- **Judgments outlive their stock rows.** No FK on `item_key`; the
+  delete+reinsert in `replace_stock_items` cannot touch them. An item that
+  goes out of stock keeps its verdict and is not re-billed if it returns.
+  `get_all_stock_judgments` deliberately drives from the judgments table so a
+  judgment with no live stock row still exports.
+- **`item_key` hashes the legacy `str.title()` casing**, not the corrected
+  casing that gets stored, so an upstream casing fix does not orphan
+  judgments. Keep it.
+- **Price is absent from the hash.** A repriced item is the same item.
+- **The export/import format is keyed on `item_key`.** A judgments CSV
+  exported before this change must still import after it.
+- **Judgment runs are manual and per-user**, not part of the stock sync. A
+  scheduled crawl spends nothing on its own.
+
+## Scope
+
+Keep `stock_item_judgments` exactly as it is: primary key `(user_id,
+item_key)`, one row per listing. Do not re-key the table.
+
+That is the load-bearing decision here, and it is worth saying why, because
+re-keying on the record is the more obvious design. The judgments table is
+read by the Recommended filter (`get_stock_items`'s `s.item_key IN (SELECT
+item_key FROM stock_item_judgments ...)`), by `get_recommended_stock_items`,
+by `get_all_stock_judgments`, by the CSV export and import, and by
+`count_matching_stock_items`. Re-keying means touching every one of them, plus
+a backfill that cannot run: `get_all_stock_judgments` supports import-only
+rows whose `item_key` has no `stock_item_identities` entry at all, so there is
+no artist/title from which to derive a record for them.
+
+Instead the record level is applied at the two points where money is actually
+spent:
+
+- **Choosing what to bill for.** `get_unjudged_stock_items` returns one
+  representative per unjudged *record* rather than one row per unjudged
+  listing.
+- **Spending the verdict.** A new `propagate_stock_judgments` copies an
+  existing verdict onto every unjudged in-stock listing of the same record, so
+  the per-listing rows the readers expect all exist without a second API call.
+
+Every read query keeps working untouched, the export format is unchanged, and
+there is no migration of existing judgment rows.
+
+## Design
+
+### `record_key`: what "the same record" means for a verdict
+
+`title_key.py` already answers "are these two rows the same pressing" for the
+Cheapest filter and `_price_floors`. It folds a store title to the set of
+words that say *which* pressing it is, and it deliberately keeps the words
+that name a distinct pressing — colours, `deluxe`, `remastered`, `indie`,
+`exclusive`, `signed`. Its docstring gives the reason: "A false split shows
+the user one row too many; a false merge hides a listing they might have
+wanted, and they cannot tell it was hidden."
+
+That asymmetry is real for Cheapest and absent here. Merging two pressings for
+judgment hides nothing: `get_recommended_stock_items` and the Recommended
+filter both still return every stock row whose record is recommended, because
+propagation writes a per-listing row for each. The only consequence of a merge
+is that one taste verdict covers both pressings — which is the correct answer,
+since the pressing is not what the model is being asked about.
+
+So judgment uses a coarser key, `record_key(title, artist)`, which drops that
+vocabulary.
+
+Not by word list alone, though. Merging is not free here either — it is
+merely *differently* priced. The merged record inherits a verdict and, with
+it, a reason written about a different album, which the user reads in the
+Store row's info popover. A bare list of colour and edition words would fold
+"Purple Rain" into "Rain" and "Black Sabbath" into "Sabbath": colours are
+album titles too. The asymmetry runs the other way from a filter's, but it
+still runs — a false *split* costs one extra judgment, which is what happens
+today anyway, while a false *merge* corrupts an answer.
+
+So the words are dropped only where the store has fenced them off: inside a
+bracketed aside, or in a trailing segment behind a separator. "Kid A (Red)",
+"Kid A - LP Black" and "Kid A (Deluxe Reissue)" all key as "Kid A"; "Purple
+Rain" and "The Black Parade" are untouched, having no fence. Stores write a
+variant as an aside overwhelmingly often, so the restraint costs almost none
+of the saving.
+
+`record_key` delegates its folding to `title_key` rather than post-filtering
+its output, because the punctuation that marks a fence is exactly what a
+token set has already discarded. It inherits the never-empty guarantee by
+falling back to `title_key(title, artist)` whenever stripping would leave
+nothing — a listing titled only `"Black Vinyl"` keeps its own key rather than
+joining a bucket of every such row.
+
+The artist half is not folded into `record_key`. Grouping is
+`(_artist_sort_sql(artist), record_key)` — the same pair `_cheapest_clause`
+groups by, with `record_key` in place of `title_key`. Reusing the proven SQL
+artist expression avoids a second Python spelling of the article-stripping
+fold that could drift from it.
+
+### Storage
+
+`record_key` becomes a column on `stock_items` alongside `title_key`, and —
+this is the part that is easy to get wrong — **also on
+`stock_item_identities`**.
+
+Both, because the two tables have opposite lifetimes and the judgment path
+needs the durable one. `stock_items` is a snapshot: `replace_stock_items`
+deletes and re-inserts a crawler's whole set on every sync. So asking "does
+this record already have a verdict?" by joining judgments to live stock rows
+answers *no* precisely when a shop has re-slugged a product — the judgment
+outlives the stock row, the stock row that carried its record is gone, and the
+re-listing gets billed as new. That is the leak this design exists to close,
+and a stock-rows join closes every case except it. `stock_item_identities` is
+only ever upserted, one row per `item_key` ever seen, and
+`get_all_stock_judgments` already leans on it for the same reason. Verdicts
+are matched to records through it.
+
+Both write paths compute the key once and put the identical value in both
+tables, so the two can never drift into disagreeing about which record an
+item_key belongs to.
+
+Populated by `replace_stock_items` and `upsert_stock_item_from_release`, and
+swept by the boot/end-of-sync backfill that today fills `title_key` only. That
+backfill is renamed `backfill_stock_keys` — it no longer fills one key, or one
+table — and fills any of the three columns where NULL, so a rolling deploy
+whose old process is still writing `record_key`-less rows is repaired by the
+next sweep exactly as it already is for `title_key`.
+
+Grouping reads `COALESCE(record_key, title_key, title)` on stock rows and
+`COALESCE(record_key, title)` on identities, which carry no `title_key` — the
+same belt-beside-braces `_cheapest_clause` uses, so a NULL that outruns the
+sweep keys as itself instead of folding every unkeyed row into one group and
+handing them all whatever verdict that group already has.
+
+### Propagation
+
+```
+propagate_stock_judgments(conn, user_id) -> int
+```
+
+One `INSERT ... SELECT`. For every in-stock listing that has no judgment for
+this user, is not owned, and whose record has a judgment for this user, insert
+a copy of that verdict and reason.
+
+The predicate is deliberately the same one `get_unjudged_stock_items` uses —
+in stock, unjudged, `_not_owned_clause`. Propagation writes a row exactly
+where it prevents a charge and nowhere else, which keeps the judgments table
+meaning "verdicts this user would have paid for" and keeps the CSV export from
+filling with rows for records the user already owns.
+
+Where a record has more than one verdict among its listings (possible today:
+they were billed separately before this change, and a user can import a file
+that disagrees with itself), the newest `judged_at` wins, ties broken on
+`item_key` so the result is deterministic.
+
+It is called from `_run_judgment_phase`:
+
+- **Before** selecting the unjudged set, so verdicts from earlier runs reach
+  listings that appeared since — the new-URL and second-shop cases — and those
+  listings drop out of the billable set before a batch is built.
+- **After each batch's upsert**, so a verdict just paid for reaches its
+  sibling listings while the run is still going. The Recommended filter
+  updates per batch (see the
+  [live-recommended-filter design](../../superpowers/specs/2026-08-22-live-recommended-filter-design.md)),
+  so deferring the fan-out to the end of the run would show a partial set for
+  the duration of it.
+
+The count is logged and carried on the `stock_judgment_complete` event as
+`inherited`, so the saving is visible rather than merely believed.
+
+### What it costs to run
+
+Measured on a throwaway 9,000-row catalog shaped like the problem — 3,000
+records at three listings each, half of them already judged:
+
+| | before | after |
+| --- | --- | --- |
+| billable items | 7,500 listings | 1,500 records |
+| `count_unjudged_stock_items` | — | 74 ms |
+| `get_unjudged_stock_items` | — | 79 ms |
+| `propagate_stock_judgments` | — | 141 ms, 3,000 rows written |
+
+Two things that reading the SQL would get wrong. The record anti-join *looks*
+like a correlated per-row subquery and is not: the planner rewrites it to a
+single hash right anti-join, so it is one pass over each table rather than
+9,000 lookups.
+
+And an index on `stock_items` over the record pair — the obvious companion to
+`stock_items_cheapest_fold_idx` — was written, measured and then removed. It
+changed nothing (74/79/141 ms with it, 74/79/141 ms without), because the
+planner reads most of `stock_items` either way and hash-joins. Keeping it
+would have meant maintaining a three-nested-regexp expression index on the
+hottest write path in the app — `replace_stock_items` rewrites a crawler's
+whole set every sync — to buy a plan Postgres does not choose. The index on
+`stock_item_identities` stays: that table is append-only, so it is nearly
+free, and it is the inner side of propagation's `LATERAL`.
+
+### The billable set
+
+`get_unjudged_stock_items` groups by `(_artist_sort_sql(artist),
+COALESCE(record_key, title_key, title))` and returns one row per group.
+`DISTINCT ON` picks the representative deterministically: lowest `item_key`
+within the group, so a run judging the same catalog twice batches it
+identically. `count_unjudged_stock_items` counts the same groups.
+
+`ORDER BY MIN(last_seen) ASC` is preserved as the ordering across groups —
+oldest-seen record first, so a `recommendation_item_limit` that truncates the
+set truncates the newest arrivals rather than an arbitrary slice.
+
+The representative's `artist`/`title` are what travel to the model. They are
+one listing's wording of the record, which is what the model saw before this
+change too.
+
+### The sync cross-guard
+
+`start_judgment_only` regains the `stock_sync_running` check it lost, matching
+the guard the clear and import endpoints already carry. `start_stock_sync`
+does **not** regain its `judgment_running` check: dropping that one was
+deliberate and follows from the per-user change, since one user's judgment run
+must not block a global stock refresh.
+
+The client does need a change, and skipping it would reintroduce a failure
+this app has already had once. `handleRefreshRecommendations` discards the
+response, so a `started: false` would render as nothing at all — the exact
+complaint recorded above `reportStockSyncRejection`, whose comment reads:
+"That came back as a started=false nobody rendered, so the click looked like
+it had done nothing." A rejected Refresh must say why.
+
+`POST /api/stock/judge/start` therefore gains a `stock_sync_running` flag
+alongside `{started, running}`, so the client can tell "your own judgment run
+is already going" from "the catalog is mid-refresh" and say which. The guard
+itself lives in `start_judgment_only`, not the router, so no other call site
+can bypass it; the router reads `stock_sync_running` only to choose the
+message.
+
+## Considered and rejected
+
+- **Re-keying `stock_item_judgments` on the record.** The cleaner data model,
+  rejected on blast radius: every reader, the export format, and a backfill
+  that import-only rows cannot supply an artist/title for. Propagation buys
+  the same saving with no migration.
+- **Folding the artist into `record_key`.** Would make the grouping a single
+  column, but requires a Python spelling of `_artist_sort_sql`'s
+  article-stripping fold that can drift from the SQL one. The pair is cheap.
+- **Using `title_key` unchanged as the judgment key.** One fewer concept, and
+  it fixes the re-listing and second-shop cases. It does not fix different
+  pressings of one record, which is the case with the most listings behind it.
+- **Propagating to owned listings too.** Simpler predicate, but it inflates
+  the table and the CSV export with rows for records the user owns and would
+  never have been billed for.
+- **Running propagation at the end of a stock sync** so the Recommended filter
+  updates without a Refresh. The sync is global and `stock_item_judgments` is
+  RLS-scoped per user, so it would need an admin-scoped sweep across every
+  user. The saving does not depend on it: the next Refresh inherits for free
+  either way.
+- **Re-judging when the collection changes.** Out of scope here as it has been
+  since the original design — a judgment is a snapshot.
+
+## Testing
+
+- `record_key` merges pressing variants that `title_key` splits (black/red,
+  deluxe, remastered, half-speed), whether bracketed or behind a trailing
+  separator, and still splits genuinely different records (`Greatest Hits` vs
+  `Greatest Hits Volume 2`).
+- An unfenced colour word is kept: `Purple Rain` does not key as `Rain`, and
+  `Black Sabbath` does not key as `Sabbath`.
+- A title made entirely of variant words keeps a non-empty key.
+- Two shops stocking one record yield one entry in the billable set, and
+  judging it writes a row for both listings.
+- A record re-listed at a new URL after judgment is not in the billable set,
+  and inherits a row for the new URL.
+- A record judged only for a pressing the user does not own propagates to the
+  other pressing.
+- Propagation does not touch an owned listing, another user's judgments, or a
+  listing that already has one.
+- Where a record's listings carry disagreeing verdicts, the newest wins.
+- The billable set's representative is stable across repeated calls.
+- `backfill_stock_keys` fills a NULL `record_key` on a stock row whose
+  `title_key` is already set, and on an identity row.
+- A record whose judged listing is no longer stocked at all still answers
+  "already judged" — the case a join through `stock_items` would miss.
+- `start_judgment_only` returns `started: false` while a stock sync runs, and
+  starts normally once it finishes.
+- The Refresh Recommendations click renders a reason when the start is
+  rejected, and distinguishes a running sync from a running judgment.

@@ -1696,7 +1696,7 @@ class CrawlManager:
         # the life of the process.
         try:
             import httpx
-            from db import get_app_pool, get_enabled_crawlers, replace_stock_items, update_crawler_last_run, enqueue_crawl_queue_for_stock_item, delete_dead_stock_crawl_queue_rows, backfill_title_keys
+            from db import get_app_pool, get_enabled_crawlers, replace_stock_items, update_crawler_last_run, enqueue_crawl_queue_for_stock_item, delete_dead_stock_crawl_queue_rows, backfill_stock_keys
             from crawler import load_enabled_crawlers
             from config import crawl_library_only
 
@@ -1847,11 +1847,11 @@ class CrawlManager:
             with get_app_pool().connection() as conn:
                 swept = delete_dead_stock_crawl_queue_rows(conn, library_only)
                 # Normally zero; non-zero only for rows an older binary
-                # wrote during a rolling deploy. See backfill_title_keys.
-                keyed = backfill_title_keys(conn)
+                # wrote during a rolling deploy. See backfill_stock_keys.
+                keyed = backfill_stock_keys(conn)
                 conn.commit()
             if keyed:
-                log.info("Keyed %d stock rows written without a title key", keyed)
+                log.info("Keyed %d stock and identity rows written without a fold key", keyed)
             if swept:
                 # INFO, not WARNING: routers/logs.py filters in SQL by exact
                 # level membership (WHERE level = ANY(...)), not
@@ -1905,13 +1905,26 @@ class CrawlManager:
         if self.judgment_running(user_id):
             log.warning("Judgment already running for %s, ignoring start request", self._username_for_log(user_id))
             return False
+        # A stock sync replaces each crawler's whole snapshot, so judging
+        # against one in progress spends the user's own Anthropic credit on
+        # items that are about to be deleted. Held here rather than in the
+        # router so no other call site can start a run around it. The mirror
+        # guard on start_stock_sync is deliberately *not* restored with it:
+        # judgment is per-user and the sync is global, so one user's run must
+        # not be able to hold up everyone's catalog refresh.
+        if self.stock_sync_running:
+            log.warning(
+                "Stock sync running, ignoring judgment start request for %s",
+                self._username_for_log(user_id),
+            )
+            return False
         self._judgment_tasks[user_id] = asyncio.create_task(self._run_judgment_phase(user_id))
         return True
 
     async def _run_judgment_phase(self, user_id: int):
         from db import (
             get_identity_pool, user_scope, get_unjudged_stock_items, count_unjudged_stock_items,
-            get_taste_listing, upsert_stock_judgments,
+            get_taste_listing, upsert_stock_judgments, propagate_stock_judgments,
         )
         import recommendations
         import anthropic
@@ -1947,13 +1960,29 @@ class CrawlManager:
             # turn a real 0 into 300 (0 is falsy), breaking that contract.
             limit = user["recommendation_item_limit"]
 
+            # Before the counts, not after: every listing that can inherit a
+            # verdict from an earlier run must do so now, or it lands in the
+            # billable set and gets paid for a second time. In a scope of its
+            # own because user_scope sets app.user_id transaction-locally, so
+            # committing inside one and carrying on would leave every later
+            # statement on that connection with no RLS identity at all.
+            with user_scope(user_id) as conn:
+                inherited = propagate_stock_judgments(conn, user_id)
+                conn.commit()
             with user_scope(user_id) as conn:
                 total_unjudged = count_unjudged_stock_items(conn, user_id)
                 unjudged = get_unjudged_stock_items(conn, user_id, limit)
                 taste_listing = get_taste_listing(conn, user_id)
+            if inherited:
+                log.info(
+                    "Inherited %d existing judgments for %s before judging (no API call)",
+                    inherited, username,
+                )
 
             if not unjudged:
-                await broadcast({"status": "stock_judgment_complete", "judged": 0})
+                await broadcast(
+                    {"status": "stock_judgment_complete", "judged": 0, "inherited": inherited}
+                )
                 log.info("Found 0/0 items to judge for %s, nothing to do", username)
                 return
             log.info("Found %d/%d items to judge for %s", len(unjudged), total_unjudged, username)
@@ -1969,14 +1998,26 @@ class CrawlManager:
                 if results:
                     with user_scope(user_id) as conn:
                         upsert_stock_judgments(conn, user_id, results)
+                        # Fan this batch's verdicts out to the other listings
+                        # of the records it just judged. Per batch rather than
+                        # once at the end because the Recommended filter
+                        # refreshes as each batch lands, and a record showing
+                        # only the one listing the model happened to be shown
+                        # is a half-populated view for the rest of the run.
+                        inherited += propagate_stock_judgments(conn, user_id)
                         conn.commit()
                     judged += len(results)
                     recommended_in_batch = sum(1 for r in results if r["recommended"])
                 log.info("Judged batch %d/%d for %s: %d recommended", judged, len(unjudged), username, recommended_in_batch)
                 await broadcast({"status": "stock_judgment_progress", "judged": judged, "total": len(unjudged)})
 
-            await broadcast({"status": "stock_judgment_complete", "judged": judged})
-            log.info("Stock judgment complete for %s: %d items judged", username, judged)
+            await broadcast(
+                {"status": "stock_judgment_complete", "judged": judged, "inherited": inherited}
+            )
+            log.info(
+                "Stock judgment complete for %s: %d records judged, %d listings inherited",
+                username, judged, inherited,
+            )
         except asyncio.CancelledError:
             log.info("Judgment run cancelled")
             raise
