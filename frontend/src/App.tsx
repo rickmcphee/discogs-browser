@@ -798,9 +798,17 @@ export default function App() {
         // from the current run's. Clearing the flags on it is right nearly
         // always and wrong exactly when a newer run has started since, where it
         // would take Stop away from a run still spending and stop the poll that
-        // would have noticed. So the row gets the last word: one read, which
+        // would have noticed. So the row gets the last word: a read, which
         // restores the flags if a run is in fact still going.
-        refreshJudgmentStatus()
+        //
+        // Retried rather than fired once, because a read that never lands
+        // cannot overrule anything. refreshJudgmentStatus swallows a failed
+        // request into null, this handler has just stopped the run poll, and
+        // on the Machine that did not run the job nothing else is coming --
+        // so one dropped request leaves the optimistic write above standing
+        // for good, which is the empty-table state the reordering was for.
+        // (Copilot, PR #368, round 24.)
+        discoverJudgmentRun()
         setStockSyncGeneration(g => g + 1)
         setStockJudgmentGeneration(g => g + 1)
         // Inherited listings are reported on either ending: a run stopped
@@ -823,8 +831,9 @@ export default function App() {
         latestJudgmentRunSeq.current++
         setRecommendationRunning(false)
         setRecommendationStopping(false)
-        // Confirmed against the row, same as the two endings above.
-        refreshJudgmentStatus()
+        // Confirmed against the row, same as the two endings above, and
+        // retried for the same reason.
+        discoverJudgmentRun()
         setSyncStatus(`Finding recommendations failed: ${event.error}`, event.id ?? null)
         return
       }
@@ -882,7 +891,7 @@ export default function App() {
       source?.close()
       clearTimeout(reconnectTimer)
     }
-  }, [authState, setSyncStatus, fetchPriceStatus, refreshJudgmentStatus])
+  }, [authState, setSyncStatus, fetchPriceStatus, refreshJudgmentStatus, discoverJudgmentRun])
 
   // Rides priceGeneration rather than a notification-specific SSE event: a
   // per-user event would have to be tagged with an owner, and the crawl worker

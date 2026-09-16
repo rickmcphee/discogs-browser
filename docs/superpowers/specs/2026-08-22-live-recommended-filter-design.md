@@ -122,6 +122,15 @@ Four changes, all in `frontend/src/App.tsx`, no new endpoints.
    covers the window until the read returns and beats any *older* fetch; the
    read is issued after it and gets the last word.
 
+   And it has to be the *retried* read (`discoverJudgmentRun`), not a single
+   fire-and-forget one. `refreshJudgmentStatus` swallows a failed request into
+   `null`, and a terminal handler has just stopped the run poll, so on the
+   Machine that did not run the job nothing else will ask again — one dropped
+   request leaves the optimistic write standing for good, which is the same
+   empty-table state the ordering above exists to prevent. The bounded retry
+   already carried that reasoning for the discovery read ("A single attempt is
+   not enough anywhere this is called"); it applies here for the same reason.
+
 No change needed to `StockBrowser.tsx` itself: the effect that resets the
 filter away from "recommended" (`:118-122`) only fires when
 `recommendedAvailable` goes false, which after change 1 no longer happens

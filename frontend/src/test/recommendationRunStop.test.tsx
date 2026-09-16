@@ -248,6 +248,42 @@ describe('stopping a recommendation run from the profile page', () => {
     )
   })
 
+  // And the read has to actually land. refreshJudgmentStatus swallows a failed
+  // request into null, the terminal handler has already stopped the run poll,
+  // and nothing else is coming on the Machine that did not run the job -- so a
+  // single dropped read leaves the optimistic true standing for good, which is
+  // the same empty-table state one round later. The bounded retry beside it
+  // exists for exactly this ("A single attempt is not enough anywhere this is
+  // called"). (Copilot, PR #368, round 24.)
+  it('retries the status read after a replayed ending when the first request fails', async () => {
+    getJudgmentStatus.mockResolvedValue({ any_judged: true, run: null })
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const row = await openProfile()
+    await waitFor(() =>
+      expect(screen.getByText('Export').closest('button')).not.toBeDisabled(),
+    )
+
+    getJudgmentStatus.mockResolvedValue({ any_judged: false, run: null })
+    fireEvent.click(within(row.closest('table') as HTMLElement).getByRole('button', { name: 'Clear' }))
+    await waitFor(() =>
+      expect(screen.getByText('Export').closest('button')).toBeDisabled(),
+    )
+
+    // The ending's own read fails; only a second attempt can report the
+    // cleared table.
+    getJudgmentStatus.mockRejectedValueOnce(new Error('network'))
+    await act(async () => {
+      SilentEventSource.instances[0].emit({
+        status: 'stock_judgment_complete', judged: 0, total: 300, inherited: 12, id: 9,
+      })
+    })
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(PAST_ONE_POLL) })
+    await waitFor(() =>
+      expect(screen.getByText('Export').closest('button')).toBeDisabled(),
+    )
+  })
+
   it('keeps Stopping… when a started event is delivered after the stop click', async () => {
     getJudgmentStatus.mockResolvedValue({ any_judged: true, run: run() })
     const row = await openProfile()
