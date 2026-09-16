@@ -90,12 +90,15 @@ class Crawler:
         # returns [] if not found, or list of:
         # {"url": str, "price": float|None, "shipping": float|None,
         #  "currency": str|None, "condition": str|None,
-        #  "title": str|None}  # optional; see below
+        #  "title": str|None,          # optional; see below
+        #  "cover_image_url": str|None}  # optional; see below
 ```
 
 The backend owns the Playwright browser. Plugins receive a live `Page` and must raise `BotDetectedError` on bot interstitials.
 
 `title` is optional: the name the site itself gives the matched item, as the user would read it there. A release crawler matches by artist and title, so what it finds can be a different pressing than the target (a black vinyl for a coloured-variant release, say); the Store row shows this name in place of the target's when present, with the target's own title as hover text, and stores it as `listing_title` on `stock_items`/`listings`. Absent or empty means "the target's name stands" — a crawler that answers a page built around the exact release (`discogs_marketplace`) has nothing to add and omits it. Display-only: `stock_items.title` keeps the target's name because `item_key`, title sort/search and the Collection/Wantlist filters' library match all hang off it. See [`docs/specifications/shaping/2026-09-05-marketplace-listing-title-design.md`](docs/specifications/shaping/2026-09-05-marketplace-listing-title-design.md).
+
+`cover_image_url` is optional on the same terms, and is the picture the site showed for that same matched item — the *listing's* picture, which on a marketplace is a photo of the copy for sale rather than the release's cover art. Stored as `listing_image_url` on `stock_items`/`listings`, and shown in place of the target's `cover_image_url`, which stays the fallback for a crawler that reported none. The key is deliberately the one catalog crawlers already use for an item's picture, so "the picture of this item" has one name across both crawler kinds. A crawler that omits `title` because it matched the exact record (`discogs_marketplace`, `roughtrade`) omits this too, for the same reason. See [`docs/specifications/shaping/2026-09-16-marketplace-listing-image-design.md`](docs/specifications/shaping/2026-09-16-marketplace-listing-image-design.md).
 
 Any crawler for a named storefront may additionally declare an optional `genre_summary: str` attribute — a one-sentence description read by Settings to show as a hover tooltip on the store link. Not scoped to the catalog kinds: Settings renders the tooltip for any crawler carrying one, with no `crawler_type` gate — the attribute belongs to any crawler that *is* a describable store, however it is crawled.
 
