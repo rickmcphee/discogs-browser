@@ -148,6 +148,20 @@ raw offsets. There the title goes on unsplit for `title_key` to strip, costing
 one variant not folded away — a record billed twice at worst, which is the
 direction this module errs in on purpose.
 
+Its prefix test has to fold punctuation the way `_artist_punct_fold_sql`
+does — "&" to "and", "-" to a space — because that fold is the record group's
+own artist half. Postgres already counts "Hall & Oates" and "Hall and Oates",
+or "Blink-182" and "Blink 182", as one artist; a prefix test that did not
+would fail to see the artist in a title spelling it the other way, leave it
+in the key, and file that listing away from its own record. Two paid
+judgments for one album — the exact failure this design exists to remove,
+reappearing in the machinery meant to remove it.
+
+That is also why every separator in the title is a candidate boundary, tested
+by folding what precedes it, rather than the artist's own length being used to
+slice: the fold changes length, so an offset taken from the artist lands in
+the wrong place for precisely the spellings it needs to catch.
+
 The artist half is not folded into `record_key`. Grouping is
 `(_artist_sort_sql(artist), record_key)` — the same pair `_cheapest_clause`
 groups by, with `record_key` in place of `title_key`. Reusing the proven SQL
@@ -461,6 +475,9 @@ user actually reads.
   local task running, and starts anyway when the lock state cannot be read.
 - An artist name containing a separator ("AC/DC", "Earth, Wind & Fire") keys
   the same whether or not the store wrote it into the title.
+- So does an artist spelled with the punctuation `_artist_punct_fold_sql`
+  folds: "Hall & Oates" against "Hall and Oates", "Blink-182" against
+  "Blink 182", in either direction.
 - The backfill gives an identity and its stock row the same `record_key` on
   the release-crawler path, and a judgment made before it still reads as
   judged afterwards.

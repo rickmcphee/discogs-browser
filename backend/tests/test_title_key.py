@@ -226,3 +226,25 @@ def test_a_bare_number_is_which_record_this_is_not_which_pressing(numbered, bare
 ])
 def test_a_digit_beside_a_variant_word_still_folds_away(title):
     assert record_key(title) == record_key("Album X")
+
+
+# The record group's artist half is _artist_sort_sql's punctuation fold, so
+# the database already counts these spellings as one artist. A prefix test
+# that did not would leave the artist in the title and key that listing away
+# from its own record -- two paid judgments for one album. (Copilot, PR #368.)
+@pytest.mark.parametrize("artist,written,bare", [
+    ("Hall and Oates", "Hall & Oates - H2O (Red)", "H2O"),
+    ("Hall & Oates", "Hall and Oates - H2O", "H2O"),
+    ("Hall & Oates", "Hall&Oates - H2O [Deluxe]", "H2O"),
+    ("Blink-182", "Blink 182 - Enema (Red)", "Enema"),
+    ("Blink 182", "Blink-182 - Enema", "Enema"),
+    ("Blink-182", "Blink - 182 - Enema", "Enema"),
+])
+def test_an_artist_punctuation_variant_still_keys_as_one_record(artist, written, bare):
+    assert record_key(written, artist) == record_key(bare, artist)
+
+
+def test_the_punctuation_fold_does_not_swallow_a_title_that_merely_starts_alike():
+    # "Oates" alone is not the artist, so nothing is stripped and the title
+    # keeps its own words.
+    assert record_key("Oates - Solo", "Hall & Oates") != record_key("Solo", "Hall & Oates")

@@ -184,6 +184,25 @@ def _artist_raw_forms(artist: str) -> list:
 
 
 _LEADING_SEP = re.compile(_ARTIST_SEP_RE)
+_WHITESPACE = re.compile(r"\s+")
+
+
+def _punct_fold(text: str) -> str:
+    """The fold `_artist_punct_fold_sql` applies in Postgres: "&" to " and ",
+    "-" to a space, whitespace collapsed, then cased down.
+
+    Kept in step with that one on purpose. The record group's artist half is
+    that SQL fold, so the database already counts "Hall & Oates" and "Hall and
+    Oates" -- or "Blink-182" and "Blink 182" -- as one artist. A prefix test
+    that did not would fail to recognise the artist in a title that spells it
+    the other way, leave it in, and key that listing away from its own record:
+    two paid judgments for one album, which is the whole thing this module is
+    here to stop.
+
+    Deliberately narrower than `_fold`: no accent or apostrophe stripping,
+    because this has to agree with what SQL does, and SQL does neither.
+    """
+    return _WHITESPACE.sub(" ", text.replace("&", " and ").replace("-", " ")).strip().casefold()
 
 
 def _split_leading_artist(title: str, artist: Optional[str]):
@@ -197,14 +216,22 @@ def _split_leading_artist(title: str, artist: Optional[str]):
     the halves no longer matched the artist title_key was later asked to
     strip, so one record keyed two ways depending on whether the store wrote
     the artist into the name.
+
+    Every separator in the title is a candidate boundary, tested by folding
+    what precedes it, rather than the artist's own length being used to slice.
+    The fold changes length -- "&" becomes " and " -- so an offset taken from
+    the artist would land in the wrong place for exactly the spellings this
+    has to catch.
     """
     if not artist:
         return None, title
-    for form in _artist_raw_forms(artist):
-        if title[:len(form)].casefold() != form.casefold():
+    wanted = {_punct_fold(f) for f in _artist_raw_forms(artist)}
+    wanted.discard("")
+    for sep in _LEADING_SEP.finditer(title):
+        head = title[:sep.start()]
+        if not head.strip() or not title[sep.end():].strip():
             continue
-        sep = _LEADING_SEP.match(title, len(form))
-        if sep and title[sep.end():].strip():
+        if _punct_fold(head) in wanted:
             return title[:sep.end()], title[sep.end():]
     # The raw spellings disagree (an accent, an apostrophe) but the folded
     # ones may not. Folding can change length, so the boundary is not
