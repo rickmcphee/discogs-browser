@@ -183,11 +183,12 @@ Out of scope:
 - `backend/tests/test_ebay_api.py` — `search_ebay` reports the matched Browse
   API item's gallery image, falls back to a thumbnail, skips a non-https URL,
   and returns the listing with no picture rather than raising when the image
-  fields come back the wrong shape. Three more cover the parse itself: an
+  fields come back the wrong shape. The parse itself is covered too: an
   unparseable gallery image falls back to the thumbnail rather than aborting,
-  a host-less `https:///…` is rejected, and an unparseable `itemWebUrl` falls
-  back to the `legacyItemId` link — the last being the pre-existing half of
-  the same hazard.
+  a host-less `https:///…` is rejected, a crafted backslash `itemWebUrl`
+  fails the hostname allowlist, and an unparseable `itemWebUrl` falls back to
+  the `legacyItemId` link — the last being the pre-existing half of the same
+  hazard.
 - `frontend/src/test/stockBrowser.test.tsx` — a comparison row with a
   `listing_image_url` renders that picture with the listing's name as alt
   text while the own row keeps the store's cover; a row with a
