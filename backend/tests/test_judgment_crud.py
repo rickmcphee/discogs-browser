@@ -1349,6 +1349,65 @@ def test_a_live_writer_keeps_the_keys_it_writes(pg_test_db):
         assert row["title_key"] == title_key("Album A Deluxe", "Artist A")
 
 
+def test_an_out_of_stock_identity_keeps_its_listing_derived_key(pg_test_db):
+    """The one case this table exists for, and the sweep nearly broke it.
+
+    A release-crawler identity holds a key derived from the marketplace's name
+    for what it matched, while its own `title` is only the catalog target --
+    the two genuinely differ. Go out of stock and the stock row is gone, so
+    there is nothing to reconcile against; recomputing from the identity's own
+    title there *overwrites a valid key*. Come back at a new URL under the same
+    marketplace name and the new listing keys off that name, the judged
+    historical identity keys off the target, `_judged_record_sql` misses, and
+    the re-listing is billed again. (Copilot, PR #368, round 17.)
+    """
+    listing_title = "Album A Remixes"
+    assert record_key(listing_title, "Artist A") != record_key("Album A", "Artist A")
+
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        old_key = _seed_release_crawler_item(
+            conn, "Marketplace", "https://m/old-slug", listing_title
+        )
+        conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        db.upsert_stock_judgments(conn, alice["id"], [
+            {"item_key": old_key, "recommended": True, "reason": "fits"},
+        ])
+        conn.commit()
+
+    with db.get_admin_pool().connection() as conn:
+        # Out of stock: the listing goes, the identity stays.
+        conn.execute("DELETE FROM stock_items WHERE item_key = %s", [old_key])
+        conn.commit()
+        db.backfill_stock_keys(conn)
+        conn.commit()
+
+        identity = conn.execute(
+            "SELECT record_key FROM stock_item_identities WHERE item_key = %s", [old_key]
+        ).fetchone()
+        assert identity["record_key"] == record_key(listing_title, "Artist A"), (
+            "the sweep overwrote a key it had nothing better to replace it with"
+        )
+
+        # Back under the same marketplace name, at a new slug.
+        crawler_id = conn.execute(
+            "SELECT id FROM crawlers WHERE site_name = 'Marketplace'"
+        ).fetchone()["id"]
+        catalog_release = conn.execute("SELECT * FROM catalog WHERE discogs_id = 'r1'").fetchone()
+        db.upsert_stock_item_from_release(conn, "r1", crawler_id, catalog_release, {
+            "url": "https://m/new-slug", "price": 10.0, "currency": "USD",
+            "title": listing_title,
+        })
+        conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        assert db.count_unjudged_stock_items(conn, alice["id"]) == 0, (
+            "the re-listing is the leak this whole design exists to close"
+        )
+
+
 def test_a_sibling_is_not_rebilled_after_an_identity_is_reconciled(pg_test_db):
     """The consequence of the above, end to end. A second shop's copy of the
     same record finds its verdict by matching its own record_key against the

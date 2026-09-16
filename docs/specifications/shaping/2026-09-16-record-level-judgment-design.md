@@ -570,6 +570,41 @@ forwards that answer rather than re-deriving it; and
 `handleRefreshRecommendations` (`frontend/src/App.tsx`) picks the message the
 user actually reads.
 
+## Deferred: the artist half is not accent-folded
+
+The record group is `(_artist_sort_sql(artist), record_key)`, and only the
+second half of that pair normalises accents and apostrophes. `_artist_sort_sql`
+folds `&` to `and` and strips the article, which is all SQL does here — so two
+stores reporting `Beyoncé` and `Beyonce` for one record produce the same
+`record_key` and two different artist keys, and stay two billable groups that
+cannot inherit each other's verdict. `Guns N' Roses` against `Guns N Roses` is
+the same. (Raised by Copilot on PR #368, round 17.)
+
+**This is not fixed here, deliberately.** The cost of leaving it is one extra
+judgment for a record whose artist is spelled inconsistently across stores —
+a false *split*, the direction this design errs in everywhere else on purpose.
+The cost of fixing it is not proportionate to that:
+
+- `_artist_sort_sql` is not the judgment path's private expression. The
+  Cheapest filter groups on it, `catalog_artist_bare_fold_idx` and
+  `stock_items_artist_bare_fold_idx` are built on it, and the Collection,
+  Wantlist and Store artist filters all compare through it. Changing it
+  changes every one of those and rebuilds two indexes on the largest tables.
+- Scoping a second fold to the judgment path alone — grouping,
+  `_judged_record_sql`, propagation and the identities index — avoids that
+  blast radius but still needs accent stripping *in SQL*, and Postgres has no
+  core function for it. `unaccent` is an extension, and it is **STABLE rather
+  than IMMUTABLE**, so it cannot appear in an expression index without an
+  IMMUTABLE wrapper that misreports its volatility — which the Postgres
+  documentation warns silently corrupts the index if the dictionary ever
+  changes. The alternative, a `translate()` over a hand-maintained character
+  set, is exactly what `_fold` avoids in Python by decomposing with NFKD and
+  stripping combining marks only from ASCII-Latin letters.
+
+So it wants its own change, with its own decision about which of those two
+costs to take, and a migration for whichever index it lands on. Worth doing;
+not worth folding into this one.
+
 ## Considered and rejected
 
 - **Re-keying `stock_item_judgments` on the record.** The cleaner data model,

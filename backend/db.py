@@ -1258,8 +1258,9 @@ def backfill_stock_keys(conn) -> int:
     # would stop finding it and be billed again.
     #
     # An item with no stock row left has no listing_title to recover, so its
-    # identity is folded from its own name -- and checked against that fold
-    # rather than only filled, since an old binary can move that name too.
+    # identity is folded from its own name -- but only when it has no key at
+    # all. A key already there is the better answer and must be kept; see the
+    # branch below.
     identities = conn.execute(
         """
         SELECT i.item_key, i.artist, i.title, i.record_key,
@@ -1278,6 +1279,21 @@ def backfill_stock_keys(conn) -> int:
     for row in identities:
         if row["stock_item_key"] is not None:
             wanted = row["stock_record_key"]
+        elif row["record_key"] is not None:
+            # Nothing to reconcile against, and nothing better to say. A
+            # release-crawler identity holds the fold of the marketplace's
+            # name for what it matched, while its own `title` is the catalog
+            # target -- the two genuinely differ, and only the first one
+            # matches the listing if it comes back. Re-folding the identity's
+            # own title here would overwrite a *valid* key with a different
+            # one, and the item returning at a new URL under the same
+            # marketplace name would then find no judged identity and be
+            # billed again: the re-listing leak this table exists to close.
+            #
+            # Staleness here is the trigger's job, not this pass's: an old
+            # binary moving the identity's title leaves the key NULL, which is
+            # the branch below.
+            continue
         else:
             wanted = record_key(row["title"], row["artist"])
         if row["record_key"] != wanted:
