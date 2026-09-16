@@ -7339,3 +7339,84 @@ async def test_the_judgment_lock_is_released_when_the_run_fails(pg_schema, manag
         probe.execute("SELECT pg_advisory_unlock(%s, %s)", [JUDGMENT_LOCK_NAMESPACE, 1])
     finally:
         probe.close()
+
+
+async def test_the_judgment_run_sweeps_missing_keys_before_it_counts(pg_schema, manager):
+    """The sweep is a call ordering, so this pins the ordering rather than the
+    end state: a mixed keyed/unkeyed catalog re-bills a judged record's
+    siblings, and only a sweep *ahead of* the counting queries prevents it.
+    (Copilot, PR #368.)
+    """
+    calls = []
+
+    import db as db_module
+
+    real_backfill = db_module.backfill_stock_keys
+    real_count = db_module.count_unjudged_stock_items
+    real_propagate = db_module.propagate_stock_judgments
+
+    def _backfill(conn):
+        calls.append("sweep")
+        return real_backfill(conn)
+
+    def _count(conn, user_id):
+        calls.append("count")
+        return real_count(conn, user_id)
+
+    def _propagate(conn, user_id):
+        calls.append("propagate")
+        return real_propagate(conn, user_id)
+
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        monkeypatch.setattr(db_module, "backfill_stock_keys", _backfill)
+        monkeypatch.setattr(db_module, "count_unjudged_stock_items", _count)
+        monkeypatch.setattr(db_module, "propagate_stock_judgments", _propagate)
+
+        with db.get_admin_pool().connection() as conn:
+            alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+            conn.execute(
+                "UPDATE users SET anthropic_api_key = 'sk-alice' WHERE id = %s", [alice["id"]]
+            )
+            conn.commit()
+
+        manager._broadcast = AsyncMock()
+        await manager._run_judgment_phase(alice["id"])
+    finally:
+        monkeypatch.undo()
+
+    assert calls[0] == "sweep", f"the sweep must precede every fold read, got {calls}"
+    assert "propagate" in calls and "count" in calls
+    assert calls.index("sweep") < calls.index("propagate") < calls.index("count")
+
+
+async def test_a_failed_lock_query_does_not_leak_its_connection(pg_schema, manager, monkeypatch):
+    """The connect can succeed and the query then fail, leaving a dedicated
+    session nothing will ever close. This is the repeating path, so a
+    transient error would leak one session per Refresh. (Copilot, PR #368.)
+    """
+    import psycopg
+    import config
+
+    closed = []
+
+    class _ExplodingConn:
+        def execute(self, *args, **kwargs):
+            raise RuntimeError("lock query failed")
+
+        def close(self):
+            closed.append(True)
+
+    monkeypatch.setattr(psycopg, "connect", lambda *a, **k: _ExplodingConn())
+
+    async def _fake_judgment_phase(user_id, lock_conn=None):
+        pass
+
+    manager._run_judgment_phase = _fake_judgment_phase  # type: ignore
+
+    # Fails open, as designed -- and closes what it opened.
+    result = await manager.start_judgment_only(1)
+    assert result["started"] is True
+    assert closed == [True]
+    await asyncio.sleep(0.01)
+    assert config.DIRECT_APP_DATABASE_URL  # the patched connect never ran for real

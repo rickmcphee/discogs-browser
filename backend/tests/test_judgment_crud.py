@@ -880,3 +880,59 @@ def test_an_unswept_sibling_listing_is_still_billed_once(pg_test_db):
 
     with db.user_scope(alice["id"]) as conn:
         assert db.count_unjudged_stock_items(conn, alice["id"]) == 0
+
+
+def test_a_sibling_left_unkeyed_by_an_old_binary_is_swept_before_it_is_rebilled(pg_test_db):
+    """Mixed keyed/unkeyed state, which the all-NULL fallback does not cover.
+
+    A rolling deploy's new process backfills identities, then an old process
+    writes a stock row with no record_key at all. The judged listing's
+    identity now holds a folded key while its sibling's stock row falls back
+    to the raw title; the two never compare equal, so the sibling enters the
+    billable set. Both halves are asserted here -- the hazard and the sweep
+    that removes it -- because the fix is a call ordering, and a test that
+    only checked the end state would still pass if the sweep moved.
+    (Copilot, PR #368.)
+    """
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        one, two = _seed_two_crawlers(conn)
+        db.replace_stock_items(conn, one, [
+            {"artist": "Artist A", "title": "Album A", "url": "https://one/a"},
+        ])
+        db.replace_stock_items(conn, two, [
+            {"artist": "Artist A", "title": "Album A", "url": "https://two/a"},
+        ])
+        conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        db.upsert_stock_judgments(conn, alice["id"], [
+            {"item_key": db.compute_item_key("Artist A", "Album A", "https://one/a"),
+             "recommended": True, "reason": "fits"},
+        ])
+        conn.commit()
+
+    with db.get_admin_pool().connection() as conn:
+        # The old binary's write: a stock row with no fold, beside an identity
+        # the new process has already keyed.
+        conn.execute(
+            "UPDATE stock_items SET record_key = NULL, title_key = NULL WHERE url = %s",
+            ["https://two/a"],
+        )
+        conn.execute(
+            "UPDATE stock_item_identities SET record_key = NULL WHERE item_key = %s",
+            [db.compute_item_key("Artist A", "Album A", "https://two/a")],
+        )
+        conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        assert db.count_unjudged_stock_items(conn, alice["id"]) == 1, (
+            "the mixed state this sweep exists to prevent"
+        )
+
+    with db.get_admin_pool().connection() as conn:
+        assert db.backfill_stock_keys(conn) == 2
+        conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        assert db.count_unjudged_stock_items(conn, alice["id"]) == 0

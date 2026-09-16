@@ -677,8 +677,15 @@ CREATE INDEX IF NOT EXISTS stock_items_record_key_null_idx
 -- matching index over *it* is maintenance on the hottest write path in the app
 -- (replace_stock_items rewrites a crawler's rows wholesale every sync, and the
 -- artist fold is three nested regexp calls a row) bought for a plan Postgres
--- does not choose. stock_item_identities is append-only, so this one is nearly
--- free, and it is the inner side of propagate_stock_judgments' LATERAL.
+-- does not choose.
+--
+-- This one it does choose, and the difference is not marginal: it is the
+-- inner side of propagate_stock_judgments' correlated LATERAL, which on a
+-- 9,000-row catalog runs in 180 ms with this index and 4,900 ms without.
+-- Not free, though -- this table is upserted, not appended to, so every sync
+-- rewrites every identity row it sees and the same catalog replace costs
+-- ~1,990 ms with the index against ~1,750 ms without. A read path 27x faster
+-- for ~13% on a write path that already runs in seconds, on a schedule.
 CREATE INDEX IF NOT EXISTS stock_item_identities_record_fold_idx
     ON stock_item_identities ({_artist_sort_sql("artist", escape_percent=False)},
                               COALESCE(record_key, title));

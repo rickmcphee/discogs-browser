@@ -1962,6 +1962,7 @@ class CrawlManager:
         """
         import psycopg
         import config
+        conn = None
         try:
             conn = psycopg.connect(config.DIRECT_APP_DATABASE_URL, autocommit=True)
             got = conn.execute(
@@ -1972,6 +1973,17 @@ class CrawlManager:
                 return None, False
             return conn, True
         except Exception:
+            # The connect may have succeeded and the query then failed, which
+            # leaves a dedicated session open that nothing will ever close --
+            # and this path is the one that repeats, so a transient query
+            # error would leak a session per Refresh until the database runs
+            # out. Closing can itself throw on an already-broken connection,
+            # which must not turn a fail-open into a failure.
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    log.warning("Could not close the judgment lock connection", exc_info=True)
             log.warning(
                 "Could not take the judgment lock for user %s; starting anyway", user_id, exc_info=True
             )
@@ -2039,6 +2051,7 @@ class CrawlManager:
         from db import (
             get_identity_pool, user_scope, get_unjudged_stock_items, count_unjudged_stock_items,
             get_taste_listing, upsert_stock_judgments, propagate_stock_judgments,
+            get_app_pool, backfill_stock_keys,
         )
         import recommendations
         import anthropic
@@ -2073,6 +2086,22 @@ class CrawlManager:
             # `limit > 0` check -- `or recommendations.SYNC_CAP` here would silently
             # turn a real 0 into 300 (0 is falsy), breaking that contract.
             limit = user["recommendation_item_limit"]
+
+            # Ahead of everything that reads a fold, because a *mixed* state
+            # defeats the shared raw-title fallback those queries rely on.
+            # Both sides bottoming out at the raw title only saves the case
+            # where both are NULL; a rolling deploy makes the other one, where
+            # the new process has keyed an identity and an old process then
+            # writes a stock row with no key at all. The judged listing's
+            # identity holds a folded key, its sibling's stock row holds a raw
+            # title, they never compare equal, and the sibling is billed
+            # again. Normally a no-op, and the partial indexes on the NULL
+            # keys make finding that out a lookup rather than a scan.
+            with get_app_pool().connection() as conn:
+                swept = backfill_stock_keys(conn)
+                conn.commit()
+            if swept:
+                log.info("Keyed %d stock and identity rows before judging for %s", swept, username)
 
             # Before the counts, not after: every listing that can inherit a
             # verdict from an earlier run must do so now, or it lands in the

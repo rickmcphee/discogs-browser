@@ -238,6 +238,13 @@ that disagrees with itself), the newest `judged_at` wins, ties broken on
 
 It is called from `_run_judgment_phase`:
 
+- **Ahead of everything**, `backfill_stock_keys` sweeps any missing fold. The
+  shared raw-title fallback only covers the case where *both* sides are NULL,
+  and a rolling deploy makes the other one: the new process keys an identity,
+  an old process then writes a stock row with no key, and the judged
+  listing's folded identity key never compares equal to its sibling's raw
+  title — so the sibling is billed again. Normally a no-op, and the partial
+  indexes on the NULL keys make finding that out a lookup.
 - **Before** selecting the unjudged set, so verdicts from earlier runs reach
   listings that appeared since — the new-URL and second-shop cases — and those
   listings drop out of the billable set before a batch is built.
@@ -283,9 +290,23 @@ changed nothing (74/79/141 ms with it, 74/79/141 ms without), because the
 planner reads most of `stock_items` either way and hash-joins. Keeping it
 would have meant maintaining a three-nested-regexp expression index on the
 hottest write path in the app — `replace_stock_items` rewrites a crawler's
-whole set every sync — to buy a plan Postgres does not choose. The index on
-`stock_item_identities` stays: that table is append-only, so it is nearly
-free, and it is the inner side of propagation's `LATERAL`.
+whole set every sync — to buy a plan Postgres does not choose.
+
+The index on `stock_item_identities` stays, and the case for it is the
+opposite one. Postgres *does* choose it, for propagation's correlated
+`LATERAL`, and the margin is not marginal:
+
+| on a 9,000-row catalog | with the index | without |
+| --- | --- | --- |
+| `propagate_stock_judgments` | 180 ms | 4,900 ms |
+| whole-catalog `replace_stock_items` | ~1,990 ms | ~1,750 ms |
+
+It is not free, though, and an earlier draft of this document said it was on
+the grounds that the table is append-only. That is wrong: rows are never
+deleted, but both writers upsert every identity they see, so a sync rewrites
+the lot and the index is maintained along with them. The trade is a read path
+27× faster for about 13% on a write path that already runs in seconds, on a
+schedule — worth it, but worth stating as a trade rather than a freebie.
 
 ### The billable set
 
@@ -430,6 +451,10 @@ user actually reads.
 - A listing whose `record_key` has not been swept yet still reads as judged
   when it has its own judgment, and a sibling listing of that record is still
   billed only once.
+- A judged record's sibling left unkeyed by an old binary — the mixed state,
+  not the all-NULL one — is in the billable set before a sweep and out of it
+  after, and the judgment run sweeps before it counts.
+- The lock acquisition closes its connection when the lock query raises.
 - `start_judgment_only` returns `started: false` while a stock sync runs, and
   starts normally once it finishes.
 - It also refuses while another Machine holds `STOCK_SYNC_LOCK_KEY` with no
