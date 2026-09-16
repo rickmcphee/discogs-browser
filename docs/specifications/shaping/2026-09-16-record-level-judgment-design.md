@@ -292,9 +292,14 @@ what both live writers put there — and writes only where those three fields
 still read as its `SELECT` found them. The source fields and not the key
 columns, because the writer this exists for is the one that never touches
 those. Yielding costs nothing: the next sweep folds the newer title, which is
-the better answer. The identity pass, which cannot compare source fields since
-the value it writes comes from the stock row, compares against the key its own
-`SELECT` returned.
+the better answer. The identity pass fences on its own `artist` and `title` as well as on the key
+it read. The key alone is not enough there: an old writer moving those fields
+leaves the key exactly as it found it — a NULL stays NULL, and the trigger's
+nulling is a no-op on one — so a key-only predicate still matches and writes
+the fold of a title the row no longer has, which the keep-what-is-there rule
+above would then preserve for good once the identity is orphaned. Those fields
+fence the copied-from-the-stock-row case too, where they are not the value's
+source; that costs a run's delay and buys one rule instead of two.
 
 One thing the sweep cannot do, however it selects, is repair a stale key
 *fast*. Between a sweep returning and the judgment queries that follow it, a

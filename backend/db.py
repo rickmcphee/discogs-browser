@@ -1308,16 +1308,29 @@ def backfill_stock_keys(conn) -> int:
         else:
             wanted = record_key(row["title"], row["artist"])
         if row["record_key"] != wanted:
-            wrong.append((wanted, row["item_key"], row["record_key"]))
+            wrong.append((wanted, row["item_key"], row["record_key"],
+                          row["artist"], row["title"]))
     keyed_identities = 0
     if wrong:
         with conn.cursor() as cur:
-            # Compare-and-set on the value the SELECT read. Here the old value
-            # cannot stand in for "untouched", since replacing a non-NULL one
-            # is the point, so the read value is carried into the predicate.
+            # Compare-and-set on everything the SELECT read, not just the
+            # key. The key alone cannot stand in for "untouched" here: an old
+            # writer moving this identity's artist or title leaves the key
+            # exactly as it found it -- NULL stays NULL, and the trigger's own
+            # nulling is a no-op -- so a predicate reading only the key still
+            # matches and writes the fold of a title the row no longer has.
+            # Orphan that identity afterwards and the branch above preserves
+            # that wrong key for good, since it has nothing better to offer.
+            # The source fields close it, as the stock pass's predicate does.
+            #
+            # They fence the copied-from-the-stock-row case too, where they
+            # are not the value's source. That costs a run's delay on an
+            # identity whose title moved mid-sweep and buys one rule instead
+            # of two.
             cur.executemany(
                 "UPDATE stock_item_identities SET record_key = %s "
-                "WHERE item_key = %s AND record_key IS NOT DISTINCT FROM %s",
+                "WHERE item_key = %s AND record_key IS NOT DISTINCT FROM %s "
+                "AND artist IS NOT DISTINCT FROM %s AND title IS NOT DISTINCT FROM %s",
                 wrong,
             )
             keyed_identities = cur.rowcount

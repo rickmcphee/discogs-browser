@@ -1493,6 +1493,71 @@ def test_the_sweep_does_not_copy_a_stock_rows_missing_key_onto_its_identity(pg_t
     assert identity["record_key"] == stock["record_key"]
 
 
+def test_the_identity_write_yields_when_its_own_title_moved_mid_sweep(pg_test_db):
+    """The key alone cannot stand in for "untouched" on this table.
+
+    An old writer moving an identity's artist or title leaves the key exactly
+    as it found it -- NULL stays NULL, and the trigger's own nulling is a
+    no-op on a key that was already NULL -- so a predicate reading only the
+    key still matches and writes the fold of a title the row no longer has.
+    Orphan that identity afterwards and the keep-what-is-there branch
+    preserves the wrong key for good, having nothing better to offer.
+    (Copilot, PR #368, round 20.)
+    """
+    import psycopg
+    import config
+
+    with db.get_admin_pool().connection() as conn:
+        item_key = _seed_release_crawler_item(
+            conn, "Marketplace", "https://m/a", "Album A Remixes"
+        )
+        conn.commit()
+        # No live stock row, and no key: the branch that folds the identity's
+        # own title, which is the one the source fields have to fence.
+        conn.execute("DELETE FROM stock_items WHERE item_key = %s", [item_key])
+        conn.execute(
+            "UPDATE stock_item_identities SET record_key = NULL WHERE item_key = %s", [item_key]
+        )
+        conn.commit()
+
+    def _old_writer_moves_the_title():
+        worker = psycopg.connect(config.DATABASE_URL, autocommit=True)
+        try:
+            worker.execute(
+                "UPDATE stock_item_identities SET title = %s WHERE item_key = %s",
+                ["Album B", item_key],
+            )
+        finally:
+            worker.close()
+
+    with db.get_admin_pool().connection() as conn:
+        # Fires after the identity SELECT, so the write lands between the read
+        # and the UPDATE that acts on it.
+        proxy = _FireAfter(conn, "FROM stock_item_identities i", _old_writer_moves_the_title)
+        db.backfill_stock_keys(proxy)
+        conn.commit()
+
+    assert proxy.fired, "the stand-in writer never ran; the test proves nothing"
+
+    with db.get_admin_pool().connection() as conn:
+        row = conn.execute(
+            "SELECT title, record_key FROM stock_item_identities WHERE item_key = %s", [item_key]
+        ).fetchone()
+    assert row["title"] == "Album B"
+    assert row["record_key"] is None, (
+        "the sweep wrote a fold of the title this row no longer has"
+    )
+
+    # And the next sweep folds the title it does have.
+    with db.get_admin_pool().connection() as conn:
+        db.backfill_stock_keys(conn)
+        conn.commit()
+        row = conn.execute(
+            "SELECT record_key FROM stock_item_identities WHERE item_key = %s", [item_key]
+        ).fetchone()
+    assert row["record_key"] == record_key("Album B", "Artist A")
+
+
 def test_a_sibling_is_not_rebilled_after_an_identity_is_reconciled(pg_test_db):
     """The consequence of the above, end to end. A second shop's copy of the
     same record finds its verdict by matching its own record_key against the
