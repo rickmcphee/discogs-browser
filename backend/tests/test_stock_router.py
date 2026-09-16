@@ -303,6 +303,151 @@ def test_clear_stock_judgment_allowed_once_the_run_is_closed(pg_test_db, authed_
     assert r.json()["cleared"] is True
 
 
+def _judgment_run_lock_free(user_id: int) -> bool:
+    """Whether this user's judgment run lock could be taken right now.
+
+    Asked on a second pooled connection because an advisory lock is re-entrant
+    within the session holding it: put to the connection the handler is using,
+    the answer would be "free" no matter how tightly the lock were held."""
+    with db.user_scope(user_id) as probe:
+        return probe.execute(
+            "SELECT pg_try_advisory_xact_lock(%s, %s) AS got",
+            [db.JUDGMENT_RUN_LOCK_KEY, user_id],
+        ).fetchone()["got"]
+
+
+def test_clear_stock_judgment_holds_the_run_lock_while_it_deletes(
+    pg_test_db, authed_client_factory, monkeypatch
+):
+    """Taking the lock is what makes the refusal above mean anything, and
+    until this test nothing asserted it: with the lock_stock_judgment_run call
+    deleted out of _judgment_running, every other test in this file and in
+    test_judgment_crud.py still passed. They are all satisfied by the row read
+    alone, and the row read is exactly what cannot keep a claim landing on
+    another Machine out of the window between answering "idle" and committing
+    the DELETE -- which is the race the lock is there for.
+
+    Probed from inside clear_stock_judgments rather than by racing a real
+    competing run, which would make this a timing test."""
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+    with db.user_scope(user["id"]) as conn:
+        db.upsert_stock_judgments(conn, user["id"], [
+            {"item_key": "a" * 64, "recommended": True, "reason": "x"},
+        ])
+        conn.commit()
+
+    held = {}
+    real_clear = db.clear_stock_judgments
+
+    def _probing_clear(conn, user_id):
+        held["during"] = not _judgment_run_lock_free(user_id)
+        return real_clear(conn, user_id)
+
+    monkeypatch.setattr(db, "clear_stock_judgments", _probing_clear)
+
+    client = authed_client_factory(user["id"])
+    r = client.post("/api/stock/judge/clear", headers={"X-Requested-With": "fetch"})
+
+    assert r.json() == {"cleared": True, "count": 1}
+    assert held["during"] is True
+
+
+def test_clear_stock_judgment_does_not_take_another_users_run_lock(
+    pg_test_db, authed_client_factory, monkeypatch
+):
+    """The lock is keyed per user, so alice's live run neither refuses bob's
+    clear nor serialises him behind her. Asserted on the keys bob's handler
+    actually holds rather than on his response alone: the one-argument
+    pg_advisory_xact_lock(key) form would satisfy a response-only check while
+    putting every user in the deployment behind a single lock."""
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        bob = db.create_user(conn, discogs_user_id=2, discogs_username="bob")
+        conn.commit()
+    with db.user_scope(alice["id"]) as conn:
+        assert db.claim_stock_judgment_run(conn, alice["id"]) is not None
+        conn.commit()
+    with db.user_scope(bob["id"]) as conn:
+        db.upsert_stock_judgments(conn, bob["id"], [
+            {"item_key": "b" * 64, "recommended": True, "reason": "x"},
+        ])
+        conn.commit()
+
+    held = {}
+    real_clear = db.clear_stock_judgments
+
+    def _probing_clear(conn, user_id):
+        held["own"] = not _judgment_run_lock_free(user_id)
+        held["alices"] = not _judgment_run_lock_free(alice["id"])
+        return real_clear(conn, user_id)
+
+    monkeypatch.setattr(db, "clear_stock_judgments", _probing_clear)
+
+    r = authed_client_factory(bob["id"]).post(
+        "/api/stock/judge/clear", headers={"X-Requested-With": "fetch"}
+    )
+
+    assert r.json() == {"cleared": True, "count": 1}
+    assert held["own"] is True
+    assert held["alices"] is False
+
+
+def test_clear_stock_judgment_releases_the_run_lock_on_every_path(
+    pg_test_db, authed_client_factory, monkeypatch
+):
+    """A leaked lock would block this user's next Refresh -- claiming a run
+    takes the same one -- for as long as the pooled connection went
+    unrecycled, which is indefinitely.
+
+    The committed path gets its release free from pg_advisory_xact_lock. The
+    other two are the ones worth pinning down: a refusal returns from inside
+    the transaction without committing it, and an exception unwinds through
+    it, so both are relying on user_scope's pooled connection rolling back on
+    the way out. Each path is probed while it holds the lock as well as after,
+    so "released" is never satisfied by never having taken it."""
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+    client = authed_client_factory(user["id"])
+
+    # _judgment_running calls this immediately after taking the lock, which
+    # makes it the one hook that also sees the refusal path holding it.
+    held = []
+    real_get_run = db.get_stock_judgment_run
+
+    def _probing_get_run(conn, user_id):
+        held.append(not _judgment_run_lock_free(user_id))
+        return real_get_run(conn, user_id)
+
+    monkeypatch.setattr(db, "get_stock_judgment_run", _probing_get_run)
+
+    r = client.post("/api/stock/judge/clear", headers={"X-Requested-With": "fetch"})
+    assert r.json()["cleared"] is True
+    assert _judgment_run_lock_free(user["id"]) is True
+
+    with db.user_scope(user["id"]) as conn:
+        token = db.claim_stock_judgment_run(conn, user["id"])
+        conn.commit()
+    r = client.post("/api/stock/judge/clear", headers={"X-Requested-With": "fetch"})
+    assert r.json() == {"cleared": False, "running": True}
+    assert _judgment_run_lock_free(user["id"]) is True
+    with db.user_scope(user["id"]) as conn:
+        assert db.finish_stock_judgment_run(conn, user["id"], token, "stopped") is True
+        conn.commit()
+
+    def _raising_clear(conn, user_id):
+        raise RuntimeError("clear blew up")
+
+    monkeypatch.setattr(db, "clear_stock_judgments", _raising_clear)
+    with pytest.raises(RuntimeError, match="clear blew up"):
+        client.post("/api/stock/judge/clear", headers={"X-Requested-With": "fetch"})
+    assert _judgment_run_lock_free(user["id"]) is True
+
+    assert held == [True, True, True]
+
+
 @pytest.fixture
 def rls_enforced(pg_test_db, monkeypatch):
     """Repoint the app pool at app_user, the RLS-enforcing role production
@@ -1150,6 +1295,42 @@ def test_import_refuses_while_a_judgment_run_is_active(pg_test_db, authed_client
     assert r.json()["imported"] == 0
     with db.user_scope(alice["id"]) as conn:
         assert db.has_any_stock_judgment(conn, alice["id"]) is False
+
+
+def test_import_holds_the_run_lock_while_it_writes(
+    pg_test_db, authed_client_factory, monkeypatch
+):
+    """The other mutation, and the same property: the guard has to still be
+    holding the lock when the upsert runs. What it is guarding against is a
+    run claiming in the gap and then writing its own verdicts over the ones
+    this file is putting in -- which the row read, on its own, would have
+    answered about a moment already past.
+
+    See test_clear_stock_judgment_holds_the_run_lock_while_it_deletes for why
+    this is probed from inside the write rather than raced."""
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+
+    held = {}
+    real_import = db.import_stock_judgments
+
+    def _probing_import(conn, user_id, judgments):
+        held["during"] = not _judgment_run_lock_free(user_id)
+        return real_import(conn, user_id, judgments)
+
+    monkeypatch.setattr(db, "import_stock_judgments", _probing_import)
+
+    header = "artist,title,format,price,source,link,reason,item_key,recommended,judged_at"
+    csv_text = f"{header}\nA,B,,,,,r,{'a' * 64},true,2026-08-09T00:00:00\n"
+    r = authed_client_factory(user["id"]).post(
+        "/api/stock/import",
+        files={"file": ("x.csv", csv_text, "text/csv")},
+        headers={"X-Requested-With": "fetch"},
+    )
+
+    assert r.json()["imported"] == 1
+    assert held["during"] is True
 
 
 def test_import_does_not_write_another_users_judgments(pg_test_db, authed_client_factory):
