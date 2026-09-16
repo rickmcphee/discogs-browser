@@ -170,10 +170,38 @@ def test_genuinely_different_records_stay_apart():
     assert record_key("Sabbath Bloody Sabbath") != record_key("Black Sabbath")
 
 
+@pytest.mark.parametrize("a,b", [
+    ("Love Hate", "Hate Love"),
+    ("Love Love", "Love"),
+    ("Go Go", "Go"),
+    ("Bad Bad Not Good", "Bad Not Good"),
+])
+def test_word_order_and_repeats_separate_records(a, b):
+    """title_key folds to a sorted *set*, which is right for a pressing key --
+    two stores wording one pressing differently must group -- and wrong for a
+    record key, where it merged distinct albums by one artist and handed one
+    the other's verdict and reason. record_key keeps the order and the
+    repeats. (Copilot, PR #368, round 21.)
+    """
+    assert record_key(a) != record_key(b)
+
+
+def test_the_pressing_key_still_ignores_word_order():
+    """What record_key's stricter fold must not cost: the Cheapest filter
+    still groups one pressing worded two ways, or it shows the wrong price."""
+    assert title_key("Kid A - Red / Black Splatter") == title_key("Kid A (Black & Red Splatter)")
+    assert title_key("Love Hate") == title_key("Hate Love")
+
+
 def test_a_fenced_segment_with_real_words_in_it_is_kept():
     # "Live at Leeds" is not a pressing variant, however it is punctuated.
     assert record_key("Something (Live at Leeds)") != record_key("Something")
-    assert record_key("Songs of Love, and Hate") == title_key("Songs of Love, and Hate")
+    # A comma is not a fence, so nothing after it is dropped. Asserted against
+    # a title that really is shorter rather than against title_key: the two
+    # keys no longer agree on word order, deliberately, so an equality between
+    # them would be testing that difference instead of this one.
+    assert record_key("Songs of Love, and Hate") != record_key("Songs of Love")
+    assert record_key("Songs of Love, and Hate") == record_key("Songs of Love and Hate")
 
 
 # An artist name can contain the separators record_key splits on. Splitting

@@ -773,7 +773,11 @@ CREATE INDEX IF NOT EXISTS stock_item_identities_record_fold_idx
 -- longer asks only for a NULL key. It asks whether the key matches the one on
 -- the item's live stock row, and no index on this table answers that, so the
 -- partial index had no reader left while every upsert still maintained it.
-DROP INDEX IF EXISTS stock_item_identities_record_key_null_idx;
+-- Back, with the query that wants it. The identity pass no longer walks
+-- every identity ever created: it drives the live half off stock_items and
+-- asks this table only for the unkeyed orphans, which is what this answers.
+CREATE INDEX IF NOT EXISTS stock_item_identities_record_key_null_idx
+    ON stock_item_identities (item_key) WHERE record_key IS NULL;
 """
 
 
@@ -1158,15 +1162,22 @@ def backfill_stock_keys(conn) -> int:
     exactly what both live writers put there. Anything else is stale, however
     it got that way.
 
-    Costs a fold per row, in both tables: measured at 9,000 stock rows and
-    their identities, ~850 ms, against the ~1,840 ms whole-catalog replace it
-    follows at the end of a sync and the Anthropic round trips it precedes at
-    the start of a judgment run. It was ~23 ms while it only looked for NULLs,
-    and that is what the cheap version was buying -- a fast answer to a
-    question that missed the case worth asking about. Both callers hand it to
-    a thread, since this is CPU-bound Python and grows with the catalog. The
-    partial indexes on the NULL keys went with the NULL-only query: a scan
-    reads every row regardless, and every write was still maintaining them.
+    Costs a fold per row: measured at 9,000 stock rows, ~850 ms, against the
+    ~1,840 ms whole-catalog replace it follows at the end of a sync and the
+    Anthropic round trips it precedes at the start of a judgment run. It was
+    ~23 ms while it only looked for NULLs, and that is what the cheap version
+    was buying -- a fast answer to a question that missed the case worth
+    asking about. Both callers hand it to a thread, since this is CPU-bound
+    Python. The partial indexes on stock_items' NULL keys went with the
+    NULL-only query: a scan reads every row regardless.
+
+    It grows with the *live catalog*, and only that. Reading the identities
+    table for the whole pass made it grow with every URL any shop had ever
+    used, since nothing prunes it: at 9,000 live rows, 855 ms with no dead
+    identities, 991 ms with 40,000 and 1,343 ms with 120,000. Driving the live
+    half off stock_items and asking the identities only for unkeyed orphans
+    holds it flat -- 826, 845, 840 ms across the same three -- and gives
+    stock_item_identities_record_key_null_idx a reader again.
 
     The same derivation as the two live writers: the name the site gave the
     item when it gave one (a release-crawler row's listing_title, which can
@@ -1261,52 +1272,62 @@ def backfill_stock_keys(conn) -> int:
     # identity is folded from its own name -- but only when it has no key at
     # all. A key already there is the better answer and must be kept; see the
     # branch below.
-    identities = conn.execute(
+    # Two queries, both bounded by something that shrinks as well as grows.
+    # Driving the whole pass off stock_item_identities read every row ever
+    # created -- the table is never pruned, so every re-slug added one for
+    # good -- and then threw most of them away, since an orphan that already
+    # has a key is left alone. The work grew with all the URLs a shop had ever
+    # used rather than with the catalog it stocks today.
+    #
+    # The live half, driven from stock_items: one row per item_key, the same
+    # one the old LATERAL picked.
+    live = conn.execute(
         """
-        SELECT i.item_key, i.artist, i.title, i.record_key,
-               s.record_key AS stock_record_key, s.item_key AS stock_item_key
+        SELECT DISTINCT ON (s.item_key)
+               s.item_key, s.record_key AS stock_record_key,
+               i.record_key, i.artist, i.title
+        FROM stock_items s
+        JOIN stock_item_identities i ON i.item_key = s.item_key
+        ORDER BY s.item_key, s.last_seen DESC, s.id
+        """
+    ).fetchall()
+    # And the orphans worth reading: no live stock row and no key, which is
+    # the only orphan this pass acts on. A partial index answers it.
+    orphans = conn.execute(
+        """
+        SELECT i.item_key, i.artist, i.title, i.record_key
         FROM stock_item_identities i
-        LEFT JOIN LATERAL (
-            SELECT record_key, item_key
-            FROM stock_items s
-            WHERE s.item_key = i.item_key
-            ORDER BY s.last_seen DESC, s.id
-            LIMIT 1
-        ) s ON TRUE
+        WHERE i.record_key IS NULL
+          AND NOT EXISTS (SELECT 1 FROM stock_items s WHERE s.item_key = i.item_key)
         """
     ).fetchall()
     wrong = []
-    for row in identities:
-        if row["stock_item_key"] is not None:
-            wanted = row["stock_record_key"]
-            if wanted is None:
-                # The stock row is there but has no key yet -- the trigger
-                # cleared it when an old Machine moved its title after the
-                # pass above committed. There is nothing to copy, and copying
-                # the NULL would erase a key this identity still holds
-                # correctly; worse, if that stock row then goes out of stock
-                # the branch below would re-derive the identity from the
-                # catalog title it no longer matches, which is the re-listing
-                # charge again. Leave it until the stock row is keyed, which
-                # is the next sweep.
-                continue
-        elif row["record_key"] is not None:
-            # Nothing to reconcile against, and nothing better to say. A
-            # release-crawler identity holds the fold of the marketplace's
-            # name for what it matched, while its own `title` is the catalog
-            # target -- the two genuinely differ, and only the first one
-            # matches the listing if it comes back. Re-folding the identity's
-            # own title here would overwrite a *valid* key with a different
-            # one, and the item returning at a new URL under the same
-            # marketplace name would then find no judged identity and be
-            # billed again: the re-listing leak this table exists to close.
-            #
-            # Staleness here is the trigger's job, not this pass's: an old
-            # binary moving the identity's title leaves the key NULL, which is
-            # the branch below.
+    for row in live:
+        wanted = row["stock_record_key"]
+        if wanted is None:
+            # The stock row is there but has no key yet -- the trigger cleared
+            # it when an old Machine moved its title after the pass above
+            # committed. There is nothing to copy, and copying the NULL would
+            # erase a key this identity still holds correctly; worse, if that
+            # stock row then goes out of stock, the orphan rule below would
+            # keep the wrong value for good. Leave it until the stock row is
+            # keyed, which is the next sweep.
             continue
-        else:
-            wanted = record_key(row["title"], row["artist"])
+        if row["record_key"] != wanted:
+            wrong.append((wanted, row["item_key"], row["record_key"],
+                          row["artist"], row["title"]))
+    # An orphan is only ever *filled*, never re-derived, which is why the
+    # query above asks for the unkeyed ones alone. A release-crawler identity
+    # holds the fold of the marketplace's name for what it matched, while its
+    # own `title` is the catalog target -- the two genuinely differ, and only
+    # the first matches the listing if it comes back. Re-folding an orphan's
+    # own title would overwrite a *valid* key, and the item returning at a new
+    # URL under the same marketplace name would find no judged identity and be
+    # billed again: the re-listing leak this table exists to close. Staleness
+    # there is the trigger's job, which leaves the key NULL -- and a NULL is
+    # what this branch is for.
+    for row in orphans:
+        wanted = record_key(row["title"], row["artist"])
         if row["record_key"] != wanted:
             wrong.append((wanted, row["item_key"], row["record_key"],
                           row["artist"], row["title"]))

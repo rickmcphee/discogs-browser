@@ -122,8 +122,22 @@ def _artist_forms(artist: str) -> list:
     return sorted(forms, key=len, reverse=True)
 
 
-def title_key(title: str, artist: Optional[str] = None) -> str:
+def title_key(title: str, artist: Optional[str] = None, ordered: bool = False) -> str:
     """The comparison key for `title`: never empty for a non-empty title.
+
+    `ordered` keeps the words in the order the title wrote them, and keeps a
+    repeat as a repeat. Only `record_key` passes it, and the difference is the
+    difference between the two keys' jobs. Sorting into a set makes the fold
+    forgiving of word order, which is what a *pressing* key wants: one store's
+    "Kid A Remastered" and another's "Remastered Kid A" are the same thing to
+    the Cheapest filter, and mis-grouping two rows there shows the wrong
+    price. A *record* key cannot afford that forgiveness, because the set also
+    makes "Love Hate" and "Hate Love" one key, and "Love Love" and "Love" one
+    key -- distinct albums by one artist, merged, with one inheriting the
+    other's verdict and a reason written about it. That is the false merge
+    this whole design errs away from, so record_key pays the other price: two
+    stores wording one record in different word orders bill it twice.
+    (Copilot, PR #368, round 21.)
 
     `artist`, when given, is stripped from the front of the title if a site
     wrote both in one name ("Aphex Twin - Selected Ambient Works"): a
@@ -150,10 +164,12 @@ def title_key(title: str, artist: Optional[str] = None) -> str:
     words = _words(folded)
     for pattern in _PHRASE_NOISE:
         folded = pattern.sub(" ", folded)
-    tokens = {t for t in _words(folded) if t not in _NOISE_WORDS}
+    tokens = [t for t in _words(folded) if t not in _NOISE_WORDS]
     if not tokens:
-        tokens = set(words) or {folded.strip() or title.strip()}
-    return " ".join(sorted(tokens))
+        tokens = words or [folded.strip() or title.strip()]
+    if ordered:
+        return " ".join(tokens)
+    return " ".join(sorted(set(tokens)))
 
 
 # What title_key deliberately keeps and record_key drops: the vocabulary that
@@ -348,13 +364,13 @@ def record_key(title: str, artist: Optional[str] = None) -> str:
         # unsplit and let title_key strip it: the cost is one variant not
         # folded away, which bills a record twice at worst -- the direction
         # this module errs in on purpose.
-        return title_key(stripped if stripped.strip() else title, artist)
+        return title_key(stripped if stripped.strip() else title, artist, ordered=True)
     parts = _SEGMENT_SPLIT.split(stripped)
     while len(parts) > 1 and _is_variant_segment(parts[-1]):
         parts.pop()
     rebuilt = " - ".join(p for p in parts if p.strip()).strip()
     if not rebuilt:
-        return title_key(title, artist)
+        return title_key(title, artist, ordered=True)
     # The artist is already off the front when prefix is truthy, so title_key
     # finds nothing to strip and keys the remainder as the bare title it is.
-    return title_key(rebuilt, artist)
+    return title_key(rebuilt, artist, ordered=True)

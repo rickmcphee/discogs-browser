@@ -155,6 +155,19 @@ The dash is the dominant real spelling of a variant and removing it would gut
 the feature — where the comma, the slash and the pipe were all weak signals of
 a variant and common in ordinary titles, so each one cost little to give up.
 
+`record_key` keeps the words in the order the title wrote them, and keeps a
+repeat as a repeat, where `title_key` folds to a sorted set. That difference
+is the difference between the two keys' jobs. The set makes `title_key`
+forgiving of word order, which is what a *pressing* key wants — one store's
+"Kid A Remastered" and another's "Remastered Kid A" are the same thing to the
+Cheapest filter, and mis-grouping there shows the wrong price. A *record* key
+cannot afford that forgiveness, because the same set makes "Love Hate" and
+"Hate Love" one key, and "Love Love" and "Love" one key: distinct albums by
+one artist, merged, one inheriting the other's verdict and a reason written
+about it. So `record_key` pays the other price instead — two stores wording
+one record in different word orders bill it twice, which is the split
+direction. (Raised by Copilot on PR #368, round 21.)
+
 `record_key` delegates its folding to `title_key` rather than post-filtering
 its output, because the punctuation that marks a fence is exactly what a
 token set has already discarded. It inherits the never-empty guarantee by
@@ -652,6 +665,10 @@ not worth folding into this one.
 - A bare number does not carry a fenced segment on its own — `Greatest Hits
   (2)` and `Now - 4` stay separate records — while a digit beside a variant
   word (`Numbered 123`, `2024 Reissue`, `2LP`) still folds away.
+- Word order and repeats separate records: `Love Hate`/`Hate Love` and
+  `Love Love`/`Love` key apart, while the pressing key still groups them
+- The sweep's cost tracks the live catalog and not the identities table,
+  which nothing prunes
 - A comma, a slash and a pipe are not fences: `Red, White & Blue`, `Ready,
   Set`, `Black / Gold` and `Red | Blue` stay separate from their first
   segment, while the dashes and brackets still fold
