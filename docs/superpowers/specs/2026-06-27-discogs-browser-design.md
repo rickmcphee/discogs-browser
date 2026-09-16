@@ -128,6 +128,7 @@ See [`2026-08-09-library-price-paid-design.md`](../../specifications/shaping/202
 | `currency` | TEXT | |
 | `condition` | TEXT | |
 | `listing_title` | TEXT | Nullable — the name the source gave the matched item, when the crawler reported one. Added 2026-09-05; `stock_items` carries the same column. See [`2026-09-05-marketplace-listing-title-design.md`](../../specifications/shaping/2026-09-05-marketplace-listing-title-design.md). |
+| `listing_image_url` | TEXT | Nullable — the picture the source showed for that same matched item, when the crawler reported one. Display-only, and distinct from the target's own `cover_image_url`, which stays the fallback. Added 2026-09-16; `stock_items` carries the same column. See [`2026-09-16-marketplace-listing-image-design.md`](../../specifications/shaping/2026-09-16-marketplace-listing-image-design.md). |
 | `last_checked` | TIMESTAMP | |
 | UNIQUE | | `(release_id, crawler_id)` |
 

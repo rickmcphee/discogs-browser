@@ -157,7 +157,7 @@ async def test_search_ebay_reports_the_matched_listings_own_picture(monkeypatch)
 
 async def test_search_ebay_falls_back_to_a_thumbnail_and_skips_a_non_https_picture(monkeypatch):
     # The value lands in an <img src> the browser fetches, and only the API's
-    # word says it is an image at all -- so the same https-only check
+    # word says it is an image at all -- so the same https-only check that
     # _is_ebay_item_url applies to the link applies here.
     import ebay_api
 
