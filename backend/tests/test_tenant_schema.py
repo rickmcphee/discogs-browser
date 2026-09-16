@@ -45,6 +45,32 @@ def test_library_items_table_has_rls_enabled(admin_conn):
     assert row["relforcerowsecurity"] is True
 
 
+def test_stock_judgment_runs_table_has_rls_enabled(admin_conn):
+    # Per-user data like library_items, and the one table a browser can write
+    # to without naming a run (POST /stock/judge/stop says "stop mine"), so the
+    # policy is what decides whose run "mine" is.
+    row = admin_conn.execute(
+        "SELECT relrowsecurity, relforcerowsecurity FROM pg_class WHERE relname = 'stock_judgment_runs'"
+    ).fetchone()
+    assert row["relrowsecurity"] is True
+    assert row["relforcerowsecurity"] is True
+
+
+def test_app_user_cannot_delete_stock_judgment_runs(admin_conn):
+    # A run row is claimed, updated and finished in place, and the next run
+    # overwrites it -- nothing ever removes one.
+    privileges = admin_conn.execute(
+        """
+        SELECT has_table_privilege('app_user', 'stock_judgment_runs', 'SELECT') AS can_select,
+               has_table_privilege('app_user', 'stock_judgment_runs', 'INSERT') AS can_insert,
+               has_table_privilege('app_user', 'stock_judgment_runs', 'UPDATE') AS can_update,
+               has_table_privilege('app_user', 'stock_judgment_runs', 'DELETE') AS can_delete
+        """
+    ).fetchone()
+    assert (privileges["can_select"], privileges["can_insert"], privileges["can_update"]) == (True, True, True)
+    assert privileges["can_delete"] is False
+
+
 def test_app_identity_role_has_bypassrls(admin_conn):
     row = admin_conn.execute(
         "SELECT rolbypassrls FROM pg_roles WHERE rolname = 'app_identity'"

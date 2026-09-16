@@ -3,6 +3,17 @@
 Date: 2026-08-09
 Branch: `recommendations-import`
 
+**Amendment (2026-09-16, branch `claude/lucid-maxwell-69049q`):** the busy
+guard described below no longer reads
+`crawl_manager.judgment_running(user_id)`. A recommendation run is now a
+`stock_judgment_runs` row, and the guard reads that instead — it is racing the
+run's writes to `stock_item_judgments`, and with two Machines behind one
+hostname that run is on whichever one served its start, invisible to this
+process's task map. The `crawl_manager.stock_sync_running` half is unchanged,
+and so is everything the guard does once it fires: still a `200` carrying
+`{"imported": 0, ..., "running": True}`, still writing nothing. See
+[`2026-09-16-stop-recommendation-run-design.md`](2026-09-16-stop-recommendation-run-design.md).
+
 ## Problem
 
 Recommendation judgments cost real money. Every unjudged Store item that

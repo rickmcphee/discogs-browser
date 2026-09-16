@@ -67,7 +67,8 @@ export interface CrawlEvent {
     | 'stock_sync_started' | 'stock_sync_source_started' | 'stock_sync_page_fetched'
     | 'stock_sync_detail_progress'
     | 'stock_sync_progress' | 'stock_sync_complete' | 'stock_sync_error' | 'stock_sync_aborted'
-    | 'stock_judgment_started' | 'stock_judgment_progress' | 'stock_judgment_complete' | 'stock_judgment_error'
+    | 'stock_judgment_started' | 'stock_judgment_progress' | 'stock_judgment_complete'
+    | 'stock_judgment_stopped' | 'stock_judgment_error'
     | 'plex_match_started' | 'plex_match_progress' | 'plex_match_complete' | 'plex_match_error'
   discogs_id?: string
   item_key?: string
@@ -114,6 +115,35 @@ export interface CollectionSyncRun {
   error: string | null
   started_at: string | null
   finished_at: string | null
+}
+
+// The recommendation run as both Machines can see it, rather than as one
+// process remembers it. Same shape of claim as CollectionSyncRun, and the same
+// warning applies: `running` is not `status === 'running'`, because a run whose
+// Machine died mid-pass keeps that status forever and is reported stale
+// instead (see backend/db.py's get_stock_judgment_run).
+export interface StockJudgmentRun {
+  status: 'running' | 'complete' | 'stopped' | 'error'
+  running: boolean
+  stale: boolean
+  judged: number
+  // Null until the run has counted the items it is going to judge, which it
+  // does before the first Anthropic call.
+  total: number | null
+  error: string | null
+  // A stop the run has been asked for but has not reached yet: it finishes the
+  // batch in flight first, so this is true and `running` still true for up to
+  // one batch. That gap is what the button's "Stopping…" face covers.
+  stop_requested: boolean
+  started_at: string | null
+  finished_at: string | null
+}
+
+export interface JudgmentStatus {
+  any_judged: boolean
+  // Always present, null when the user has never started a run -- required
+  // rather than optional for the same reason CollectionStatus.sync is.
+  run: StockJudgmentRun | null
 }
 
 export interface CollectionStatus {
