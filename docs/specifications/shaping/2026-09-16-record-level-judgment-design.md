@@ -194,11 +194,26 @@ table — and fills any of the three columns where NULL, so a rolling deploy
 whose old process is still writing `record_key`-less rows is repaired by the
 next sweep exactly as it already is for `title_key`.
 
-Grouping reads `COALESCE(record_key, title_key, title)` on stock rows and
-`COALESCE(record_key, title)` on identities, which carry no `title_key` — the
-same belt-beside-braces `_cheapest_clause` uses, so a NULL that outruns the
-sweep keys as itself instead of folding every unkeyed row into one group and
-handing them all whatever verdict that group already has.
+Grouping reads `COALESCE(record_key, title)` — belt beside the sweep's
+braces, so a NULL that outruns it keys as itself instead of folding every
+unkeyed row into one group and handing them all whatever verdict that group
+already has.
+
+Note what that fallback deliberately *omits*. `_cheapest_clause` uses
+`COALESCE(title_key, title)`, and copying that rung here would be a bug:
+`stock_item_identities` has no `title_key`, so the two sides of the match
+would fall back to different things. A rolling deploy's old process writes
+`record_key` NULL while still populating `title_key`, and the comparison
+would then put the identity's raw title ("Album A") against the stock row's
+folded key ("a") and match nothing — re-billing items whose judgments are
+sitting right there. Both sides bottom out at the raw title, which the two
+tables agree on.
+
+Underneath that, `_judged_record_sql` matches on `i.item_key = s.item_key`
+as well as on the record. That is not redundant, it is the floor: this exact
+listing having been judged reads as judged whatever the folds do, so no
+disagreement between them can put an item already paid for back in front of
+the model.
 
 ### Propagation
 
@@ -316,10 +331,12 @@ it had done nothing." A rejected Refresh must say why.
 
 `POST /api/stock/judge/start` therefore gains a `stock_sync_running` flag
 alongside `{started, running}`, so the client can tell "your own judgment run
-is already going" from "the catalog is mid-refresh" and say which. The guard
-itself lives in `start_judgment_only`, not the router, so no other call site
-can bypass it; the router reads `stock_sync_running` only to choose the
-message.
+is already going" from "the catalog is mid-refresh". Three layers, each doing
+one thing: the guard itself lives in `start_judgment_only` so no other call
+site can bypass it and it alone knows which refusal happened; the router
+forwards that answer rather than re-deriving it; and
+`handleRefreshRecommendations` (`frontend/src/App.tsx`) picks the message the
+user actually reads.
 
 ## Considered and rejected
 
@@ -352,6 +369,9 @@ message.
   `Greatest Hits Volume 2`).
 - An unfenced colour word is kept: `Purple Rain` does not key as `Rain`, and
   `Black Sabbath` does not key as `Sabbath`.
+- A bare number does not carry a fenced segment on its own — `Greatest Hits
+  (2)` and `Now - 4` stay separate records — while a digit beside a variant
+  word (`Numbered 123`, `2024 Reissue`, `2LP`) still folds away.
 - A title made entirely of variant words keeps a non-empty key.
 - Two shops stocking one record yield one entry in the billable set, and
   judging it writes a row for both listings.
@@ -367,6 +387,11 @@ message.
   `title_key` is already set, and on an identity row.
 - A record whose judged listing is no longer stocked at all still answers
   "already judged" — the case a join through `stock_items` would miss.
+- Two simultaneous starts for one user produce one run, and two users'
+  simultaneous starts both run.
+- A listing whose `record_key` has not been swept yet still reads as judged
+  when it has its own judgment, and a sibling listing of that record is still
+  billed only once.
 - `start_judgment_only` returns `started: false` while a stock sync runs, and
   starts normally once it finishes.
 - It also refuses while another Machine holds `STOCK_SYNC_LOCK_KEY` with no

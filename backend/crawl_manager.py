@@ -112,6 +112,11 @@ class CrawlManager:
         # The same job for start_sync and start_plex_match, which exclude each
         # other and so have to share one. Lazily created for the same reason.
         self._sync_start_locks: dict[int, asyncio.Lock] = {}
+        # One lock rather than one per user, like _stock_start_lock and
+        # unlike _sync_start_locks: all it covers is a running check and a
+        # task assignment either side of the stock-lock read, so a second
+        # user's start waits microseconds. Lazily created for the same reason.
+        self._judgment_start_lock: Optional[asyncio.Lock] = None
         self._judgment_tasks: dict[int, asyncio.Task] = {}
         self._plex_match_tasks: dict[int, asyncio.Task] = {}
         self._worker_tasks: list[asyncio.Task] = []
@@ -1933,25 +1938,38 @@ class CrawlManager:
         is the only place that knows *which* refusal happened, and the caller
         cannot re-derive it -- `stock_sync_running` is the local flag, which
         reads false for a sync running on another Machine.
+
+        The whole sequence runs under one lock, for the reason spelled out on
+        start_stock_sync's: the lock check below awaits, and _judgment_tasks
+        is not assigned until after it, so two requests for one user could
+        both clear the running check, both wait, and both create a task --
+        the second merely overwriting the first handle while both runs went
+        on spending that user's Anthropic credit on the same items. The
+        check-and-assign has to be atomic across that await, and asyncio's
+        single-threaded scheduling only makes it so when nothing suspends in
+        between.
         """
-        if self.judgment_running(user_id):
-            log.warning("Judgment already running for %s, ignoring start request", self._username_for_log(user_id))
-            return {"started": False, "stock_sync_running": False}
-        # A stock sync replaces each crawler's whole snapshot, so judging
-        # against one in progress spends the user's own Anthropic credit on
-        # items that are about to be deleted. Held here rather than in the
-        # router so no other call site can start a run around it. The mirror
-        # guard on start_stock_sync is deliberately *not* restored with it:
-        # judgment is per-user and the sync is global, so one user's run must
-        # not be able to hold up everyone's catalog refresh.
-        if await run_in_threadpool(self._stock_sync_running_anywhere):
-            log.warning(
-                "Stock sync running, ignoring judgment start request for %s",
-                self._username_for_log(user_id),
-            )
-            return {"started": False, "stock_sync_running": True}
-        self._judgment_tasks[user_id] = asyncio.create_task(self._run_judgment_phase(user_id))
-        return {"started": True, "stock_sync_running": False}
+        if self._judgment_start_lock is None:
+            self._judgment_start_lock = asyncio.Lock()
+        async with self._judgment_start_lock:
+            if self.judgment_running(user_id):
+                log.warning("Judgment already running for %s, ignoring start request", self._username_for_log(user_id))
+                return {"started": False, "stock_sync_running": False}
+            # A stock sync replaces each crawler's whole snapshot, so judging
+            # against one in progress spends the user's own Anthropic credit on
+            # items that are about to be deleted. Held here rather than in the
+            # router so no other call site can start a run around it. The mirror
+            # guard on start_stock_sync is deliberately *not* restored with it:
+            # judgment is per-user and the sync is global, so one user's run must
+            # not be able to hold up everyone's catalog refresh.
+            if await run_in_threadpool(self._stock_sync_running_anywhere):
+                log.warning(
+                    "Stock sync running, ignoring judgment start request for %s",
+                    self._username_for_log(user_id),
+                )
+                return {"started": False, "stock_sync_running": True}
+            self._judgment_tasks[user_id] = asyncio.create_task(self._run_judgment_phase(user_id))
+            return {"started": True, "stock_sync_running": False}
 
     async def _run_judgment_phase(self, user_id: int):
         from db import (

@@ -202,3 +202,27 @@ def test_an_artist_spelled_differently_from_the_title_still_folds_the_variant():
 def test_an_artist_that_is_not_a_prefix_does_not_suppress_the_split():
     # No artist prefix at all, so the trailing-variant pop still applies.
     assert record_key("Back in Black - Red Vinyl", "AC/DC") == record_key("Back in Black", "AC/DC")
+
+
+@pytest.mark.parametrize("numbered,bare", [
+    ("Greatest Hits (2)", "Greatest Hits"),
+    ("Now - 4", "Now"),
+    ("Hits [3]", "Hits"),
+])
+def test_a_bare_number_is_which_record_this_is_not_which_pressing(numbered, bare):
+    # A digit alone must not carry a fenced segment: volume numbers are how a
+    # series distinguishes its records, and merging them would hand one
+    # volume another's verdict and a reason about a different record.
+    # (Copilot, PR #368.)
+    assert record_key(numbered) != record_key(bare)
+
+
+@pytest.mark.parametrize("title", [
+    "Album X (Numbered 123)",
+    "Album X (2024 Reissue)",
+    "Album X (Disc 2)",
+    "Album X (2LP)",
+    "Album X (180g)",
+])
+def test_a_digit_beside_a_variant_word_still_folds_away(title):
+    assert record_key(title) == record_key("Album X")

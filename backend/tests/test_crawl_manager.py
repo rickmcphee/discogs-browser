@@ -6084,7 +6084,7 @@ async def test_start_stock_sync_runs_while_a_users_judgment_is_in_flight(pg_test
     await asyncio.sleep(0.01)
 
 
-async def test_start_judgment_only_is_refused_while_a_stock_sync_runs(pg_test_db, manager):
+async def test_start_judgment_only_is_refused_while_a_stock_sync_runs(pg_schema, manager):
     # The other direction is a guard, not a mutex, and it is about money: a
     # sync replaces each crawler's whole snapshot, so a run started against
     # one in progress pays to judge items that are about to be deleted.
@@ -7125,7 +7125,7 @@ async def test_a_second_judgment_run_over_an_unchanged_catalog_calls_nothing(pg_
 
 
 async def test_start_judgment_only_is_refused_while_another_machine_holds_the_sync_lock(
-    pg_test_db, manager
+    pg_schema, manager
 ):
     """`stock_sync_running` is this process's `_stock_task` and nothing more,
     but stock sync is serialized across Machines by an advisory lock. A
@@ -7160,7 +7160,7 @@ async def test_start_judgment_only_is_refused_while_another_machine_holds_the_sy
     await asyncio.sleep(0.01)
 
 
-async def test_judgment_starts_when_the_lock_state_cannot_be_read(pg_test_db, manager, monkeypatch):
+async def test_judgment_starts_when_the_lock_state_cannot_be_read(pg_schema, manager, monkeypatch):
     """Fails open. A cost guard that turns a database hiccup into a dead
     Refresh button is worse than one that occasionally lets a run through."""
     import db as db_module
@@ -7175,4 +7175,69 @@ async def test_judgment_starts_when_the_lock_state_cannot_be_read(pg_test_db, ma
 
     monkeypatch.setattr(db_module, "advisory_lock_held", _boom)
     assert (await manager.start_judgment_only(1))["started"] is True
+    await asyncio.sleep(0.01)
+
+
+async def test_two_simultaneous_starts_for_one_user_create_one_run(pg_schema, manager, monkeypatch):
+    """The stock-lock read awaits, and _judgment_tasks is not assigned until
+    after it, so without a lock two requests for one user both clear the
+    running check, both wait, and both create a task -- the second merely
+    overwriting the first handle while both spend that user's Anthropic
+    credit on the same items. (Copilot, PR #368.)
+    """
+    import db as db_module
+
+    started_runs = []
+    release = asyncio.Event()
+
+    async def _fake_judgment_phase(user_id):
+        started_runs.append(user_id)
+        await release.wait()
+
+    manager._run_judgment_phase = _fake_judgment_phase  # type: ignore
+
+    # Make the lock read genuinely suspend, which is what opens the window.
+    def _slow_lock_read(conn, key):
+        time.sleep(0.05)
+        return False
+
+    monkeypatch.setattr(db_module, "advisory_lock_held", _slow_lock_read)
+
+    first, second = await asyncio.gather(
+        manager.start_judgment_only(1), manager.start_judgment_only(1)
+    )
+    await asyncio.sleep(0.01)
+
+    assert sorted([first["started"], second["started"]]) == [False, True]
+    assert started_runs == [1]
+
+    release.set()
+    await asyncio.sleep(0.01)
+
+
+async def test_simultaneous_starts_for_different_users_both_run(pg_schema, manager, monkeypatch):
+    """The lock is one shared lock, so this is the property it must not cost:
+    judgment is per-user and two users' runs are independent."""
+    import db as db_module
+
+    started_runs = []
+    release = asyncio.Event()
+
+    async def _fake_judgment_phase(user_id):
+        started_runs.append(user_id)
+        await release.wait()
+
+    manager._run_judgment_phase = _fake_judgment_phase  # type: ignore
+    monkeypatch.setattr(db_module, "advisory_lock_held", lambda conn, key: False)
+
+    first, second = await asyncio.gather(
+        manager.start_judgment_only(1), manager.start_judgment_only(2)
+    )
+    await asyncio.sleep(0.01)
+
+    assert first["started"] is True
+    assert second["started"] is True
+    assert sorted(started_runs) == [1, 2]
+
+    release.set()
     await asyncio.sleep(0.01)

@@ -230,6 +230,14 @@ def _is_variant_segment(text: str) -> bool:
         # Emptied by the phrase list alone -- "180g", "12 inch" -- which is a
         # variant segment if it was anything at all.
         return had_words
+    # A digit rides along with a word that names a variant ("Numbered 123",
+    # "2024 Reissue") but never carries a segment by itself: a bare number is
+    # usually which record in a series this is, and "Greatest Hits (2)"
+    # folding onto "Greatest Hits" is the false merge this module exists to
+    # avoid -- one volume inheriting another's verdict, and a reason written
+    # about a different record.
+    if not any(w in _NOISE_WORDS or w in _VARIANT_WORDS for w in words):
+        return False
     return all(w in _NOISE_WORDS or w in _VARIANT_WORDS or w.isdigit() for w in words)
 
 

@@ -3777,23 +3777,33 @@ def _record_group_sql(alias: str = "s") -> str:
     One step coarser than the pair `_cheapest_clause` groups by, which uses
     `title_key` — that one asks "is this the same pressing", and a red and a
     black copy of an album are two pressings but one record, so one answer to
-    the question the model is being asked. COALESCE down through `title_key`
-    to the raw title for the same reason it appears there: `backfill_stock_keys`
-    normally leaves nothing NULL, but a row that outruns the sweep must key as
-    itself rather than joining every other unkeyed row in one group and
-    inheriting whatever verdict that group already has.
+    the question the model is being asked. COALESCE to the raw title for the
+    same reason a fallback appears there: `backfill_stock_keys` normally
+    leaves nothing NULL, but a row that outruns the sweep must key as itself
+    rather than joining every other unkeyed row in one group and inheriting
+    whatever verdict that group already has.
     """
-    return (
-        f"{_artist_sort_sql(f'{alias}.artist')}, "
-        f"COALESCE({alias}.record_key, {alias}.title_key, {alias}.title)"
-    )
+    return f"{_artist_sort_sql(f'{alias}.artist')}, {_record_fold_sql(alias)}"
 
 
-# stock_item_identities carries no title_key, so its fold bottoms out one step
-# earlier. Both sides are non-NULL by construction -- artist and title are NOT
-# NULL, and each COALESCE ends at title -- so plain equality is safe.
-_IDENTITY_RECORD_SQL = "COALESCE(i.record_key, i.title)"
-_STOCK_RECORD_SQL = "COALESCE(s.record_key, s.title_key, s.title)"
+def _record_fold_sql(alias: str) -> str:
+    """The title half of the record key, for either table.
+
+    Deliberately *not* `COALESCE(record_key, title_key, title)` on the stock
+    side: `stock_item_identities` carries no `title_key`, so the extra rung
+    would make the two sides fall back to different things. During a rolling
+    deploy an old process writes `record_key` NULL while still populating
+    `title_key`, and the comparison would then put the identity's raw title
+    ("Album A") against the stock row's folded key ("a") and match nothing --
+    re-billing items whose judgments are sitting right there. Both sides
+    bottom out at the raw title, which the two tables agree on. Non-NULL
+    either way, since title is NOT NULL, so plain equality is safe.
+    """
+    return f"COALESCE({alias}.record_key, {alias}.title)"
+
+
+_IDENTITY_RECORD_SQL = _record_fold_sql("i")
+_STOCK_RECORD_SQL = _record_fold_sql("s")
 
 
 def _judged_record_sql(user_id_param: str) -> str:
@@ -3807,12 +3817,19 @@ def _judged_record_sql(user_id_param: str) -> str:
     missing for exactly the case this is meant to catch, and the re-slugged
     listing would be billed as new. Identities are only ever upserted, so an
     item judged once is answerable for forever.
+
+    The `item_key` equality is not redundant beside the record match. It is
+    the floor: this exact listing having been judged must read as judged no
+    matter what the two folds do, so that no disagreement between them -- a
+    key not yet swept, a title the two tables spell differently -- can ever
+    put an item the user has already paid for back in front of the model.
     """
     return f"""EXISTS (
             SELECT 1 FROM stock_item_identities i
             JOIN stock_item_judgments j ON j.item_key = i.item_key AND j.user_id = {user_id_param}
-            WHERE {_artist_sort_sql('i.artist')} = {_artist_sort_sql('s.artist')}
-              AND {_IDENTITY_RECORD_SQL} = {_STOCK_RECORD_SQL}
+            WHERE i.item_key = s.item_key
+               OR ({_artist_sort_sql('i.artist')} = {_artist_sort_sql('s.artist')}
+                   AND {_IDENTITY_RECORD_SQL} = {_STOCK_RECORD_SQL})
         )"""
 
 

@@ -819,3 +819,64 @@ def test_a_judgment_survives_the_backfill_for_a_release_crawler_row(pg_test_db):
 
     with db.user_scope(alice["id"]) as conn:
         assert db.count_unjudged_stock_items(conn, alice["id"]) == 0
+
+
+def test_an_unswept_record_key_does_not_rebill_an_already_judged_listing(pg_test_db):
+    """A rolling deploy's old process writes record_key NULL while still
+    populating title_key. The two sides' fallbacks have to agree, and the
+    listing's own item_key has to count on its own regardless -- otherwise an
+    item whose judgment is sitting right there goes back in front of the
+    model. (Copilot, PR #368.)
+    """
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        item_key = _seed_stock_item(conn)
+        conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        db.upsert_stock_judgments(conn, alice["id"], [
+            {"item_key": item_key, "recommended": True, "reason": "fits"},
+        ])
+        conn.commit()
+
+    with db.get_admin_pool().connection() as conn:
+        # Exactly what an older binary leaves behind: no record_key anywhere,
+        # title_key still written on the stock row.
+        conn.execute("UPDATE stock_items SET record_key = NULL")
+        conn.execute("UPDATE stock_item_identities SET record_key = NULL")
+        conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        assert db.count_unjudged_stock_items(conn, alice["id"]) == 0
+        assert db.get_unjudged_stock_items(conn, alice["id"], limit=0) == []
+
+
+def test_an_unswept_sibling_listing_is_still_billed_once(pg_test_db):
+    """The other half of the same window: a second listing of a judged record
+    with no record_key falls back to the raw title on both sides, so it still
+    recognises the record rather than keying against a folded value."""
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        one, two = _seed_two_crawlers(conn)
+        db.replace_stock_items(conn, one, [
+            {"artist": "Artist A", "title": "Album A", "url": "https://one/a"},
+        ])
+        db.replace_stock_items(conn, two, [
+            {"artist": "Artist A", "title": "Album A", "url": "https://two/a"},
+        ])
+        conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        db.upsert_stock_judgments(conn, alice["id"], [
+            {"item_key": db.compute_item_key("Artist A", "Album A", "https://one/a"),
+             "recommended": True, "reason": "fits"},
+        ])
+        conn.commit()
+
+    with db.get_admin_pool().connection() as conn:
+        conn.execute("UPDATE stock_items SET record_key = NULL")
+        conn.execute("UPDATE stock_item_identities SET record_key = NULL")
+        conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        assert db.count_unjudged_stock_items(conn, alice["id"]) == 0
