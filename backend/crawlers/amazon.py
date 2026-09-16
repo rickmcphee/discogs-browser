@@ -2,7 +2,7 @@ import asyncio
 import random
 import re
 from logging_config import get_logger
-from crawler import BotDetectedError, clean_search_text, strip_stop_words, title_variants
+from crawler import BotDetectedError, clean_search_text, https_host, strip_stop_words, title_variants
 
 log = get_logger("crawlers.amazon")
 
@@ -143,6 +143,7 @@ class Crawler:
 
         vinyl_url = None
         matched_title = ""
+        matched_image = ""
         vinyl_price = None
 
         # Try the full title first; if nothing matched, retry with a shortened title.
@@ -196,6 +197,28 @@ class Crawler:
                             continue
                         vinyl_url = f"https://www.amazon.com{href}" if href.startswith("/") else href
                         matched_title = raw_title
+                        # The search tile's own thumbnail, taken here rather
+                        # than from the product page below for the same reason
+                        # as the heading: this is the tile the artist/title
+                        # check accepted, so it pictures the item that was
+                        # actually matched. Best-effort -- a tile that renders
+                        # without one leaves the target's cover standing.
+                        try:
+                            img_el = item.locator("img.s-image").first
+                            if await img_el.count():
+                                src = (await img_el.get_attribute("src")) or ""
+                                # https with a real host only. A tile that has
+                                # not finished loading carries a base64 data:
+                                # placeholder -- the wrong picture, and
+                                # kilobytes of it on every row that stored it.
+                                # A prefix test is not enough: it passes
+                                # "https:///x.jpg", and since the UI *prefers*
+                                # the listing image, a host-less value beats
+                                # the target's good cover and renders broken.
+                                if https_host(src):
+                                    matched_image = src
+                        except Exception:
+                            matched_image = ""
                         break
                     except Exception:
                         continue
@@ -259,4 +282,5 @@ class Crawler:
             # is what the artist/title check above matched, so it names the
             # item that was actually accepted. Empty falls back to the target.
             "title": matched_title or None,
+            "cover_image_url": matched_image or None,
         }]

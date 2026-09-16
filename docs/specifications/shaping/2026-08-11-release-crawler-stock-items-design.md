@@ -173,6 +173,13 @@ index as the conflict target.
   by artist/title can be a different pressing than the target, and the row
   otherwise displayed the catalog name as if it were exact. See
   [`2026-09-05-marketplace-listing-title-design.md`](2026-09-05-marketplace-listing-title-design.md).**)**
+  **(2026-09-16:** `cover_image_url` is likewise still stored as-is from
+  `target`, and is likewise no longer the whole story: the row also carries
+  `listing_image_url`, the picture the crawler reported for what it found,
+  via an optional `cover_image_url` key in the `search()` result, and the UI
+  shows that in place of the target's cover when present. The target's own
+  art stays the fallback. See
+  [`2026-09-16-marketplace-listing-image-design.md`](2026-09-16-marketplace-listing-image-design.md).**)**
   (the catalog row already fetched earlier in the loop; unlike
   `replace_stock_items`, no `normalize_artist_casing`/`normalize_title_casing`
   pass, since catalog data is already curated Discogs metadata, not scraped
