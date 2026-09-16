@@ -818,6 +818,13 @@ describe('In Stock tab', () => {
       { started: false, running: true, run: null, stock_sync_running: false },
       /A recommendation run is already under way — use Stop to end it\./,
     ],
+    // Both at once, which the guards allow: a stock sync may start while a
+    // user's own run is going, so the sync refuses the start while the run is
+    // what would refuse the retry. The run's message is the actionable one.
+    [
+      { started: false, running: true, run: null, stock_sync_running: true },
+      /A recommendation run is already under way — use Stop to end it\./,
+    ],
   ])('says why when Refresh Recommendations is turned away (%o)', async (result, message) => {
     getUserSettings.mockResolvedValue({ ...defaultUserSettings, anthropic_api_key: 'sk-ant-test' })
     postJudgmentStart.mockResolvedValue(result)

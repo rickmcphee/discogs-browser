@@ -5897,6 +5897,76 @@ async def test_a_claim_resets_the_inherited_count(pg_schema):
         assert db.get_stock_judgment_run(conn, user_id)["inherited"] == 0
 
 
+async def test_a_cancelled_run_leaves_the_inherited_count_matching_its_rows(pg_schema):
+    """A batch's fan-out and the count of it have to land together.
+
+    The progress write at the top of a batch is the claim check that gates the
+    two writes after it, so it can only carry the count as it stood *before*
+    them. If that were the last word, a run cancelled between the batch's
+    commit and the next checkpoint would close on a count short by that batch,
+    with the propagated rows themselves committed -- and a poll-only client,
+    which has no event to fall back on, would be told less was inherited than
+    the table holds. (Copilot, PR #368, round 16.)
+    """
+    user_id = _judging_user_with_items(recommendations.BATCH_SIZE, discogs_user_id=36)
+
+    # Give every seeded item a second listing of the same record, so judging a
+    # batch fans out to exactly as many rows again.
+    with db.get_admin_pool().connection() as conn:
+        crawler_id = conn.execute(
+            "SELECT id FROM crawlers WHERE site_name = 'Stock Site'"
+        ).fetchone()["id"]
+        db.register_crawler(conn, "Second Shop", "/2.py", crawler_type="catalog")
+        second = conn.execute(
+            "SELECT id FROM crawlers WHERE site_name = 'Second Shop'"
+        ).fetchone()["id"]
+        rows = conn.execute(
+            "SELECT artist, title FROM stock_items WHERE crawler_id = %s", [crawler_id]
+        ).fetchall()
+        db.replace_stock_items(conn, second, [
+            {"artist": r["artist"], "title": r["title"], "price": 2.0,
+             "currency": "USD", "url": f"https://two/{i}"}
+            for i, r in enumerate(rows)
+        ])
+        conn.commit()
+
+    with db.user_scope(user_id) as conn:
+        run_token = db.claim_stock_judgment_run(conn, user_id)
+        conn.commit()
+
+    at_progress = asyncio.Event()
+
+    async def _hang_after_the_batch(event):
+        if event.get("status") == "stock_judgment_progress":
+            at_progress.set()
+            await asyncio.Event().wait()  # the task is cancelled here
+
+    manager = CrawlManager()
+    manager._broadcast = _hang_after_the_batch  # type: ignore
+
+    def _judge(client, taste_listing, batch, label="unknown user"):
+        return [{"item_key": i["item_key"], "recommended": True, "reason": "fits"}
+                for i in batch]
+
+    with patch("recommendations.judge_batch", side_effect=_judge):
+        task = asyncio.create_task(manager._run_judgment_phase(user_id, run_token))
+        await asyncio.wait_for(at_progress.wait(), timeout=10)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    with db.user_scope(user_id) as conn:
+        run = db.get_stock_judgment_run(conn, user_id)
+        written = conn.execute(
+            "SELECT COUNT(*) AS n FROM stock_item_judgments WHERE user_id = %s", [user_id]
+        ).fetchone()["n"]
+
+    assert run["judged"] == recommendations.BATCH_SIZE
+    # Everything in the table is either judged or inherited, and the row has to
+    # account for all of it.
+    assert run["inherited"] == written - run["judged"] > 0
+
+
 async def test_judgment_phase_releases_its_claim_when_cancelled(pg_schema):
     """Without the finally backstop a cancelled run leaves its row saying
     'running', and every later Refresh is refused until the heartbeat goes

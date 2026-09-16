@@ -304,18 +304,28 @@ by the Cheapest filter, re-folded by the next sweep. The sweep's recompute
 stays, because the trigger only guards writes made from now on and rows can
 already be stale from before it.
 
-With those, the sweep stays a convenience rather than a correctness
-guard. An unkeyed stock row is skipped by everything; a keyed stock row whose
-key is stale, or whose identity disagrees with it, is not — and the sweep is
-the only thing that can repair either, so it must never commit one and never
-leave one behind.
+With those, the sweep stays a convenience rather than a correctness guard —
+for the cases it is the *only* answer to. An unkeyed stock row is skipped by
+everything; a keyed stock row whose key is stale, or whose identity disagrees
+with it, is not, and the trigger above is what keeps the first of those from
+arising at all.
+
+The sweep itself is **best-effort repair, not a transactional guarantee**, and
+saying otherwise would misdescribe it. It commits between its two passes on
+purpose (see the deadlock note below), so a crash in between, or a writer
+landing between them, leaves a keyed stock row beside an identity that has not
+caught up. That is a state the *next* sweep selects on and repairs, and it is
+the affordable direction: a sibling billed a second time, rather than a
+verdict attached to the wrong record. What must never happen is the sweep
+committing a pair that is equal and wrong, and the conditional writes are what
+prevent that.
 
 Populated by `replace_stock_items` and `upsert_stock_item_from_release`, and
 swept by the boot/end-of-sync backfill that today fills `title_key` only. That
 backfill is renamed `backfill_stock_keys` — it no longer fills one key, or one
-table — and reconciles all three columns, so a rolling deploy whose old
-process is still writing rows it cannot key is repaired by the next sweep
-exactly as it already is for `title_key`.
+table — and reconciles all three columns across two committed passes, so a
+rolling deploy whose old process is still writing rows it cannot key is
+repaired by the next sweep exactly as it already is for `title_key`.
 
 It is not cheap, and that is the trade. Folding every row costs about 850 ms
 on a 9,000-row catalog against roughly 1,840 ms for the whole-catalog replace

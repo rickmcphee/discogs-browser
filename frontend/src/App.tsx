@@ -1327,10 +1327,17 @@ export default function App() {
       // "did that do anything?" the button's own faces exist to answer. Two
       // refusals reach here and they need different words: a sync in progress
       // is worth waiting out, an existing run is worth stopping.
-      if (!r.started && r.stock_sync_running) {
-        setSyncStatus('In-stock sync running — try Refresh again once it finishes.')
-      } else if (!r.started && r.running) {
+      //
+      // The run wins when both are true, and both can be: a stock sync is
+      // deliberately allowed to start while a user's judgment run is going --
+      // that mirror guard was not restored, because the sync is global and
+      // judgment is per-user. Saying "try again once the sync finishes" there
+      // sends the user to wait out something that is not what will refuse
+      // them next; their own run is, and Stop is the thing that ends it.
+      if (!r.started && r.running) {
         setSyncStatus('A recommendation run is already under way — use Stop to end it.')
+      } else if (!r.started && r.stock_sync_running) {
+        setSyncStatus('In-stock sync running — try Refresh again once it finishes.')
       }
     } catch (e: any) {
       // Fenced exactly like the success path above. A rejection can arrive

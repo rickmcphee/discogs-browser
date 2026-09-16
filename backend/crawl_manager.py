@@ -2311,6 +2311,19 @@ class CrawlManager:
                         inherited += propagate_stock_judgments(conn, user_id)
                         judged += len(results)
                         recommended_in_batch = sum(1 for r in results if r["recommended"])
+                        # Again, with what the fan-out above added. The write
+                        # at the top of this block had to come first -- it is
+                        # the claim check that gates the two writes after it --
+                        # so it could only carry the count as it stood before
+                        # them. Leaving it there would close a run cancelled
+                        # between this commit and the next checkpoint on a
+                        # count short by this batch, with the rows themselves
+                        # committed: a poll-only client would be told less was
+                        # inherited than the table holds. Same transaction, so
+                        # the count and the rows it counts land together.
+                        record_stock_judgment_progress(
+                            conn, user_id, run_token, inherited=inherited
+                        )
                     conn.commit()
                 log.info("Judged batch %d/%d for %s: %d recommended", judged, len(unjudged), username, recommended_in_batch)
                 # Before the broadcast: a run that has lost its claim must not

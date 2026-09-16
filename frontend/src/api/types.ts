@@ -136,7 +136,11 @@ export interface StockJudgmentRun {
   // reaches subscribers of the Machine running the job, and a client polling
   // from the other one would otherwise be told a run that spent nothing
   // checked nothing.
-  inherited: number
+  //
+  // Optional, like the deployment it has to survive: during a rolling deploy
+  // the Machine answering this request may be running the binary that added
+  // the column and may not, so every read of it goes through `?? 0`.
+  inherited?: number
   // Null until the run has counted the items it is going to judge, which it
   // does before the first Anthropic call.
   total: number | null
