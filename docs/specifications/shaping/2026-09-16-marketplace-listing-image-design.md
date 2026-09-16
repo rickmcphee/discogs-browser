@@ -131,13 +131,17 @@ Out of scope:
   breaker as the site being down. It also skipped past the fallback each
   caller carefully provides: a good `thumbnailImages` entry under a malformed
   gallery image, and the `legacyItemId` URL under a malformed `itemWebUrl`.
-  Separately, a `startswith("https://")` prefix test — which is what the
-  Amazon tile used — passes `"https:///x.jpg"`, which has no hostname. That
-  one is not merely useless: the row *prefers* `listing_image_url` over
-  `cover_image_url`, so a host-less value beats the target's good art and
-  renders a broken thumbnail, which is precisely the fallback this design
-  promises. `https_host` parses inside a `try`, answers None rather than
-  raising, and requires a hostname, so every caller simply falls back. It
+  Separately, a guard that reads only the scheme and hostname passes URLs
+  the browser cannot load: `"https:///x.jpg"` has no hostname at all (a
+  `startswith("https://")` prefix test, which is what the Amazon tile used,
+  accepts it), and `"https://h:not-a-port/x.jpg"` splits with a clean scheme
+  and hostname because `urlparse` does not check the port until `.port` is
+  read. Neither is merely useless: the row *prefers* `listing_image_url` over
+  `cover_image_url`, so such a value beats the target's good art and renders
+  a broken thumbnail, which is precisely the fallback this design promises.
+  `https_host` parses inside a `try`, reads `.port` there too so the parse is
+  finished rather than merely started, answers None rather than raising, and
+  requires a hostname — so every caller simply falls back. It
   lives in `crawler.py` because `amazon.py` and `ebay_api.py` both already
   import from there, and because the third caller — `_is_ebay_item_url`,
   which had the identical inline parse on `itemWebUrl` and predates this
@@ -175,9 +179,10 @@ Out of scope:
   `listing_title` but no `listing_image_url` falls back to the target's cover
   *and* to the target's title as that image's alt text.
 - `backend/tests/test_crawler_utils.py` — `https_host` directly: it returns
-  the host of a good URL, rejects a host-less `https:///…`, answers None
-  rather than raising on `"https://["`, and rejects non-https, empty and
-  non-string values. This is where the Amazon guard is actually covered:
+  the host of a good URL, keeps a valid explicit port, rejects a host-less
+  `https:///…` and a malformed or out-of-range port, answers None rather
+  than raising on `"https://["`, and rejects non-https, empty and non-string
+  values. This is where the Amazon guard is actually covered:
   `search()` is Playwright-driven and, per `CLAUDE.md`, not unit-tested, so
   routing its check through a shared pure function is what makes it testable
   at all.

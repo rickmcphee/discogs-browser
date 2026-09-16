@@ -171,6 +171,19 @@ def test_https_host_answers_none_rather_than_raising_on_a_malformed_authority():
     assert https_host("https://[::1") is None
 
 
+def test_https_host_rejects_a_malformed_explicit_port():
+    # urlparse does not check the port while splitting -- scheme and hostname
+    # come back clean and only `.port` raises -- so a guard that reads just
+    # the hostname accepts a URL the browser cannot load, and it is preferred
+    # over the target's good cover art.
+    assert https_host("https://images.example:not-a-port/cover.jpg") is None
+    assert https_host("https://images.example:99999/cover.jpg") is None
+
+
+def test_https_host_keeps_a_valid_explicit_port():
+    assert https_host("https://images.example:8443/cover.jpg") == "images.example"
+
+
 def test_https_host_rejects_non_https_and_non_strings():
     assert https_host("http://plain.example/x.jpg") is None
     assert https_host("data:image/png;base64,iVBORw0KGgo=") is None

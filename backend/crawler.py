@@ -28,9 +28,11 @@ def https_host(url) -> Optional[str]:
     consecutive-failure breaker as the site being down.
 
     And a prefix test passes "https:///x.jpg", which has no hostname and is
-    neither a link nor a picture. That one is not merely useless: a listing
-    image is *preferred* over the target's own cover, so a host-less value
-    wins over good art and renders a broken thumbnail.
+    neither a link nor a picture -- as does "https://h:not-a-port/x.jpg",
+    whose port urlparse does not check until asked. Neither is merely
+    useless: a listing image is *preferred* over the target's own cover, so
+    a value the browser cannot load wins over good art and renders a broken
+    thumbnail.
 
     Answering None for both lets every caller fall back, which is what each of
     them already has in hand.
@@ -39,6 +41,13 @@ def https_host(url) -> Optional[str]:
         return None
     try:
         parsed = urlparse(url)
+        # .port is a lazily-parsed property rather than something urlparse
+        # checked: "https://h:not-a-port/x.jpg" splits with a clean scheme and
+        # hostname and only raises when the port is read. Read it here, inside
+        # the guard, so a URL is either fully well-formed or rejected --
+        # otherwise a caller gets a hostname off a parse that was never
+        # finished and stores a URL no browser can load.
+        _port = parsed.port
     except ValueError:
         return None
     return parsed.hostname if parsed.scheme == "https" else None
