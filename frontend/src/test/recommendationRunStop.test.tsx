@@ -18,11 +18,12 @@ class SilentEventSource {
   }
 }
 
-const { getJudgmentStatus, postJudgmentStart, postJudgmentStop, getStock } = vi.hoisted(() => ({
+const { getJudgmentStatus, postJudgmentStart, postJudgmentStop, getStock, clearJudgments } = vi.hoisted(() => ({
   getJudgmentStatus: vi.fn(),
   postJudgmentStart: vi.fn(),
   postJudgmentStop: vi.fn(),
   getStock: vi.fn(),
+  clearJudgments: vi.fn(),
 }))
 
 vi.mock('../api/client', () => ({
@@ -64,7 +65,7 @@ vi.mock('../api/client', () => ({
   postJudgmentStart,
   postJudgmentStop,
   getJudgmentStatus,
-  clearJudgments: vi.fn(),
+  clearJudgments,
   exportRecommendationsCsv: vi.fn(),
   importRecommendationsCsv: vi.fn(),
   getPriceStatus: vi.fn().mockResolvedValue({ any_price_paid: false }),
@@ -101,6 +102,7 @@ beforeEach(() => {
   getStock.mockResolvedValue({ total: 0, row_total: 0, page: 1, per_page: 250, items: [] })
   postJudgmentStart.mockResolvedValue({ started: true, running: true, run: run({ judged: 0 }) })
   postJudgmentStop.mockResolvedValue({ stopping: true, run: run({ stop_requested: true }) })
+  clearJudgments.mockResolvedValue({ cleared: true, count: 7 })
   vi.useFakeTimers({ shouldAdvanceTime: true })
 })
 
@@ -208,6 +210,41 @@ describe('stopping a recommendation run from the profile page', () => {
     // Judged nothing, yet wrote rows -- so Export must not still be disabled.
     await waitFor(() =>
       expect(screen.getByText('Export').closest('button')).not.toBeDisabled(),
+    )
+  })
+
+  // A terminal event names no run and can be replayed -- this Machine's SSE
+  // buffer resends it on reconnect -- so one can land after a Clear has
+  // removed every judgment. Its counts are then true of a run that happened
+  // and false of the database, and the authoritative read is the only thing
+  // that can tell the difference. The handler's own comment says that read
+  // "gets the last word"; it only does if the optimistic write happens first,
+  // since the writer that bumps the sequence last is the one that wins.
+  // (Copilot, PR #368, round 23.)
+  it('lets the status read overrule a replayed ending that lands after a clear', async () => {
+    getJudgmentStatus.mockResolvedValue({ any_judged: true, run: null })
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const row = await openProfile()
+    await waitFor(() =>
+      expect(screen.getByText('Export').closest('button')).not.toBeDisabled(),
+    )
+
+    // Everything is gone, and the server says so from here on.
+    getJudgmentStatus.mockResolvedValue({ any_judged: false, run: null })
+    fireEvent.click(within(row.closest('table') as HTMLElement).getByRole('button', { name: 'Clear' }))
+    await waitFor(() =>
+      expect(screen.getByText('Export').closest('button')).toBeDisabled(),
+    )
+
+    // Replayed now, carrying counts from the run that preceded the clear.
+    await act(async () => {
+      SilentEventSource.instances[0].emit({
+        status: 'stock_judgment_complete', judged: 0, total: 300, inherited: 12, id: 9,
+      })
+    })
+
+    await waitFor(() =>
+      expect(screen.getByText('Export').closest('button')).toBeDisabled(),
     )
   })
 

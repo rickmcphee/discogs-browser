@@ -1922,8 +1922,15 @@ class CrawlManager:
     @staticmethod
     def _sweep_stock_keys() -> int:
         """db.backfill_stock_keys on its own connection. Blocking, and both
-        callers hand it to a thread: it folds every stock row and every
-        identity in Python, which is CPU-bound and grows with the catalog."""
+        callers hand it to a thread: it folds every stock row in Python, which
+        is CPU-bound and grows with the catalog.
+
+        Every *stock* row, but not every identity. A live identity takes its
+        key from its stock row rather than being folded again, and of the
+        orphans only the unkeyed ones are read at all -- a keyed orphan holds
+        the marketplace's name for what it matched, which re-deriving would
+        destroy. That is what keeps this bounded by the live catalog instead
+        of by every URL any shop has ever used."""
         from db import get_app_pool, backfill_stock_keys
         with get_app_pool().connection() as conn:
             keyed = backfill_stock_keys(conn)

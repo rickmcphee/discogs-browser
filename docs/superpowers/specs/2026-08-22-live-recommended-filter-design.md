@@ -108,6 +108,20 @@ Four changes, all in `frontend/src/App.tsx`, no new endpoints.
    to invalidate any older in-flight fetch. Net effect: whichever write was
    issued last always wins, regardless of network resolve order.
 
+   **Amendment (2026-09-16, PR #368):** a handler that does *both* — writes
+   optimistically and issues a read — has to do them in that order, because
+   "issued last wins" cuts both ways. The terminal judgment handler gained a
+   `refreshJudgmentStatus()` call so the run row could correct flags cleared
+   by a late ending, and it sat *above* the optimistic `setHasJudgedItems`,
+   which then bumped the counter past it and threw its answer away every
+   time. Harmless while the event and the database agree; wrong when they do
+   not, which is precisely when a terminal event is replayed after a Clear
+   has emptied the table — its counts describe a run that really happened,
+   the read is the only thing that knows the rows are gone, and discarding it
+   left `Recommended` and `Export` enabled over nothing. The optimistic write
+   covers the window until the read returns and beats any *older* fetch; the
+   read is issued after it and gets the last word.
+
 No change needed to `StockBrowser.tsx` itself: the effect that resets the
 filter away from "recommended" (`:118-122`) only fires when
 `recommendedAvailable` goes false, which after change 1 no longer happens

@@ -1020,6 +1020,11 @@ describe('In Stock tab', () => {
     await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
     const source = getLastCrawlSource()
     source.emit({ status: 'stock_judgment_started' })
+    // The ending's own status read is left in flight, so the optimistic write
+    // is the only thing that can unlock the filter here. Let it answer and it
+    // would unlock the filter by itself, and this would pass with the
+    // inherited half of the condition deleted.
+    getJudgmentStatus.mockImplementation(() => new Promise(() => {}))
     source.emit({ status: 'stock_judgment_complete', judged: 0, inherited: 7, id: 1 })
     await waitFor(() => expect(recommendedRadio().disabled).toBe(false))
     await waitFor(() => expect(
@@ -1052,6 +1057,9 @@ describe('In Stock tab', () => {
   it('does not let a slow bootstrap judgment-status response overwrite an explicit Clear', async () => {
     let resolveBootstrap: (v: { any_judged: boolean }) => void = () => {}
     getJudgmentStatus.mockImplementationOnce(() => new Promise((resolve) => { resolveBootstrap = resolve }))
+    // Every read after the pending bootstrap sees the world the event below
+    // describes: five judgments written.
+    getJudgmentStatus.mockResolvedValue({ any_judged: true })
     clearJudgments.mockResolvedValue({ cleared: true, running: false, count: 3 })
     vi.spyOn(window, 'confirm').mockReturnValue(true)
 
@@ -1066,6 +1074,7 @@ describe('In Stock tab', () => {
     await waitFor(() => expect(within(row).getByText('Clear').closest('button')).not.toBeDisabled())
     fireEvent.click(within(row).getByText('Clear'))
     await waitFor(() => expect(clearJudgments).toHaveBeenCalled())
+    getJudgmentStatus.mockResolvedValue({ any_judged: false })
     await waitFor(() => expect(within(row).getByText('Clear').closest('button')).toBeDisabled())
 
     // The original bootstrap fetch was still in flight the whole time and

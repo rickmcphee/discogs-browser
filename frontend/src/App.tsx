@@ -777,6 +777,22 @@ export default function App() {
         latestJudgmentRunSeq.current++
         setRecommendationRunning(false)
         setRecommendationStopping(false)
+        // Either count proves judgments now exist. A run that judged nothing
+        // but inherited something still wrote rows, and gating on `judged`
+        // alone left Recommended and Export disabled in any client whose
+        // bootstrap fetch had returned any_judged: false.
+        //
+        // Written *before* the read below, not after, because whoever bumps
+        // the sequence last is the one whose answer survives. An ending can be
+        // replayed after a Clear has removed every judgment -- its counts are
+        // then true of a run that happened and false of the database -- and
+        // bumping after starting the read threw away the one `any_judged:
+        // false` that could tell the two apart, leaving Recommended and Export
+        // enabled over an empty table. (Copilot, PR #368, round 23.)
+        if (judged > 0 || inherited > 0) {
+          latestHasJudgedItemsSeq.current++
+          setHasJudgedItems(true)
+        }
         // A judgment event names no run, so an ending delivered late -- this
         // Machine's buffer replaying it, or a slow queue -- is indistinguishable
         // from the current run's. Clearing the flags on it is right nearly
@@ -785,14 +801,6 @@ export default function App() {
         // would have noticed. So the row gets the last word: one read, which
         // restores the flags if a run is in fact still going.
         refreshJudgmentStatus()
-        // Either count proves judgments now exist. A run that judged nothing
-        // but inherited something still wrote rows, and gating on `judged`
-        // alone left Recommended and Export disabled in any client whose
-        // bootstrap fetch had returned any_judged: false.
-        if (judged > 0 || inherited > 0) {
-          latestHasJudgedItemsSeq.current++
-          setHasJudgedItems(true)
-        }
         setStockSyncGeneration(g => g + 1)
         setStockJudgmentGeneration(g => g + 1)
         // Inherited listings are reported on either ending: a run stopped
