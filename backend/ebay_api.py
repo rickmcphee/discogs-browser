@@ -64,6 +64,31 @@ def _is_ebay_item_url(url: str) -> bool:
     return parsed.scheme == "https" and parsed.hostname == "www.ebay.com"
 
 
+def _item_image(item: dict) -> Optional[str]:
+    """The picture eBay shows for the matched listing, if it gave one.
+
+    `image` is the gallery picture and `thumbnailImages` the smaller copies of
+    it; either is the photo of the copy actually for sale, which is the point
+    -- a name-matched listing can be a different pressing than the target, so
+    the target's cover art is the wrong picture for the row.
+
+    https-only for the same reason `_is_ebay_item_url` parses rather than
+    prefix-matches: the value ends up in an <img src> the browser fetches, and
+    it is only the API's word that it is an image at all.
+    """
+    # isinstance rather than `or {}` throughout: a payload whose `image` came
+    # back as a bare string would make .get() raise, and a schema drift in a
+    # decorative field must not surface to the breaker as a site failure.
+    thumbnails = item.get("thumbnailImages")
+    candidates = [item.get("image")]
+    candidates += thumbnails if isinstance(thumbnails, list) else []
+    for entry in candidates:
+        url = entry.get("imageUrl") if isinstance(entry, dict) else None
+        if isinstance(url, str) and urlparse(url).scheme == "https":
+            return url
+    return None
+
+
 def pick_matching_item(items: list, release: dict) -> Optional[dict]:
     artist_words = _words(clean_search_text(release.get("artist", "")))
     title_words = _words(clean_search_text(release.get("title", "")))
@@ -216,4 +241,5 @@ async def search_ebay(
         "currency": price_val.get("currency"),
         "condition": item.get("condition"),
         "title": item.get("title") or None,
+        "cover_image_url": _item_image(item),
     }]
