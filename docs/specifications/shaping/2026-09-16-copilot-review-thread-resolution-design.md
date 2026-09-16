@@ -260,15 +260,30 @@ threads *to clear a merge gate*, and that is unenforceable: with the setting on,
 the resolve clears the gate whatever the agent meant by it, and no reader of the
 pull request can tell the two apart afterwards. A rule written on motive cannot
 bind an action whose effect is identical either way. So it is stated by effect
-instead — **if `required_review_thread_resolution` is ever enabled, threads on
-the promotion pull request are left for a human to resolve.** An agent still
-fixes what the finding names and still replies saying so; it just does not
-perform the resolve there, because with that setting on the resolve *is* the
-permit. Its completion is then reported by the running ledger comment rather
-than by thread state, for the reason set out under Consequences: the open thread
-is Copilot's either way, so on that pull request thread state no longer
-distinguishes finished from unfinished. While the setting stays off, a resolve carries no permission and the
-ordinary rule applies.
+instead — **on the promotion pull request, an agent does not resolve threads at
+all.** It still fixes what the finding names and still replies saying so; it
+simply never performs the resolve there. Completion is reported by the closeout
+record rather than by thread state, for the reason set out under Consequences:
+the open thread is Copilot's either way, so on that pull request thread state no
+longer distinguishes finished from unfinished.
+
+A second draft made that conditional — left for a human *if*
+`required_review_thread_resolution` is enabled — and the condition was the flaw.
+The setting lives on GitHub and can change without any file in this repository
+changing. The value recorded here is dated (read 2026-08-29), so an agent
+trusting it could resolve a promotion thread on the strength of a `false` that
+had since become `true`, performing the exact self-issued permit this section
+exists to prevent. The alternative was requiring a live ruleset read
+immediately before each such resolve, and that is worse for a reason this
+document has already met twice: it is a check someone has to remember to run,
+where the unconditional rule is simply a thing not done. Preferring the
+mechanism that cannot silently fail is the same choice made for the named head
+over a status flag.
+
+Dropping the condition also removes a rule rather than adding one, and costs
+nothing while the setting is off: the promotion pull request's completion
+already comes from the closeout record either way, so the unresolved threads
+there are not a signal anybody was reading.
 
 Stated generally, because it is the whole reason this stays a convention rather
 than a setting: **resolution here is a report to the owner, not a permission to
@@ -298,11 +313,10 @@ permit and stops being worth reading.
   authors and the owner's own threads stay open by design. A nonzero badge is
   therefore not by itself evidence of unfinished agent work.
 - The second limit survives that filter, and an earlier draft of this document
-  missed it for exactly that reason. Should `required_review_thread_resolution`
-  ever be enabled, a promotion pull request's threads are left for a human to
-  resolve — and those are *Copilot's* threads, so an open one there means the
-  agent finished and declined to perform the resolve, not that it is still
-  working. Asking "is any Copilot thread open" returns the wrong answer, and no
+  missed it for exactly that reason. A promotion pull request's threads are
+  always left for a human to resolve — and those are *Copilot's* threads, so an
+  open one there means the agent finished and declined to perform the resolve,
+  not that it is still working. Asking "is any Copilot thread open" returns the wrong answer, and no
   refinement of *whose* threads to count fixes it, because the thread is
   Copilot's and open in both the finished and unfinished cases.
 - So on that one pull request in that one configuration, thread state cannot
