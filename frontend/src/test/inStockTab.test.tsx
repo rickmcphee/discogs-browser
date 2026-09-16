@@ -62,6 +62,7 @@ vi.mock('../api/client', () => ({
   getStockArtists: vi.fn().mockResolvedValue([]),
   postStockSyncStart: (...args: unknown[]) => postStockSyncStart(...args),
   postJudgmentStart: (...args: unknown[]) => postJudgmentStart(...args),
+  postJudgmentStop: vi.fn().mockResolvedValue({ stopping: false, run: null }),
   clearJudgments: (...args: unknown[]) => clearJudgments(...args),
   exportRecommendationsCsv: (...args: unknown[]) => exportRecommendationsCsv(...args),
   getJudgmentStatus: (...args: unknown[]) => getJudgmentStatus(...args),
@@ -799,7 +800,7 @@ describe('In Stock tab', () => {
     getUserSettings.mockResolvedValue({ ...defaultUserSettings, anthropic_api_key: 'sk-ant-test' })
     render(<App />)
     fireEvent.click(await screen.findByRole('button', { name: /profile/i }))
-    const description = await screen.findByText('Evaluate unprocessed Store items for recommendation, without a full catalog re-crawl.')
+    const description = await screen.findByText(/Evaluate unprocessed Store items for recommendation/)
     const row = description.closest('tr') as HTMLElement
     fireEvent.click(within(row).getByText('Refresh'))
     await waitFor(() => expect(postJudgmentStart).toHaveBeenCalled())
@@ -810,19 +811,19 @@ describe('In Stock tab', () => {
   // reportStockSyncRejection.
   it.each([
     [
-      { started: false, running: false, stock_sync_running: true },
+      { started: false, running: false, run: null, stock_sync_running: true },
       /In-stock sync running — try Refresh again once it finishes\./,
     ],
     [
-      { started: false, running: true, stock_sync_running: false },
-      /Recommendations are already refreshing\./,
+      { started: false, running: true, run: null, stock_sync_running: false },
+      /A recommendation run is already under way — use Stop to end it\./,
     ],
   ])('says why when Refresh Recommendations is turned away (%o)', async (result, message) => {
     getUserSettings.mockResolvedValue({ ...defaultUserSettings, anthropic_api_key: 'sk-ant-test' })
     postJudgmentStart.mockResolvedValue(result)
     render(<App />)
     fireEvent.click(await screen.findByRole('button', { name: /profile/i }))
-    const description = await screen.findByText('Evaluate unprocessed Store items for recommendation, without a full catalog re-crawl.')
+    const description = await screen.findByText(/Evaluate unprocessed Store items for recommendation/)
     const row = description.closest('tr') as HTMLElement
     fireEvent.click(within(row).getByText('Refresh'))
     await waitFor(() => expect(screen.getByText(message)).toBeInTheDocument())
@@ -834,12 +835,17 @@ describe('In Stock tab', () => {
   // ones arriving. (Copilot, PR #368.)
   it('does not let a slow rejection talk over newer judgment progress', async () => {
     getUserSettings.mockResolvedValue({ ...defaultUserSettings, anthropic_api_key: 'sk-ant-test' })
-    let resolveStart: (v: { started: boolean; running: boolean; stock_sync_running: boolean }) => void = () => {}
+    let resolveStart: (v: {
+      started: boolean
+      running: boolean
+      run: null
+      stock_sync_running: boolean
+    }) => void = () => {}
     postJudgmentStart.mockImplementationOnce(() => new Promise((resolve) => { resolveStart = resolve }))
 
     render(<App />)
     fireEvent.click(await screen.findByRole('button', { name: /profile/i }))
-    const description = await screen.findByText('Evaluate unprocessed Store items for recommendation, without a full catalog re-crawl.')
+    const description = await screen.findByText(/Evaluate unprocessed Store items for recommendation/)
     const row = description.closest('tr') as HTMLElement
     fireEvent.click(within(row).getByText('Refresh'))
 
@@ -851,10 +857,12 @@ describe('In Stock tab', () => {
       screen.getByText(/Finding recommendations for Store items… 40\/120/),
     ).toBeInTheDocument())
 
-    resolveStart({ started: false, running: true, stock_sync_running: false })
+    resolveStart({ started: false, running: true, run: null, stock_sync_running: false })
     await new Promise((r) => setTimeout(r, 0))
 
-    expect(screen.queryByText('Recommendations are already refreshing.')).not.toBeInTheDocument()
+    expect(
+      screen.queryByText('A recommendation run is already under way — use Stop to end it.'),
+    ).not.toBeInTheDocument()
     expect(screen.getByText(/Finding recommendations for Store items… 40\/120/)).toBeInTheDocument()
   })
 
@@ -866,7 +874,7 @@ describe('In Stock tab', () => {
   })
 
   it('calls exportRecommendationsCsv when Export is clicked', async () => {
-    getJudgmentStatus.mockResolvedValue({ any_judged: true })
+    getJudgmentStatus.mockResolvedValue({ any_judged: true, run: null })
     render(<App />)
     fireEvent.click(await screen.findByRole('button', { name: /profile/i }))
     await waitFor(() => expect(screen.getByText('Export').closest('button')).not.toBeDisabled())
@@ -883,7 +891,7 @@ describe('In Stock tab', () => {
   })
 
   it('does not call clearJudgments when the confirm dialog is cancelled', async () => {
-    getJudgmentStatus.mockResolvedValue({ any_judged: true })
+    getJudgmentStatus.mockResolvedValue({ any_judged: true, run: null })
     vi.spyOn(window, 'confirm').mockReturnValue(false)
     render(<App />)
     fireEvent.click(await screen.findByRole('button', { name: /profile/i }))
@@ -896,7 +904,7 @@ describe('In Stock tab', () => {
   })
 
   it('calls clearJudgments and reports the count when confirmed', async () => {
-    getJudgmentStatus.mockResolvedValue({ any_judged: true })
+    getJudgmentStatus.mockResolvedValue({ any_judged: true, run: null })
     vi.spyOn(window, 'confirm').mockReturnValue(true)
     render(<App />)
     fireEvent.click(await screen.findByRole('button', { name: /profile/i }))
@@ -909,7 +917,7 @@ describe('In Stock tab', () => {
   })
 
   it('surfaces the running message when clear is refused because a run is in progress', async () => {
-    getJudgmentStatus.mockResolvedValue({ any_judged: true })
+    getJudgmentStatus.mockResolvedValue({ any_judged: true, run: null })
     clearJudgments.mockResolvedValue({ cleared: false, running: true })
     vi.spyOn(window, 'confirm').mockReturnValue(true)
     render(<App />)
@@ -923,7 +931,7 @@ describe('In Stock tab', () => {
 
   it('enables Recommended in Store only once a key is configured and a judgment has completed', async () => {
     getUserSettings.mockResolvedValue({ ...defaultUserSettings, anthropic_api_key: 'sk-ant-test' })
-    getJudgmentStatus.mockResolvedValue({ any_judged: true })
+    getJudgmentStatus.mockResolvedValue({ any_judged: true, run: null })
     render(<App />)
     await waitFor(() => expect(screen.getByText('Store')).toBeInTheDocument())
     fireEvent.click(screen.getByText('Store'))
@@ -935,7 +943,7 @@ describe('In Stock tab', () => {
 
   it('keeps Recommended enabled in Store while a judgment run is in progress', async () => {
     getUserSettings.mockResolvedValue({ ...defaultUserSettings, anthropic_api_key: 'sk-ant-test' })
-    getJudgmentStatus.mockResolvedValue({ any_judged: true })
+    getJudgmentStatus.mockResolvedValue({ any_judged: true, run: null })
     render(<App />)
     await waitFor(() => expect(screen.getByText('Store')).toBeInTheDocument())
     fireEvent.click(screen.getByText('Store'))

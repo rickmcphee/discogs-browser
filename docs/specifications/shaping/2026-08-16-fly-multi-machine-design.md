@@ -91,6 +91,22 @@ Machines is just what server logs do — so they're left alone.
   of work. See
   [`2026-09-13-collection-sync-run-visibility-design.md`](2026-09-13-collection-sync-run-visibility-design.md).
 
+  **Amendment (2026-09-16, branch `claude/lucid-maxwell-69049q`):** a second
+  exception, on the same pattern and for a related but distinct reason — the
+  recommendation run. Here the missing narration is not the only thing that
+  would have shown a result (the Store tab does re-read its rows), it is the
+  only thing that could have told the user a run was under way at all, which
+  is what a Stop button has to know before it can offer to stop one. And a
+  stop posted to the wrong Machine reaches no task: `_judgment_tasks` is this
+  process's memory. So a run is now a `stock_judgment_runs` row carrying a
+  `stop_requested` flag the run reads at every batch boundary, and
+  `start_judgment_only`'s per-process guard — which likewise let the other
+  Machine start a second concurrent run, billing one user's Anthropic key
+  twice for the same items — is backed by a claim on that row. The
+  `stock_judgment_*` events themselves are unchanged and still reach only the
+  Machine producing them; the client polls the row instead. See
+  [`2026-09-16-stop-recommendation-run-design.md`](2026-09-16-stop-recommendation-run-design.md).
+
 ## Design
 
 ### `app_config` (global, replaces `config.json`)

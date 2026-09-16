@@ -443,35 +443,38 @@ genuine sync start would report itself as running on another instance.
 It fails open. A cost guard that turns a database hiccup into a dead Refresh
 button is worse than one that occasionally lets a run through.
 
-**The same argument applies to the per-user guard, which is why it gets the
-same treatment.** `judgment_running` reads `_judgment_tasks`, a dict in this
-process, so two Refresh clicks routed to different Machines both see an idle
-one and both start — two runs, same user, same records, both billed. An
-asyncio lock cannot help: it orders requests that reach one process and knows
-nothing of the other. So a judgment run also takes a Postgres advisory lock,
-in the two-int form `(JUDGMENT_LOCK_NAMESPACE, user_id)` so that two *users*
-never contend and only the same user's run elsewhere is refused, held for the
-run's lifetime on its own direct connection and released in
-`_run_judgment_phase`'s `finally`.
+The same argument applied to the **per-user** guard, and this branch first
+answered it the same way, with a second advisory lock keyed
+`(namespace, user_id)`. That is no longer here.
+[`2026-09-16-stop-recommendation-run-design.md`](2026-09-16-stop-recommendation-run-design.md)
+landed on `main` while this branch was in review and answers it better, with a
+`stock_judgment_runs` row a run claims and heartbeats. Both stop two Machines
+billing one user twice; the row also survives the case a session lock cannot,
+a worker wedged in a blocking call, whose lock no later Refresh can ever
+reclaim. So `start_judgment_only` takes main's claim, and the lock this branch
+added went out with it — along with its release `finally`, its dedicated
+connection, and the asyncio start lock that ordered two requests within one
+process.
 
-A `finally` rather than the end of the try, and session-scoped rather than
-transaction-scoped, for the same reason: neither a failed run nor a Machine
-dying may leave a user unable to refresh. A session-scoped lock dies with its
-connection.
+What is left here is the sync guard, which the claim does not cover: it asks
+about *other* work, not about this user's run, and there is no row to read.
+It runs **before** the claim, so a refused start leaves no row behind for the
+user's next Refresh to be turned away by.
 
-This one fails open where `start_stock_sync`'s does not, and the asymmetry is
-deliberate. A stock sync that cannot take its lock *must not run* —
-concurrent `replace_stock_items` calls corrupt the shared catalog. A judgment
-that cannot take its lock risks one duplicate charge in the rare case that a
-second request is in flight elsewhere at that moment, and refusing every
-Refresh while the database is unreachable is the worse trade.
+That guard fails open, where `start_stock_sync`'s lock does not, and the
+asymmetry is deliberate. A stock sync that cannot take its lock *must not
+run* — concurrent `replace_stock_items` calls corrupt the shared catalog. A
+judgment refused only risks one duplicate charge in the rare case that a sync
+is genuinely running elsewhere at that moment, and a dead Refresh button
+whenever the database hiccups is the worse trade.
 
-`start_judgment_only` therefore returns
-`{"started", "running", "stock_sync_running"}` rather than a bool, for the
-reason `start_stock_sync`'s docstring already gives for its own dict: it is
-the only place that knows which refusal happened, and the caller cannot
-re-derive it. Both local flags lie about another Machine, so the router
-forwards this answer whole rather than re-reading either.
+`start_judgment_only` therefore returns `{"started", "stock_sync_running"}`
+rather than main's bare bool. Two different refusals reach the caller and it
+cannot tell them apart: the router reads the run row for "already running",
+but a sync refused this start *without writing one*, and on another Machine
+`crawl_manager`'s own flag reads false. Only `start_judgment_only` knows, so
+the router forwards that field and derives the rest — `running` and the run
+itself — from the row, as main's version does.
 
 The client does need a change, and skipping it would reintroduce a failure
 this app has already had once. `handleRefreshRecommendations` discards the
@@ -548,9 +551,9 @@ user actually reads.
   "already judged" — the case a join through `stock_items` would miss.
 - Two simultaneous starts for one user produce one run, and two users'
   simultaneous starts both run.
-- A start is refused while another Machine holds that user's judgment lock,
-  while a different user's start is not; and the lock is released when the
-  run finishes *and* when it fails, so neither leaves the user locked out.
+- Two simultaneous starts for one user produce one run — the sync-lock read
+  awaits before the claim, so both requests can reach it and only one may win
+  — while two different users' simultaneous starts both run.
 - A listing whose `record_key` has not been swept yet still reads as judged
   when it has its own judgment; and with the key missing everywhere, nothing
   is billed at all rather than being compared against something else.
@@ -559,16 +562,13 @@ user actually reads.
   it, and the judgment run sweeps before it counts.
 - A sibling of a record whose identity was left holding a different key is not
   billed again once the sweep has reconciled the two.
-- The lock acquisition closes its connection when the lock query raises, and
-  a run cancelled at its opening broadcast still releases its lock — that
-  broadcast awaits, so it is a cancellation point, and it has to sit inside
-  the `try` whose `finally` does the releasing.
 - A rejected Refresh does not overwrite a banner something newer has already
   written.
 - `start_judgment_only` returns `started: false` while a stock sync runs, and
   starts normally once it finishes.
 - It also refuses while another Machine holds `STOCK_SYNC_LOCK_KEY` with no
-  local task running, and starts anyway when the lock state cannot be read.
+  local task running — leaving no run row behind — and starts anyway when the
+  lock state cannot be read.
 - An artist name containing a separator ("AC/DC", "Earth, Wind & Fire") keys
   the same whether or not the store wrote it into the title.
 - So does an artist spelled with the punctuation `_artist_punct_fold_sql`

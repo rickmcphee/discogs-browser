@@ -123,11 +123,67 @@ def unsave_stock_item(item_key: str, request: Request):
     return {"saved": False}
 
 
+# The fields of a recommendation run the client is given. Spelled out rather
+# than returning the row: `status` and `running` say different things (an
+# abandoned run still says 'running' -- see db.get_stock_judgment_run), and the
+# row also carries a heartbeat and a claim token that are bookkeeping, not news.
+_JUDGMENT_RUN_FIELDS = (
+    "status", "running", "stale", "judged", "total", "error",
+    "stop_requested", "started_at", "finished_at",
+)
+
+
+def _judgment_run(conn, user_id: int) -> Optional[dict]:
+    run = db.get_stock_judgment_run(conn, user_id)
+    return {k: run[k] for k in _JUDGMENT_RUN_FIELDS} if run else None
+
+
+def _judgment_running(conn, user_id: int) -> bool:
+    """Whether a recommendation run is under way for this user, anywhere.
+
+    Reads the row rather than crawl_manager.judgment_running, which only sees
+    this process's own tasks: the callers below are guarding writes to
+    stock_item_judgments against the run that is writing them, and that run is
+    on whichever Machine served its start. The row also expires, so a worker
+    that died mid-run cannot block a clear for ever.
+
+    Takes the per-user run lock first, and both callers then do their own write
+    in the same transaction. An unlocked read would be a check the answer
+    outlives: a start can claim in the gap between reading "idle" and deleting,
+    and a live run's next checkpoint can commit in the gap between reading
+    "idle" and importing -- in both cases letting the write this guard exists
+    to prevent happen anyway, just slightly later. Locking the *row* would not
+    do: before a user's first run there is no row, so it would degrade to no
+    lock exactly when a first Refresh races a first import."""
+    db.lock_stock_judgment_run(conn, user_id)
+    run = db.get_stock_judgment_run(conn, user_id)
+    return bool(run and run["running"])
+
+
 @router.get("/stock/judge/status")
 def get_stock_judgment_status(request: Request):
+    """Also carries the current (or most recent) run, because the
+    stock_judgment_* events that narrate one reach only the Machine running it:
+    CrawlManager's fan-out is in-process, and a browser's SSE stream and its
+    POST /stock/judge/start are two independent requests that need not have
+    landed on the same one. Polling this is how Account's button knows whether
+    to read Refresh or Stop."""
     user_id = request.state.user_id
     with db.user_scope(user_id) as conn:
-        return {"any_judged": db.has_any_stock_judgment(conn, user_id)}
+        # The run is read *first*, and the order is load-bearing under READ
+        # COMMITTED, where these two statements can see different snapshots. A
+        # run that commits its judgments and closes between them would, read
+        # the other way round, answer "nothing judged" alongside "not running"
+        # -- and the client, told the run is over, stops polling and leaves
+        # Export and the Recommended filter disabled over judgments that exist.
+        #
+        # This way the skew can only run the harmless way. any_judged is
+        # monotonic for as long as a run holds the claim (clear and import are
+        # both refused while one does), so a run seen as still going can only
+        # be paired with a judgment count that is equal or newer -- which costs
+        # one more poll and nothing else.
+        run = _judgment_run(conn, user_id)
+        return {"any_judged": db.has_any_stock_judgment(conn, user_id), "run": run}
 
 
 class StockSyncStartRequest(BaseModel):
@@ -149,20 +205,68 @@ async def start_stock_sync(body: Optional[StockSyncStartRequest] = None):
 @router.post("/stock/judge/start")
 async def start_stock_judgment(request: Request):
     user_id = request.state.user_id
-    # start_judgment_only reports which of its guards turned the request away,
-    # so the button can say so rather than looking like it did nothing. Every
-    # field comes from its answer rather than being re-read here: both of
-    # crawl_manager's own flags are this process's, and either the sync or
-    # this user's own run may be on another Machine, where they read false.
-    return await crawl_manager.start_judgment_only(user_id)
+    result = await crawl_manager.start_judgment_only(user_id)
+    # `running` and the run itself come from the row, not from this process:
+    # a start refused here was refused because a run is genuinely under way
+    # somewhere, and the caller needs to see that run to show a Stop button for
+    # it. Carrying it on the response is also what lets the button flip without
+    # waiting for a stock_judgment_started event that may be going to the other
+    # Machine's subscribers.
+    #
+    # `stock_sync_running` is the one field the row cannot answer: that refusal
+    # writes no run, and crawl_manager's own flag reads false for a sync on the
+    # other Machine. Only start_judgment_only knows, so it is passed through
+    # rather than re-derived here.
+    with db.user_scope(user_id) as conn:
+        run = _judgment_run(conn, user_id)
+    return {
+        "started": result["started"],
+        "running": bool(run and run["running"]),
+        "run": run,
+        "stock_sync_running": result["stock_sync_running"],
+    }
+
+
+@router.post("/stock/judge/stop")
+def stop_stock_judgment(request: Request):
+    """Ask the user's recommendation run to stop at its next batch boundary.
+
+    Not a task.cancel(): the run spends almost all of its time inside an
+    asyncio.to_thread call that a cancelled await does not interrupt, and
+    cancelling mid-batch would throw away a response already paid for, leaving
+    those items to be judged -- and billed -- again. So the run reads a flag
+    between batches, keeps what it has judged, and closes.
+
+    Not a 409 when there is nothing to stop, either. There is nothing wrong
+    with asking a run that has just finished to stop, and what the caller needs
+    back is the state, not an error."""
+    user_id = request.state.user_id
+    with db.user_scope(user_id) as conn:
+        stopping = db.request_stock_judgment_stop(conn, user_id)
+        # Read inside the same transaction as the write, before the commit,
+        # never after it. user_scope sets app.user_id with set_config(..., true)
+        # -- transaction-local -- so a commit here would drop the RLS scope and
+        # leave the next query evaluating a policy that casts an empty string to
+        # int, turning every successful stop into a 500. No
+        # ordinary router test here can catch that: they connect as the Postgres
+        # superuser, which bypasses RLS, so the policy expression is never
+        # evaluated -- which is why test_stock_router.py's rls_enforced fixture
+        # exists, running this endpoint against the app_user role instead. The
+        # read sees this transaction's own uncommitted write, which is exactly
+        # the state the caller is asking about.
+        run = _judgment_run(conn, user_id)
+        conn.commit()
+    return {"stopping": stopping, "run": run}
 
 
 @router.post("/stock/judge/clear")
 def clear_stock_judgment(request: Request):
     user_id = request.state.user_id
-    if crawl_manager.judgment_running(user_id) or crawl_manager.stock_sync_running:
+    if crawl_manager.stock_sync_running:
         return {"cleared": False, "running": True}
     with db.user_scope(user_id) as conn:
+        if _judgment_running(conn, user_id):
+            return {"cleared": False, "running": True}
         count = db.clear_stock_judgments(conn, user_id)
         conn.commit()
     return {"cleared": True, "count": count}
@@ -218,7 +322,7 @@ async def import_stock_judgments_endpoint(request: Request, file: UploadFile = F
     # A concurrent judgment run would race this upsert on the same rows.
     # Mirrors clear_stock_judgment's guard, including its 200-with-a-flag
     # shape rather than an error status.
-    if crawl_manager.judgment_running(user_id) or crawl_manager.stock_sync_running:
+    if crawl_manager.stock_sync_running:
         return {**empty, "running": True}
 
     # Read cap+1, not the whole body, so an oversized upload isn't buffered
@@ -238,7 +342,17 @@ async def import_stock_judgments_endpoint(request: Request, file: UploadFile = F
     except recommendations_import.InvalidImportError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
+    # The judgment-run guard belongs here rather than up front, in the same
+    # transaction as the write it protects: checked before the upload was even
+    # read, it answered a question about a moment that had passed by the time
+    # the rows landed, and a run claimed during the parse would write
+    # concurrently anyway. The lock it takes holds until this commits, so a
+    # start waits rather than interleaving. The cost is that a malformed file
+    # is now rejected on its own merits before the busy check rather than
+    # after, which is the better order in any case.
     with db.user_scope(user_id) as conn:
+        if _judgment_running(conn, user_id):
+            return {**empty, "running": True}
         imported, updated, applied_keys = db.import_stock_judgments(conn, user_id, judgments)
         matched = db.count_matching_stock_items(conn, applied_keys)
         conn.commit()

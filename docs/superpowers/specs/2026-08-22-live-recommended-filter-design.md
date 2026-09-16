@@ -74,7 +74,11 @@ Four changes, all in `frontend/src/App.tsx`, no new endpoints.
    `any_judged` was still false. The reasoning above is otherwise intact —
    both counts being zero still means nothing was judged, so a fully-failed
    run and an empty catalog stay guarded. `stock_judgment_progress` is
-   unchanged: progress events carry no `inherited`. See
+   unchanged: progress events carry no `inherited`. `stock_judgment_stopped`,
+   which arrived on `main` after this was first written, *does* carry it and
+   is handled in the same branch — a stopped run has still fanned out
+   everything it judged before the stop, so the same "wrote rows without
+   judging" case reaches that ending too. See
    [`2026-09-16-record-level-judgment-design.md`](../../specifications/shaping/2026-09-16-record-level-judgment-design.md).**)**
 
 3. **`stockSyncGeneration` bumps on judgment events**, same pattern as the

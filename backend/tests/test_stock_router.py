@@ -1,5 +1,6 @@
 import csv
 import io
+import os
 from datetime import datetime
 
 import pytest
@@ -175,7 +176,10 @@ def test_stock_judge_status_and_clear_scoped_to_user(pg_test_db, authed_client_f
 
     client = authed_client_factory(alice["id"])
     r = client.get("/api/stock/judge/status")
-    assert r.json() == {"any_judged": False}
+    # run is None until this user has started one -- the button reads it to
+    # decide whether to show Refresh or Stop, so "never run" and "not running"
+    # have to be distinguishable from a reply that lost the field.
+    assert r.json() == {"any_judged": False, "run": None}
 
     with db.user_scope(alice["id"]) as conn:
         db.upsert_stock_judgments(conn, alice["id"], [{
@@ -184,7 +188,7 @@ def test_stock_judge_status_and_clear_scoped_to_user(pg_test_db, authed_client_f
         conn.commit()
 
     r = client.get("/api/stock/judge/status")
-    assert r.json() == {"any_judged": True}
+    assert r.json() == {"any_judged": True, "run": None}
 
     r = client.post("/api/stock/judge/clear", headers={"X-Requested-With": "fetch"})
     assert r.json()["cleared"] is True
@@ -221,7 +225,6 @@ def test_stock_judge_start_returns_false_when_already_running_for_calling_user(
         return {"started": True, "running": True, "stock_sync_running": False}
 
     monkeypatch.setattr(crawl_manager, "start_judgment_only", _fake_start_judgment_only)
-    monkeypatch.setattr(crawl_manager, "judgment_running", lambda uid: uid in running_for)
 
     with db.get_admin_pool().connection() as conn:
         user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
@@ -252,7 +255,6 @@ def test_stock_judge_start_for_one_user_does_not_block_another_users_judge_start
         return {"started": True, "running": True, "stock_sync_running": False}
 
     monkeypatch.setattr(crawl_manager, "start_judgment_only", _fake_start_judgment_only)
-    monkeypatch.setattr(crawl_manager, "judgment_running", lambda uid: uid in running_for)
 
     with db.get_admin_pool().connection() as conn:
         alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
@@ -272,14 +274,193 @@ def test_stock_judge_start_for_one_user_does_not_block_another_users_judge_start
 
 
 def test_clear_stock_judgment_refuses_while_judgment_running_for_calling_user(pg_test_db, authed_client_factory):
+    # The claimed row is what refuses this, not crawl_manager._judgment_tasks:
+    # the run being guarded against is on whichever Machine served its start,
+    # and this process's task map cannot see it.
     with db.get_admin_pool().connection() as conn:
         user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
         conn.commit()
-    crawl_manager._judgment_tasks[user["id"]] = _FakePendingTask()
+    with db.user_scope(user["id"]) as conn:
+        assert db.claim_stock_judgment_run(conn, user["id"]) is not None
+        conn.commit()
 
     client = authed_client_factory(user["id"])
     r = client.post("/api/stock/judge/clear", headers={"X-Requested-With": "fetch"})
     assert r.json() == {"cleared": False, "running": True}
+
+
+def test_clear_stock_judgment_allowed_once_the_run_is_closed(pg_test_db, authed_client_factory):
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+    with db.user_scope(user["id"]) as conn:
+        token = db.claim_stock_judgment_run(conn, user["id"])
+        assert db.finish_stock_judgment_run(conn, user["id"], token, "stopped") is True
+        conn.commit()
+
+    client = authed_client_factory(user["id"])
+    r = client.post("/api/stock/judge/clear", headers={"X-Requested-With": "fetch"})
+    assert r.json()["cleared"] is True
+
+
+@pytest.fixture
+def rls_enforced(pg_test_db, monkeypatch):
+    """Repoint the app pool at app_user, the RLS-enforcing role production
+    runs as.
+
+    Every other test in this file reaches Postgres as the superuser, which has
+    BYPASSRLS, so the tenant policies are never actually evaluated -- the same
+    harness property test_judgment_crud.py and the recommendations-import
+    design both record. That is usually only a gap in what a test *proves*. It
+    is a gap in what a test can *catch* for anything whose correctness depends
+    on app.user_id still being set, because the policy expression that reads it
+    is the only thing that ever fails.
+
+    Used after authed_client_factory has built its client, so the schema init
+    inside that fixture still runs as the superuser that owns it."""
+    import config as config_module
+    monkeypatch.setattr(
+        db.config, "APP_DATABASE_URL",
+        config_module._with_userinfo(
+            os.environ["TEST_DATABASE_URL"], "app_user", os.environ["APP_DB_PASSWORD"]
+        ),
+    )
+    if db._app_pool is not None:
+        db._app_pool.close()
+    db._app_pool = None
+    yield
+    if db._app_pool is not None:
+        db._app_pool.close()
+    db._app_pool = None
+
+
+def test_stop_stock_judgment_answers_under_real_row_level_security(
+    pg_test_db, authed_client_factory, rls_enforced
+):
+    """user_scope sets app.user_id with set_config(..., true), which is
+    transaction-local, so a commit drops the RLS scope and any query after it
+    evaluates a policy casting an empty string to int. A stop endpoint that
+    read its run after committing answered 500 to every successful stop in
+    production while passing every test in this file -- because the superuser
+    the rest of them use never evaluates the policy at all."""
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+    with db.user_scope(user["id"]) as conn:
+        db.claim_stock_judgment_run(conn, user["id"])
+        conn.commit()
+
+    client = authed_client_factory(user["id"])
+    r = client.post("/api/stock/judge/stop", headers={"X-Requested-With": "fetch"})
+    assert r.status_code == 200
+    assert r.json()["stopping"] is True
+    assert r.json()["run"]["stop_requested"] is True
+
+
+def test_stock_judge_endpoints_answer_under_real_row_level_security(
+    pg_test_db, authed_client_factory, rls_enforced
+):
+    """The same exposure for the reads beside it, which would fail the same way
+    if a commit were ever introduced ahead of them."""
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+    client = authed_client_factory(user["id"])
+
+    assert client.get("/api/stock/judge/status").json() == {"any_judged": False, "run": None}
+    r = client.post("/api/stock/judge/clear", headers={"X-Requested-With": "fetch"})
+    assert r.status_code == 200
+    assert r.json()["cleared"] is True
+
+
+def test_stock_judge_status_carries_a_claimed_run(pg_test_db, authed_client_factory):
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+    with db.user_scope(user["id"]) as conn:
+        token = db.claim_stock_judgment_run(conn, user["id"])
+        db.record_stock_judgment_progress(conn, user["id"], token, judged=40, total=300)
+        conn.commit()
+
+    client = authed_client_factory(user["id"])
+    run = client.get("/api/stock/judge/status").json()["run"]
+    assert run["running"] is True
+    assert run["stop_requested"] is False
+    assert (run["judged"], run["total"]) == (40, 300)
+    # The claim token is bookkeeping, not news, and never leaves the server.
+    assert "run_token" not in run
+
+
+def test_judge_status_reads_the_run_before_the_judgment_count(pg_test_db, authed_client_factory, monkeypatch):
+    """Under READ COMMITTED these two statements can see different snapshots,
+    so their order decides which way the skew can fall. Run first means a run
+    seen as still going can only be paired with a judgment count that is equal
+    or newer -- one extra poll. The other way round, a run that commits its
+    judgments and closes between the two reads answers "nothing judged"
+    alongside "not running", and the client, told the run is over, stops
+    polling with Export and the Recommended filter disabled over judgments that
+    do exist."""
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+
+    order = []
+    real_run = db.get_stock_judgment_run
+    real_any = db.has_any_stock_judgment
+    monkeypatch.setattr(db, "get_stock_judgment_run", lambda *a, **k: (order.append("run"), real_run(*a, **k))[1])
+    monkeypatch.setattr(db, "has_any_stock_judgment", lambda *a, **k: (order.append("any_judged"), real_any(*a, **k))[1])
+
+    client = authed_client_factory(user["id"])
+    assert client.get("/api/stock/judge/status").status_code == 200
+    assert order == ["run", "any_judged"]
+
+
+def test_stop_stock_judgment_flags_the_calling_users_run(pg_test_db, authed_client_factory):
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+    with db.user_scope(user["id"]) as conn:
+        db.claim_stock_judgment_run(conn, user["id"])
+        conn.commit()
+
+    client = authed_client_factory(user["id"])
+    body = client.post("/api/stock/judge/stop", headers={"X-Requested-With": "fetch"}).json()
+    assert body["stopping"] is True
+    # Still running: the run honours the flag at its next batch boundary, which
+    # is exactly the window the button's "Stopping…" face covers.
+    assert body["run"]["running"] is True
+    assert body["run"]["stop_requested"] is True
+
+
+def test_stop_stock_judgment_reports_nothing_to_stop_rather_than_failing(
+    pg_test_db, authed_client_factory
+):
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+
+    client = authed_client_factory(user["id"])
+    r = client.post("/api/stock/judge/stop", headers={"X-Requested-With": "fetch"})
+    assert r.status_code == 200
+    assert r.json() == {"stopping": False, "run": None}
+
+
+def test_stop_stock_judgment_cannot_touch_another_users_run(pg_test_db, authed_client_factory):
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        bob = db.create_user(conn, discogs_user_id=2, discogs_username="bob")
+        conn.commit()
+    with db.user_scope(bob["id"]) as conn:
+        db.claim_stock_judgment_run(conn, bob["id"])
+        conn.commit()
+
+    alice_client = authed_client_factory(alice["id"])
+    assert alice_client.post(
+        "/api/stock/judge/stop", headers={"X-Requested-With": "fetch"}
+    ).json()["stopping"] is False
+
+    with db.user_scope(bob["id"]) as conn:
+        assert db.get_stock_judgment_run(conn, bob["id"])["stop_requested"] is False
 
 
 def test_clear_stock_judgment_refuses_while_stock_sync_running(pg_test_db, authed_client_factory):
@@ -945,14 +1126,15 @@ def test_import_rejects_an_oversized_body_with_413(pg_test_db, authed_client_fac
     assert r.status_code == 413
 
 
-def test_import_refuses_while_a_judgment_run_is_active(pg_test_db, authed_client_factory, monkeypatch):
-    # judgment_running is faked rather than driven for real, mirroring the
-    # rationale on test_stock_judge_start_returns_false_when_already_running_for_calling_user
-    # above: a bare TestClient opens its own event loop per request, so a real
-    # asyncio.Task can't be observed across requests here.
-    monkeypatch.setattr(crawl_manager, "judgment_running", lambda uid: True)
+def test_import_refuses_while_a_judgment_run_is_active(pg_test_db, authed_client_factory):
+    # A claimed row, not a faked crawl_manager.judgment_running: the row is
+    # what the guard reads now, and it is also the only thing that could see a
+    # run the other Machine is working.
     with db.get_admin_pool().connection() as conn:
         alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+    with db.user_scope(alice["id"]) as conn:
+        assert db.claim_stock_judgment_run(conn, alice["id"]) is not None
         conn.commit()
     client = authed_client_factory(alice["id"])
 

@@ -3,6 +3,18 @@
 Date: 2026-09-05
 Branch: `claude/marketplace-search-result-names-iea0xg`
 
+**Amendment (2026-09-16, branch `claude/eager-hawking-xevk84`):** the row's
+*picture* now follows its name. This design substituted only the name, and
+left the thumbnail showing the target's cover art beside the listing's name,
+price and link — on a comparison row, the parent store row's own photograph
+of its own edition. `stock_items.listing_image_url` and
+`listings.listing_image_url` carry the picture the source showed on the same
+terms `listing_title` carries the name, fed by an optional `cover_image_url`
+key in the `search()` result. "Out of scope: Store (catalog) crawlers" and
+"No `title` from `discogs_marketplace`" below hold unchanged for the picture,
+and Rough Trade joins the latter. See
+[`2026-09-16-marketplace-listing-image-design.md`](2026-09-16-marketplace-listing-image-design.md).
+
 **Amendment (2026-09-06, branch `claude/store-cheapest-filter-x4tdwl`):** the Track tab is gone. Its Collection and Wantlist filters are now options in the Store tab's `Filter` popover, sending the same `library_scope`, and every reference below to the Track tab, a Track scope, or a "Store/Track" pair reads as the Store tab under those filters. See [`2026-09-06-track-tab-fold-design.md`](2026-09-06-track-tab-fold-design.md).
 
 ## Problem

@@ -1,10 +1,9 @@
 import re
 import time
 from typing import Optional
-from urllib.parse import urlparse
 import httpx
 from logging_config import get_logger
-from crawler import clean_search_text, strip_stop_words, title_variants
+from crawler import clean_search_text, https_host, strip_stop_words, title_variants
 
 log = get_logger("ebay_api")
 
@@ -58,10 +57,34 @@ def _is_ebay_item_url(url: str) -> bool:
     # A prefix test on the raw string accepts https://www.ebay.com.example.test/,
     # so compare the parsed host instead. The URL comes from eBay's own API but
     # is rendered as a link the user clicks.
-    if not url:
-        return False
-    parsed = urlparse(url)
-    return parsed.scheme == "https" and parsed.hostname == "www.ebay.com"
+    return https_host(url) == "www.ebay.com"
+
+
+def _item_image(item: dict) -> Optional[str]:
+    """The picture eBay shows for the matched listing, if it gave one.
+
+    `image` is the gallery picture and `thumbnailImages` the smaller copies of
+    it; either is the photo of the copy actually for sale, which is the point
+    -- a name-matched listing can be a different pressing than the target, so
+    the target's cover art is the wrong picture for the row.
+
+    Read through `crawler.https_host` for the same reason the link is: the
+    value ends up in an <img src> the browser fetches, and it is only the
+    API's word that it is an image at all. A URL that fails that check is
+    skipped rather than returned, so a malformed gallery image still leaves a
+    good thumbnail to fall back to.
+    """
+    # isinstance rather than `or {}` throughout: a payload whose `image` came
+    # back as a bare string would make .get() raise, and a schema drift in a
+    # decorative field must not surface to the breaker as a site failure.
+    thumbnails = item.get("thumbnailImages")
+    candidates = [item.get("image")]
+    candidates += thumbnails if isinstance(thumbnails, list) else []
+    for entry in candidates:
+        url = entry.get("imageUrl") if isinstance(entry, dict) else None
+        if https_host(url):
+            return url
+    return None
 
 
 def pick_matching_item(items: list, release: dict) -> Optional[dict]:
@@ -216,4 +239,5 @@ async def search_ebay(
         "currency": price_val.get("currency"),
         "condition": item.get("condition"),
         "title": item.get("title") or None,
+        "cover_image_url": _item_image(item),
     }]

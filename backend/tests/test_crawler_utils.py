@@ -4,7 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "crawlers"))
 
-from crawler import clean_search_text, strip_stop_words as _strip_stop_words, title_variants as _title_variants
+from crawler import clean_search_text, https_host, strip_stop_words as _strip_stop_words, title_variants as _title_variants
 from amazon import _amazon_format_keywords, Crawler
 
 
@@ -143,3 +143,69 @@ def test_artist_strips_colon():
 
 def test_artist_normal():
     assert Crawler._artist({"artist": "Miles Davis"}) == "Miles Davis"
+
+
+# ---------------------------------------------------------------------------
+# https_host
+# ---------------------------------------------------------------------------
+
+def test_https_host_returns_the_host_of_a_good_url():
+    assert https_host("https://m.media-amazon.com/images/I/x.jpg") == "m.media-amazon.com"
+    assert https_host("https://www.ebay.com/itm/123") == "www.ebay.com"
+
+
+def test_https_host_rejects_a_url_with_no_host():
+    # A prefix test passes this, and it is neither a link nor a picture. It
+    # matters more than it looks: the Store row *prefers* the listing image
+    # over the target's cover, so a host-less value beats good art and renders
+    # a broken thumbnail rather than falling back.
+    assert https_host("https:///image.jpg") is None
+
+
+def test_https_host_answers_none_rather_than_raising_on_a_malformed_authority():
+    # urlparse raises ValueError here ("https://[" is an unterminated IPv6
+    # literal). Parsing inline aborted the whole crawl over one bad string,
+    # which on the stock-item path reads to the consecutive-failure breaker as
+    # the site being down.
+    assert https_host("https://[") is None
+    assert https_host("https://[::1") is None
+
+
+def test_https_host_rejects_a_malformed_explicit_port():
+    # urlparse does not check the port while splitting -- scheme and hostname
+    # come back clean and only `.port` raises -- so a guard that reads just
+    # the hostname accepts a URL the browser cannot load, and it is preferred
+    # over the target's good cover art.
+    assert https_host("https://images.example:not-a-port/cover.jpg") is None
+    assert https_host("https://images.example:99999/cover.jpg") is None
+
+
+def test_https_host_keeps_a_valid_explicit_port():
+    assert https_host("https://images.example:8443/cover.jpg") == "images.example"
+
+
+def test_https_host_rejects_a_backslash_that_would_reparse_in_the_browser():
+    # The sharp one. WHATWG treats "\" as "/" in a special scheme, so a
+    # browser reads the host below as evil.example, while urlparse reads
+    # "evil.example\" as userinfo and answers www.ebay.com -- turning the eBay
+    # hostname allowlist into a redirect to anywhere.
+    assert https_host("https://evil.example\\@www.ebay.com/itm/1") is None
+    assert https_host("https://evil.example\\\\@www.ebay.com/itm/1") is None
+
+
+def test_https_host_rejects_control_characters_and_space():
+    # A browser strips or rejects these, and which of them Python strips has
+    # changed across releases -- so the host would otherwise depend on the
+    # interpreter. urlparse answers www.ebay.com for the NUL case.
+    assert https_host("https://evil.example\x00@www.ebay.com/itm/1") is None
+    assert https_host("https://www.ebay.com\t/itm/1") is None
+    assert https_host("https://www.ebay.com\n/itm/1") is None
+    assert https_host("https://www.ebay.com /itm/1") is None
+
+
+def test_https_host_rejects_non_https_and_non_strings():
+    assert https_host("http://plain.example/x.jpg") is None
+    assert https_host("data:image/png;base64,iVBORw0KGgo=") is None
+    assert https_host("") is None
+    assert https_host(None) is None
+    assert https_host(123) is None

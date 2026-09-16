@@ -51,10 +51,26 @@ const REASON_PANEL_ID = 'stock-reason-popover'
 // can be a different pressing than the target. The target's own title moves
 // to the hover text so the substitution stays visible -- it has that slot to
 // itself now that a judgment's reason is read from the info popup rather than
-// a tooltip. The thumbnail's alt text is not substituted: the image is the
-// target's own cover, not the listing's.
+// a tooltip.
 function displayTitle(item: StockItem): string {
   return item.listing_title ?? item.title
+}
+
+// The picture follows the name: where the source showed one for what it
+// actually found, that is the item the row is about, and the target's own
+// cover art would picture a different pressing next to the listing's name and
+// price. Null falls back to the target's cover -- for a comparison row that is
+// the store row's, which is better than an empty box and is what every row
+// showed before the source's own picture was collected.
+function displayImage(item: StockItem): string | null {
+  return item.listing_image_url ?? item.cover_image_url
+}
+
+// Alt text names what is actually pictured, which is not always what the row
+// is named: a source can report a name and no picture, and there the fallback
+// cover is the target's, so the target's title is what describes it.
+function imageAlt(item: StockItem): string {
+  return item.listing_image_url ? displayTitle(item) : item.title
 }
 
 // True when the row's visible name is the source's rather than the target's:
@@ -759,10 +775,10 @@ function StockBrowser({
                   // an unreachable tooltip defeats the point.
                   <div key={item.id} className="group relative">
                     <a href={item.url} target="_blank" rel="noreferrer" className="block">
-                      {item.cover_image_url ? (
+                      {displayImage(item) ? (
                         <img
-                          src={item.cover_image_url}
-                          alt={item.title}
+                          src={displayImage(item)!}
+                          alt={imageAlt(item)}
                           className="w-full aspect-square object-cover rounded"
                         />
                       ) : (
@@ -825,8 +841,8 @@ function StockBrowser({
                 ].filter(Boolean).join(' · ')
                 return (
                   <li key={item.id} className="flex items-center gap-3 px-3 py-2 text-left">
-                    {item.cover_image_url ? (
-                      <img src={item.cover_image_url} alt="" className="w-14 h-14 shrink-0 object-cover rounded" />
+                    {displayImage(item) ? (
+                      <img src={displayImage(item)!} alt="" className="w-14 h-14 shrink-0 object-cover rounded" />
                     ) : (
                       <div className="w-14 h-14 shrink-0 bg-gray-800 rounded" />
                     )}
@@ -926,10 +942,10 @@ function StockBrowser({
               {items.map((item) => (
                 <tr key={item.id} className="border-t border-gray-800 hover:bg-gray-900/50">
                   <td className="px-3 py-2">
-                    {item.cover_image_url ? (
+                    {displayImage(item) ? (
                       <img
-                        src={item.cover_image_url}
-                        alt={item.title}
+                        src={displayImage(item)!}
+                        alt={imageAlt(item)}
                         className="w-10 h-10 min-w-10 object-cover rounded"
                       />
                     ) : (

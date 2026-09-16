@@ -5628,6 +5628,240 @@ async def test_judgment_phase_first_batchs_judgments_survive_a_later_batchs_fail
     assert all(j["reason"] == "first batch ok" for j in judgments)
 
 
+def _judging_user_with_items(item_count: int, discogs_user_id: int = 30):
+    """A user with an Anthropic key and `item_count` unjudged stock items."""
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=discogs_user_id, discogs_username="alice")
+        conn.execute("UPDATE users SET anthropic_api_key = 'sk-alice' WHERE id = %s", [user["id"]])
+        db.register_crawler(conn, "Stock Site", "/x.py", crawler_type="catalog")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Stock Site'").fetchone()["id"]
+        db.replace_stock_items(conn, crawler_id, [
+            {"artist": f"Artist {i}", "title": f"T{i}", "price": 1.0, "currency": "USD", "url": f"https://x/{i}"}
+            for i in range(item_count)
+        ])
+        conn.commit()
+    return user["id"]
+
+
+async def test_judgment_phase_stops_at_the_next_batch_boundary_keeping_what_it_judged(pg_schema):
+    """The whole feature: a stop asked for mid-run ends it at the next batch
+    boundary, and the batch that was in flight when the flag landed still has
+    its judgments committed -- the user has already paid Anthropic for them,
+    and throwing them away would mean paying again."""
+    user_id = _judging_user_with_items(recommendations.BATCH_SIZE * 3)
+    with db.user_scope(user_id) as conn:
+        run_token = db.claim_stock_judgment_run(conn, user_id)
+        conn.commit()
+
+    calls = {"n": 0}
+
+    def _judge(client, taste, batch, label=""):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # The click lands while the first batch is in flight.
+            with db.user_scope(user_id) as conn:
+                assert db.request_stock_judgment_stop(conn, user_id) is True
+                conn.commit()
+        return [{"item_key": item["item_key"], "recommended": False, "reason": f"batch {calls['n']}"} for item in batch]
+
+    manager = CrawlManager()
+    with patch("recommendations.judge_batch", side_effect=_judge):
+        await manager._run_judgment_phase(user_id, run_token)
+
+    # One batch, not three: the flag was read straight after that batch's write.
+    assert calls["n"] == 1
+    stopped = [e for e in manager.recent_events() if e["status"] == "stock_judgment_stopped"]
+    assert len(stopped) == 1
+    assert stopped[0]["judged"] == recommendations.BATCH_SIZE
+    assert stopped[0]["total"] == recommendations.BATCH_SIZE * 3
+    assert stopped[0]["user_id"] == user_id
+    # Carried on this ending too, not just the completions: a stopped run has
+    # still fanned its verdicts out, and a run that only inherited reports
+    # judged: 0 while having written rows the Recommended filter needs.
+    assert "inherited" in stopped[0]
+    assert "stock_judgment_complete" not in [e["status"] for e in manager.recent_events()]
+
+    with db.user_scope(user_id) as conn:
+        kept = conn.execute(
+            "SELECT COUNT(*) AS n FROM stock_item_judgments WHERE user_id = %s", [user_id]
+        ).fetchone()["n"]
+        run = db.get_stock_judgment_run(conn, user_id)
+    assert kept == recommendations.BATCH_SIZE
+    assert run["status"] == "stopped"
+    assert run["running"] is False
+    assert run["judged"] == recommendations.BATCH_SIZE
+
+
+async def test_judgment_phase_stopped_before_the_first_batch_spends_nothing(pg_schema):
+    """A stop that lands between the claim and the first Anthropic call costs
+    the user nothing -- the pre-flight checkpoint that records the run's size
+    reads the flag in the same statement."""
+    user_id = _judging_user_with_items(recommendations.BATCH_SIZE, discogs_user_id=31)
+    with db.user_scope(user_id) as conn:
+        run_token = db.claim_stock_judgment_run(conn, user_id)
+        assert db.request_stock_judgment_stop(conn, user_id) is True
+        conn.commit()
+
+    manager = CrawlManager()
+    with patch("recommendations.judge_batch") as mock_judge:
+        await manager._run_judgment_phase(user_id, run_token)
+
+    mock_judge.assert_not_called()
+    stopped = [e for e in manager.recent_events() if e["status"] == "stock_judgment_stopped"]
+    assert len(stopped) == 1
+    assert stopped[0]["judged"] == 0
+    with db.user_scope(user_id) as conn:
+        assert db.get_stock_judgment_run(conn, user_id)["status"] == "stopped"
+
+
+async def test_judgment_phase_stops_when_its_claim_is_taken_over(pg_schema):
+    """A run whose claim another Machine took over stops billing the user
+    alongside its replacement -- and says nothing, because the row and the
+    narration both belong to the replacement now."""
+    user_id = _judging_user_with_items(recommendations.BATCH_SIZE * 3, discogs_user_id=32)
+    with db.user_scope(user_id) as conn:
+        run_token = db.claim_stock_judgment_run(conn, user_id)
+        conn.commit()
+
+    calls = {"n": 0}
+
+    def _judge(client, taste, batch, label=""):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # The other Machine takes the claim, as it would for a run whose
+            # heartbeat had lapsed.
+            with db.get_admin_pool().connection() as conn:
+                conn.execute(
+                    "UPDATE stock_judgment_runs SET run_token = 'somebody-else' WHERE user_id = %s",
+                    [user_id],
+                )
+                conn.commit()
+        return [{"item_key": item["item_key"], "recommended": False, "reason": "judged"} for item in batch]
+
+    manager = CrawlManager()
+    with patch("recommendations.judge_batch", side_effect=_judge):
+        await manager._run_judgment_phase(user_id, run_token)
+
+    assert calls["n"] == 1
+    statuses = [e["status"] for e in manager.recent_events()]
+    assert "stock_judgment_complete" not in statuses
+    assert "stock_judgment_stopped" not in statuses
+    assert "stock_judgment_error" not in statuses
+    # Not even progress: the row and the narration both belong to the
+    # replacement now, and a progress line for the batch this worker finished
+    # would show every browser on this Machine a count from a run that is no
+    # longer the one running.
+    assert "stock_judgment_progress" not in statuses
+
+    with db.user_scope(user_id) as conn:
+        run = db.get_stock_judgment_run(conn, user_id)
+        # The dispossessed worker's batch is dropped rather than written. The
+        # run lock orders a batch against a concurrent clear, but a clear that
+        # ran while this worker sat inside judge_batch was never concurrent
+        # with the batch's transaction at all -- so writing anyway would
+        # repopulate rows the user asked to clear. Its replacement selected
+        # these same still-unjudged items, so nothing extra is paid for.
+        kept = conn.execute(
+            "SELECT COUNT(*) AS n FROM stock_item_judgments WHERE user_id = %s", [user_id]
+        ).fetchone()["n"]
+    assert run["status"] == "running"
+    assert run["run_token"] == "somebody-else"
+    assert kept == 0
+
+
+async def test_judgment_phase_does_not_write_over_a_clear_that_landed_mid_batch(pg_schema):
+    """The case the dropped batch exists for, end to end. A clear runs while
+    the worker is inside judge_batch -- so it is not concurrent with the
+    batch's transaction and the run lock cannot order them -- and the batch
+    that lands afterwards must not bring the cleared judgments back."""
+    user_id = _judging_user_with_items(recommendations.BATCH_SIZE * 2, discogs_user_id=35)
+    with db.user_scope(user_id) as conn:
+        run_token = db.claim_stock_judgment_run(conn, user_id)
+        conn.commit()
+
+    def _judge(client, taste, batch, label=""):
+        # Mid-call: the run goes stale, so the clear's guard sees an idle user
+        # and goes ahead -- exactly the window this is about.
+        with db.get_admin_pool().connection() as conn:
+            conn.execute(
+                "UPDATE stock_judgment_runs SET heartbeat_at = clock_timestamp() "
+                f"- INTERVAL '{db.JUDGMENT_RUN_STALE_MINUTES + 1} minutes' WHERE user_id = %s",
+                [user_id],
+            )
+            conn.commit()
+        with db.user_scope(user_id) as conn:
+            db.clear_stock_judgments(conn, user_id)
+            conn.commit()
+        return [{"item_key": item["item_key"], "recommended": True, "reason": "judged"} for item in batch]
+
+    manager = CrawlManager()
+    with patch("recommendations.judge_batch", side_effect=_judge):
+        await manager._run_judgment_phase(user_id, run_token)
+
+    with db.user_scope(user_id) as conn:
+        remaining = conn.execute(
+            "SELECT COUNT(*) AS n FROM stock_item_judgments WHERE user_id = %s", [user_id]
+        ).fetchone()["n"]
+    assert remaining == 0
+
+
+async def test_judgment_phase_closes_its_run_row_on_completion_and_on_failure(pg_schema):
+    user_id = _judging_user_with_items(1, discogs_user_id=33)
+    with db.user_scope(user_id) as conn:
+        run_token = db.claim_stock_judgment_run(conn, user_id)
+        conn.commit()
+
+    manager = CrawlManager()
+    with patch("recommendations.judge_batch", return_value=[]):
+        await manager._run_judgment_phase(user_id, run_token)
+    with db.user_scope(user_id) as conn:
+        run = db.get_stock_judgment_run(conn, user_id)
+    assert (run["status"], run["running"]) == ("complete", False)
+
+    with db.user_scope(user_id) as conn:
+        run_token = db.claim_stock_judgment_run(conn, user_id)
+        conn.commit()
+    with patch("recommendations.judge_batch", side_effect=RuntimeError("boom")):
+        await manager._run_judgment_phase(user_id, run_token)
+    with db.user_scope(user_id) as conn:
+        run = db.get_stock_judgment_run(conn, user_id)
+    assert (run["status"], run["running"], run["error"]) == ("error", False, "boom")
+
+
+async def test_judgment_phase_releases_its_claim_when_cancelled(pg_schema):
+    """Without the finally backstop a cancelled run leaves its row saying
+    'running', and every later Refresh is refused until the heartbeat goes
+    stale -- fifteen minutes of a Stop button with nothing behind it."""
+    user_id = _judging_user_with_items(recommendations.BATCH_SIZE * 2, discogs_user_id=34)
+    with db.user_scope(user_id) as conn:
+        run_token = db.claim_stock_judgment_run(conn, user_id)
+        conn.commit()
+
+    entered = asyncio.Event()
+
+    def _judge(client, taste, batch, label=""):
+        entered.set()
+        time.sleep(0.2)
+        return []
+
+    manager = CrawlManager()
+    with patch("recommendations.judge_batch", side_effect=_judge):
+        task = asyncio.create_task(manager._run_judgment_phase(user_id, run_token))
+        await entered.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    with db.user_scope(user_id) as conn:
+        run = db.get_stock_judgment_run(conn, user_id)
+        # The next Refresh is granted immediately, rather than waiting out the
+        # staleness window.
+        reclaimed = db.claim_stock_judgment_run(conn, user_id)
+        conn.commit()
+    assert run["running"] is False
+    assert reclaimed is not None
+
+
 async def test_run_judgment_phase_broadcasts_error_when_no_api_key(pg_schema):
     with db.get_admin_pool().connection() as conn:
         alice = db.create_user(conn, discogs_user_id=2, discogs_username="alice2")
@@ -5997,33 +6231,110 @@ async def test_run_judgment_phase_does_not_block_event_loop(pg_schema, monkeypat
 # judgment-only task (decoupled from stock sync, per-user)
 # ---------------------------------------------------------------------------
 
+# start_judgment_only claims the run in Postgres before it creates the task --
+# the refusal has to hold against the other Machine, and a duplicate run bills
+# the user's own Anthropic key twice for the same items -- so every test of it
+# needs a real user row to claim against.
+@pytest.fixture
+def judging_user(pg_schema):
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+    return user["id"]
+
+
 async def test_judgment_running_false_initially(manager):
     assert manager.judgment_running(1) is False
 
 
-async def test_start_judgment_only_returns_true_when_idle(manager):
-    async def _fake_judgment_phase(user_id, lock_conn=None):
+async def test_start_judgment_only_returns_true_when_idle(manager, judging_user):
+    async def _fake_judgment_phase(user_id, run_token=None):
         await asyncio.sleep(0)
 
     manager._run_judgment_phase = _fake_judgment_phase  # type: ignore
-    started = await manager.start_judgment_only(1)
-    assert started == {"started": True, "running": True, "stock_sync_running": False}
+    started = await manager.start_judgment_only(judging_user)
+    assert started == {"started": True, "stock_sync_running": False}
     await asyncio.sleep(0.01)
 
 
-async def test_start_judgment_only_returns_false_when_already_running(manager, pg_schema):
+async def test_start_judgment_only_returns_false_when_already_running(manager, judging_user):
     event = asyncio.Event()
 
-    async def _fake_judgment_phase(user_id, lock_conn=None):
+    async def _fake_judgment_phase(user_id, run_token=None):
         await event.wait()
 
     manager._run_judgment_phase = _fake_judgment_phase  # type: ignore
-    await manager.start_judgment_only(1)
-    assert manager.judgment_running(1) is True
-    second = await manager.start_judgment_only(1)
+    await manager.start_judgment_only(judging_user)
+    assert manager.judgment_running(judging_user) is True
+    second = await manager.start_judgment_only(judging_user)
     assert second["started"] is False
     event.set()
     await asyncio.sleep(0.01)
+
+
+async def test_start_judgment_only_refused_by_a_run_this_process_never_started(
+    manager, judging_user
+):
+    """The refusal that matters is the cross-Machine one: the other Machine's
+    run leaves nothing in this process's _judgment_tasks, and the old guard --
+    which only read that dict -- would have started a second run judging the
+    same items on the same key."""
+    with db.user_scope(judging_user) as conn:
+        assert db.claim_stock_judgment_run(conn, judging_user) is not None
+        conn.commit()
+
+    async def _fake_judgment_phase(user_id, run_token=None):
+        await asyncio.sleep(0)
+
+    manager._run_judgment_phase = _fake_judgment_phase  # type: ignore
+    assert manager.judgment_running(judging_user) is False
+    assert (await manager.start_judgment_only(judging_user))["started"] is False
+
+
+async def test_start_judgment_only_leaves_a_taken_over_local_task_to_stop_itself(
+    manager, judging_user, monkeypatch
+):
+    """A claim granted over a stale row means whatever this Machine still has
+    running is working a run that is no longer its own -- and it is left alone
+    to find that out at its next checkpoint, unlike start_sync, which cancels
+    its predecessor.
+
+    Cancelling here would be destructive rather than protective: the worker is
+    almost certainly inside asyncio.to_thread(judge_batch), which a cancelled
+    await does not interrupt, so the Anthropic call completes and is billed
+    either way -- and the only thing cancellation changes is that its answer is
+    discarded before it can be committed, leaving those items for the
+    replacement to pay for a second time."""
+    monkeypatch.setattr(db, "JUDGMENT_RUN_STALE_MINUTES", 0)
+    monkeypatch.setattr(
+        db, "_JUDGMENT_RUN_STALE_SQL",
+        "stock_judgment_runs.heartbeat_at < clock_timestamp()",
+    )
+    wedged = asyncio.Event()
+
+    async def _wedged_phase(user_id, run_token=None):
+        await wedged.wait()
+
+    manager._run_judgment_phase = _wedged_phase  # type: ignore
+    assert (await manager.start_judgment_only(judging_user))["started"] is True
+    stalled = manager._judgment_tasks[judging_user]
+
+    assert (await manager.start_judgment_only(judging_user))["started"] is True
+    await asyncio.sleep(0.01)
+    assert not stalled.cancelled()
+    assert not stalled.done()
+    assert manager._judgment_tasks[judging_user] is not stalled
+    # Held by the manager, not merely by this test's local variable. The dict
+    # entry above was its only strong reference and has just been overwritten,
+    # and asyncio keeps only weak references to tasks -- so without this the
+    # task that was deliberately left alive to commit its paid batch is
+    # collectable before it gets there.
+    assert stalled in manager._superseded_judgment_tasks
+    wedged.set()
+    await asyncio.sleep(0.01)
+    # And released once it ends, so a long-lived manager does not accumulate
+    # finished tasks.
+    assert stalled not in manager._superseded_judgment_tasks
 
 
 async def test_judgment_running_for_one_user_does_not_block_another_users_judgment(manager, pg_schema):
@@ -6034,32 +6345,39 @@ async def test_judgment_running_for_one_user_does_not_block_another_users_judgme
     global slot). A per-user _judgment_tasks dict, not a single global task,
     is what makes this true -- this is the same bug class Task 16 fixed for
     collection sync's sync_running/_sync_task."""
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")["id"]
+        bob = db.create_user(conn, discogs_user_id=2, discogs_username="bob")["id"]
+        conn.commit()
     event = asyncio.Event()
 
-    async def _fake_judgment_phase(user_id, lock_conn=None):
+    async def _fake_judgment_phase(user_id, run_token=None):
         await event.wait()
 
     manager._run_judgment_phase = _fake_judgment_phase  # type: ignore
-    alice_started = await manager.start_judgment_only(1)
+    alice_started = await manager.start_judgment_only(alice)
     assert alice_started["started"] is True
-    assert manager.judgment_running(1) is True
+    assert manager.judgment_running(alice) is True
 
-    bob_started = await manager.start_judgment_only(2)
+    bob_started = await manager.start_judgment_only(bob)
     assert bob_started["started"] is True
-    assert manager.judgment_running(2) is True
+    assert manager.judgment_running(bob) is True
 
     # Alice's own second concurrent call is still refused.
-    alice_second = await manager.start_judgment_only(1)
+    alice_second = await manager.start_judgment_only(alice)
     assert alice_second["started"] is False
 
     event.set()
     await asyncio.sleep(0.01)
 
 
-async def test_start_stock_sync_runs_while_a_users_judgment_is_in_flight(pg_test_db, manager):
-    # One direction of the old mutex is gone for good: stock sync is global
-    # and judgment is per-user, so one user's judgment pass must not be able
-    # to hold up a crawl of the shared catalog.
+async def test_start_stock_sync_runs_while_a_users_judgment_is_in_flight(manager, judging_user):
+    # Only one direction of the old mutex is gone, and this is it: stock sync
+    # is global and judgment is per-user, so one user's judgment pass must not
+    # be able to hold up a crawl of the shared catalog. The other direction is
+    # deliberately back -- see the tests around _stock_sync_running_anywhere,
+    # where a judgment start is refused while a sync is replacing the very
+    # catalog it would be judging.
     stock_event = asyncio.Event()
     judgment_event = asyncio.Event()
 
@@ -6067,24 +6385,25 @@ async def test_start_stock_sync_runs_while_a_users_judgment_is_in_flight(pg_test
         await stock_event.wait()
         lock_conn.close()
 
-    async def _fake_judgment_phase(user_id, lock_conn=None):
+    async def _fake_judgment_phase(user_id, run_token=None):
         await judgment_event.wait()
 
     manager._sync_stock = _fake_sync_stock  # type: ignore
     manager._run_judgment_phase = _fake_judgment_phase  # type: ignore
 
-    assert (await manager.start_judgment_only(1))["started"] is True
+    # Judgment first, then the sync -- the order the surviving direction needs.
+    assert (await manager.start_judgment_only(judging_user))["started"] is True
     result = await manager.start_stock_sync()
     assert result["started"] is True
     assert manager.stock_sync_running is True
-    assert manager.judgment_running(1) is True
+    assert manager.judgment_running(judging_user) is True
 
     stock_event.set()
     judgment_event.set()
     await asyncio.sleep(0.01)
 
 
-async def test_start_judgment_only_is_refused_while_a_stock_sync_runs(pg_schema, manager):
+async def test_start_judgment_only_is_refused_while_a_stock_sync_runs(manager, judging_user):
     # The other direction is a guard, not a mutex, and it is about money: a
     # sync replaces each crawler's whole snapshot, so a run started against
     # one in progress pays to judge items that are about to be deleted.
@@ -6094,21 +6413,21 @@ async def test_start_judgment_only_is_refused_while_a_stock_sync_runs(pg_schema,
         await stock_event.wait()
         lock_conn.close()
 
-    async def _fake_judgment_phase(user_id, lock_conn=None):
+    async def _fake_judgment_phase(user_id, run_token=None):
         pass
 
     manager._sync_stock = _fake_sync_stock  # type: ignore
     manager._run_judgment_phase = _fake_judgment_phase  # type: ignore
 
     await manager.start_stock_sync()
-    refused = await manager.start_judgment_only(1)
-    assert refused == {"started": False, "running": False, "stock_sync_running": True}
-    assert manager.judgment_running(1) is False
+    refused = await manager.start_judgment_only(judging_user)
+    assert refused == {"started": False, "stock_sync_running": True}
+    assert manager.judgment_running(judging_user) is False
 
     stock_event.set()
     await asyncio.sleep(0.01)
     # And starts normally once the sync is out of the way.
-    assert (await manager.start_judgment_only(1))["started"] is True
+    assert (await manager.start_judgment_only(judging_user))["started"] is True
     await asyncio.sleep(0.01)
 
 
@@ -6965,6 +7284,70 @@ async def test_worker_stock_item_match_stores_the_name_the_crawler_reported(pg_s
     assert listing["listing_title"] == "The listing as Amazon names it"
 
 
+async def test_worker_release_match_stores_the_picture_the_crawler_reported(pg_schema):
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/x.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T (Blue Vinyl)", "year": None, "label": None,
+            "format": "LP", "discogs_price": None, "barcode": None,
+            "cover_image_url": "https://discogs/blue.jpg", "discogs_url": None,
+        })
+        db.enqueue_crawl_queue(conn, "r1")
+        conn.commit()
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    fake_plugin = AsyncMock()
+    fake_plugin.search = AsyncMock(return_value=[{
+        "url": "https://x", "price": 9.99, "shipping": None, "currency": "USD", "condition": None,
+        "cover_image_url": "https://m.media-amazon.com/black.jpg",
+    }])
+    fake_plugin._db_id = crawler_id
+    fake_plugin._db_site_name = "Amazon"
+
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))):
+        await manager._drain_one_batch("worker-test", {crawler_id: fake_plugin}, pages={})
+
+    with db.get_admin_pool().connection() as conn:
+        stock = conn.execute(
+            "SELECT cover_image_url, listing_image_url FROM stock_items "
+            "WHERE crawler_id = %s AND release_id = 'r1'", [crawler_id],
+        ).fetchone()
+        listing = conn.execute("SELECT listing_image_url FROM listings WHERE release_id = 'r1'").fetchone()
+    assert stock["cover_image_url"] == "https://discogs/blue.jpg"
+    assert stock["listing_image_url"] == "https://m.media-amazon.com/black.jpg"
+    assert listing["listing_image_url"] == "https://m.media-amazon.com/black.jpg"
+
+
+async def test_worker_stock_item_match_stores_the_picture_the_crawler_reported(pg_schema):
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/x.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        _stock_item_with_source(conn, "key1")
+        db.enqueue_crawl_queue_for_stock_item(conn, "key1")
+        conn.commit()
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    fake_plugin = AsyncMock()
+    fake_plugin.search = AsyncMock(return_value=[{
+        "url": "https://x", "price": 9.99, "shipping": None, "currency": "USD", "condition": None,
+        "cover_image_url": "https://i.ebayimg.com/1.jpg",
+    }])
+    fake_plugin._db_id = crawler_id
+    fake_plugin._db_site_name = "Amazon"
+
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))):
+        await manager._drain_one_batch("worker-test", {crawler_id: fake_plugin}, pages={})
+
+    with db.get_admin_pool().connection() as conn:
+        listing = conn.execute("SELECT listing_image_url FROM listings WHERE item_key = 'key1'").fetchone()
+    assert listing["listing_image_url"] == "https://i.ebayimg.com/1.jpg"
+
+
 # ---------------------------------------------------------------------------
 # crawl_library_only
 # ---------------------------------------------------------------------------
@@ -7125,7 +7508,7 @@ async def test_a_second_judgment_run_over_an_unchanged_catalog_calls_nothing(pg_
 
 
 async def test_start_judgment_only_is_refused_while_another_machine_holds_the_sync_lock(
-    pg_schema, manager
+    manager, judging_user
 ):
     """`stock_sync_running` is this process's `_stock_task` and nothing more,
     but stock sync is serialized across Machines by an advisory lock. A
@@ -7137,7 +7520,7 @@ async def test_start_judgment_only_is_refused_while_another_machine_holds_the_sy
     import config
     from crawl_manager import STOCK_SYNC_LOCK_KEY
 
-    async def _fake_judgment_phase(user_id, lock_conn=None):
+    async def _fake_judgment_phase(user_id, run_token=None):
         pass
 
     manager._run_judgment_phase = _fake_judgment_phase  # type: ignore
@@ -7149,23 +7532,27 @@ async def test_start_judgment_only_is_refused_while_another_machine_holds_the_sy
         ).fetchone()[0] is True
         # No local task, so the old guard would have waved this through.
         assert manager.stock_sync_running is False
-        refused = await manager.start_judgment_only(1)
-        assert refused == {"started": False, "running": False, "stock_sync_running": True}
-        assert manager.judgment_running(1) is False
+        refused = await manager.start_judgment_only(judging_user)
+        assert refused == {"started": False, "stock_sync_running": True}
+        assert manager.judgment_running(judging_user) is False
+        # And refused *before* the claim, so it leaves no run row for the
+        # retry below to be turned away by.
+        with db.user_scope(judging_user) as conn:
+            assert db.get_stock_judgment_run(conn, judging_user) is None
     finally:
         holder.execute("SELECT pg_advisory_unlock(%s)", [STOCK_SYNC_LOCK_KEY])
         holder.close()
 
-    assert (await manager.start_judgment_only(1))["started"] is True
+    assert (await manager.start_judgment_only(judging_user))["started"] is True
     await asyncio.sleep(0.01)
 
 
-async def test_judgment_starts_when_the_lock_state_cannot_be_read(pg_schema, manager, monkeypatch):
+async def test_judgment_starts_when_the_lock_state_cannot_be_read(manager, judging_user, monkeypatch):
     """Fails open. A cost guard that turns a database hiccup into a dead
     Refresh button is worse than one that occasionally lets a run through."""
     import db as db_module
 
-    async def _fake_judgment_phase(user_id, lock_conn=None):
+    async def _fake_judgment_phase(user_id, run_token=None):
         pass
 
     manager._run_judgment_phase = _fake_judgment_phase  # type: ignore
@@ -7174,23 +7561,24 @@ async def test_judgment_starts_when_the_lock_state_cannot_be_read(pg_schema, man
         raise RuntimeError("no connection")
 
     monkeypatch.setattr(db_module, "advisory_lock_held", _boom)
-    assert (await manager.start_judgment_only(1))["started"] is True
+    assert (await manager.start_judgment_only(judging_user))["started"] is True
     await asyncio.sleep(0.01)
 
 
-async def test_two_simultaneous_starts_for_one_user_create_one_run(pg_schema, manager, monkeypatch):
-    """The stock-lock read awaits, and _judgment_tasks is not assigned until
-    after it, so without a lock two requests for one user both clear the
-    running check, both wait, and both create a task -- the second merely
-    overwriting the first handle while both spend that user's Anthropic
-    credit on the same items. (Copilot, PR #368.)
+async def test_two_simultaneous_starts_for_one_user_create_one_run(
+    manager, judging_user, monkeypatch
+):
+    """The sync-lock read awaits before the claim, so two requests for one user
+    can both reach the claim. Only one may win it: the other would spend that
+    user's Anthropic credit on the same items, and merely overwrite the first
+    task handle on the way. (Copilot, PR #368.)
     """
     import db as db_module
 
     started_runs = []
     release = asyncio.Event()
 
-    async def _fake_judgment_phase(user_id, lock_conn=None):
+    async def _fake_judgment_phase(user_id, run_token=None):
         started_runs.append(user_id)
         await release.wait()
 
@@ -7204,26 +7592,31 @@ async def test_two_simultaneous_starts_for_one_user_create_one_run(pg_schema, ma
     monkeypatch.setattr(db_module, "advisory_lock_held", _slow_lock_read)
 
     first, second = await asyncio.gather(
-        manager.start_judgment_only(1), manager.start_judgment_only(1)
+        manager.start_judgment_only(judging_user), manager.start_judgment_only(judging_user)
     )
     await asyncio.sleep(0.01)
 
     assert sorted([first["started"], second["started"]]) == [False, True]
-    assert started_runs == [1]
+    assert started_runs == [judging_user]
 
     release.set()
     await asyncio.sleep(0.01)
 
 
 async def test_simultaneous_starts_for_different_users_both_run(pg_schema, manager, monkeypatch):
-    """The lock is one shared lock, so this is the property it must not cost:
-    judgment is per-user and two users' runs are independent."""
+    """The property the guard above must not cost: judgment is per-user, and
+    two users' runs are independent of each other."""
     import db as db_module
+
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")["id"]
+        bob = db.create_user(conn, discogs_user_id=2, discogs_username="bob")["id"]
+        conn.commit()
 
     started_runs = []
     release = asyncio.Event()
 
-    async def _fake_judgment_phase(user_id, lock_conn=None):
+    async def _fake_judgment_phase(user_id, run_token=None):
         started_runs.append(user_id)
         await release.wait()
 
@@ -7231,114 +7624,16 @@ async def test_simultaneous_starts_for_different_users_both_run(pg_schema, manag
     monkeypatch.setattr(db_module, "advisory_lock_held", lambda conn, key: False)
 
     first, second = await asyncio.gather(
-        manager.start_judgment_only(1), manager.start_judgment_only(2)
+        manager.start_judgment_only(alice), manager.start_judgment_only(bob)
     )
     await asyncio.sleep(0.01)
 
     assert first["started"] is True
     assert second["started"] is True
-    assert sorted(started_runs) == [1, 2]
+    assert sorted(started_runs) == sorted([alice, bob])
 
     release.set()
     await asyncio.sleep(0.01)
-
-
-async def test_start_judgment_only_is_refused_while_another_machine_runs_this_users_judgment(
-    pg_schema, manager
-):
-    """The asyncio lock orders two requests that reach *this* process and
-    says nothing about two that reach different Machines, where
-    _judgment_tasks is a different dict and both see an idle one. Both would
-    issue paid model calls for the same records. (Copilot, PR #368.)
-    """
-    import psycopg
-    import config
-    from crawl_manager import JUDGMENT_LOCK_NAMESPACE
-
-    async def _fake_judgment_phase(user_id, lock_conn=None):
-        pass
-
-    manager._run_judgment_phase = _fake_judgment_phase  # type: ignore
-
-    other_machine = psycopg.connect(config.DIRECT_APP_DATABASE_URL, autocommit=True)
-    try:
-        assert other_machine.execute(
-            "SELECT pg_try_advisory_lock(%s, %s)", [JUDGMENT_LOCK_NAMESPACE, 1]
-        ).fetchone()[0] is True
-        # No local task, so every in-process check waves this through.
-        assert manager.judgment_running(1) is False
-        refused = await manager.start_judgment_only(1)
-        assert refused == {"started": False, "running": True, "stock_sync_running": False}
-        assert manager.judgment_running(1) is False
-
-        # A different user is untouched: the lock is keyed per user.
-        other = await manager.start_judgment_only(2)
-        assert other["started"] is True
-        await asyncio.sleep(0.01)
-    finally:
-        other_machine.execute(
-            "SELECT pg_advisory_unlock(%s, %s)", [JUDGMENT_LOCK_NAMESPACE, 1]
-        )
-        other_machine.close()
-
-    assert (await manager.start_judgment_only(1))["started"] is True
-    await asyncio.sleep(0.01)
-
-
-async def test_the_judgment_lock_is_released_when_the_run_finishes(pg_schema, manager):
-    """Held for the run's lifetime and no longer, so a second Refresh after
-    one finishes is not refused."""
-    import psycopg
-    import config
-    from crawl_manager import JUDGMENT_LOCK_NAMESPACE
-
-    async def _fake_judgment_phase(user_id, lock_conn=None):
-        pass
-
-    manager._run_judgment_phase = _fake_judgment_phase  # type: ignore
-
-    assert (await manager.start_judgment_only(1))["started"] is True
-    await asyncio.sleep(0.05)
-
-    probe = psycopg.connect(config.DIRECT_APP_DATABASE_URL, autocommit=True)
-    try:
-        assert probe.execute(
-            "SELECT pg_try_advisory_lock(%s, %s)", [JUDGMENT_LOCK_NAMESPACE, 1]
-        ).fetchone()[0] is True, "the finished run should have released its lock"
-        probe.execute("SELECT pg_advisory_unlock(%s, %s)", [JUDGMENT_LOCK_NAMESPACE, 1])
-    finally:
-        probe.close()
-
-
-async def test_the_judgment_lock_is_released_when_the_run_fails(pg_schema, manager):
-    """In a finally, so a failed run frees the user to start another rather
-    than locking them out until the process dies."""
-    import psycopg
-    import config
-    from crawl_manager import JUDGMENT_LOCK_NAMESPACE
-
-    # The real _run_judgment_phase, with a user that has no Anthropic key, so
-    # it takes an early-return path rather than a faked one.
-    with db.get_admin_pool().connection() as conn:
-        db.create_user(conn, discogs_user_id=1, discogs_username="alice")
-        conn.commit()
-
-    manager._broadcast = AsyncMock()
-    assert (await manager.start_judgment_only(1))["started"] is True
-    for _ in range(50):
-        if not manager.judgment_running(1):
-            break
-        await asyncio.sleep(0.02)
-    assert manager.judgment_running(1) is False
-
-    probe = psycopg.connect(config.DIRECT_APP_DATABASE_URL, autocommit=True)
-    try:
-        assert probe.execute(
-            "SELECT pg_try_advisory_lock(%s, %s)", [JUDGMENT_LOCK_NAMESPACE, 1]
-        ).fetchone()[0] is True
-        probe.execute("SELECT pg_advisory_unlock(%s, %s)", [JUDGMENT_LOCK_NAMESPACE, 1])
-    finally:
-        probe.close()
 
 
 async def test_the_judgment_run_sweeps_missing_keys_before_it_counts(pg_schema, manager):
@@ -7395,72 +7690,3 @@ async def test_the_judgment_run_sweeps_missing_keys_before_it_counts(pg_schema, 
     assert calls[0] == "sweep", f"the sweep must precede every fold read, got {calls}"
     assert "propagate" in calls and "count" in calls
     assert calls.index("sweep") < calls.index("propagate") < calls.index("count")
-
-
-async def test_a_failed_lock_query_does_not_leak_its_connection(pg_schema, manager, monkeypatch):
-    """The connect can succeed and the query then fail, leaving a dedicated
-    session nothing will ever close. This is the repeating path, so a
-    transient error would leak one session per Refresh. (Copilot, PR #368.)
-    """
-    import psycopg
-    import config
-
-    closed = []
-
-    class _ExplodingConn:
-        def execute(self, *args, **kwargs):
-            raise RuntimeError("lock query failed")
-
-        def close(self):
-            closed.append(True)
-
-    monkeypatch.setattr(psycopg, "connect", lambda *a, **k: _ExplodingConn())
-
-    async def _fake_judgment_phase(user_id, lock_conn=None):
-        pass
-
-    manager._run_judgment_phase = _fake_judgment_phase  # type: ignore
-
-    # Fails open, as designed -- and closes what it opened.
-    result = await manager.start_judgment_only(1)
-    assert result["started"] is True
-    assert closed == [True]
-    await asyncio.sleep(0.01)
-    assert config.DIRECT_APP_DATABASE_URL  # the patched connect never ran for real
-
-
-async def test_a_cancelled_run_releases_its_lock_even_at_the_first_broadcast(pg_schema, manager):
-    """The opening stock_judgment_started broadcast awaits, so it is a
-    cancellation point -- and it used to sit outside the try whose finally
-    releases the lock. A shutdown landing there left the lock held by a
-    session nothing would close, refusing this user every later Refresh until
-    the process died. (Copilot, PR #368.)
-    """
-    import psycopg
-    import config
-    from crawl_manager import JUDGMENT_LOCK_NAMESPACE
-
-    at_broadcast = asyncio.Event()
-
-    async def _hang_on_first_broadcast(event):
-        at_broadcast.set()
-        await asyncio.Event().wait()  # never completes; the task is cancelled here
-
-    manager._broadcast = _hang_on_first_broadcast  # type: ignore
-
-    assert (await manager.start_judgment_only(1))["started"] is True
-    await asyncio.wait_for(at_broadcast.wait(), timeout=2)
-
-    task = manager._judgment_tasks[1]
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
-
-    probe = psycopg.connect(config.DIRECT_APP_DATABASE_URL, autocommit=True)
-    try:
-        assert probe.execute(
-            "SELECT pg_try_advisory_lock(%s, %s)", [JUDGMENT_LOCK_NAMESPACE, 1]
-        ).fetchone()[0] is True, "a run cancelled at its first await must not strand the lock"
-        probe.execute("SELECT pg_advisory_unlock(%s, %s)", [JUDGMENT_LOCK_NAMESPACE, 1])
-    finally:
-        probe.close()

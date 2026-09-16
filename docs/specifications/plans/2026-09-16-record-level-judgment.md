@@ -44,10 +44,12 @@ cd backend && TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/di
 ## Task 4: Guard the start path
 
 - [x] Restore the `stock_sync_running` check on `start_judgment_only`, in the manager rather than the router so no call site can start a run around it. Do **not** restore the mirror on `start_stock_sync`: judgment is per-user, the sync is global.
-- [x] Make both guards reach across Machines. `db.advisory_lock_held` reads `pg_locks` for the sync lock; a judgment run holds `pg_try_advisory_lock(JUDGMENT_LOCK_NAMESPACE, user_id)` for its lifetime, released in `_run_judgment_phase`'s `finally`.
+- [x] Make both guards reach across Machines. `db.advisory_lock_held` reads `pg_locks` for the sync lock; a judgment run held `pg_try_advisory_lock(JUDGMENT_LOCK_NAMESPACE, user_id)` for its lifetime, released in `_run_judgment_phase`'s `finally`.
 - [x] Serialize the whole check-and-assign under one asyncio lock, since the cross-Machine reads await and the task assignment is what makes the running check true.
-- [x] Return `{started, running, stock_sync_running}` rather than a bool: both local flags read false for anything happening on another Machine, so the router forwards this answer rather than re-deriving it.
+- [x] ~~Return `{started, running, stock_sync_running}`~~ → `{started, stock_sync_running}`; see the merge note below.
 - [x] Render the rejection in `handleRefreshRecommendations`, guarded on the status-write counter so a slow response cannot talk over newer progress.
+
+**Merge note (2026-09-16).** The second and third items above were undone when `main`'s stop-a-run change ([`2026-09-16-stop-recommendation-run-design.md`](../shaping/2026-09-16-stop-recommendation-run-design.md)) was merged into this branch. It solves the per-user duplicate-start problem with a claimed `stock_judgment_runs` row instead of an advisory lock, which also survives a worker wedged in a blocking call — a case no session lock can recover from, because nothing can reclaim it. So the judgment lock, its release `finally`, its dedicated connection and the asyncio start lock all went out, and `start_judgment_only` takes main's claim. The sync guard and its `stock_sync_running` field stay: the claim cannot answer them, since that refusal writes no row and runs before the claim on purpose. The fourth item stands, though the fence is now main's own sequence counters rather than the status-write counter.
 
 ## Task 5: Tests
 
