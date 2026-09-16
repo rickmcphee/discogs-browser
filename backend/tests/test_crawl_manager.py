@@ -5967,6 +5967,64 @@ async def test_a_cancelled_run_leaves_the_inherited_count_matching_its_rows(pg_s
     assert run["inherited"] == written - run["judged"] > 0
 
 
+async def test_a_run_that_fails_before_its_counts_still_records_what_it_inherited(pg_schema):
+    """The run's first fan-out happens before the billable set is counted, and
+    everything in between can raise: two queries and a taste read. The error
+    close carries no count, so a count written only at the pre-flight
+    checkpoint would leave the row saying 0 with those judgments committed --
+    and a client polling from the other Machine has nothing but the row.
+    (Copilot, PR #368, round 18.)
+    """
+    user_id = _judging_user_with_items(2, discogs_user_id=37)
+
+    with db.user_scope(user_id) as conn:
+        first = db.get_unjudged_stock_items(conn, user_id, limit=1)[0]
+        db.upsert_stock_judgments(conn, user_id, [
+            {"item_key": first["item_key"], "recommended": True, "reason": "fits"},
+        ])
+        conn.commit()
+    with db.get_admin_pool().connection() as conn:
+        crawler_id = conn.execute(
+            "SELECT id FROM crawlers WHERE site_name = 'Stock Site'"
+        ).fetchone()["id"]
+        db.replace_stock_items(conn, crawler_id, [
+            {"artist": first["artist"], "title": first["title"], "price": 1.0,
+             "currency": "USD", "url": "https://x/first"},
+            {"artist": first["artist"], "title": first["title"], "price": 2.0,
+             "currency": "USD", "url": "https://x/second"},
+        ])
+        conn.commit()
+
+    with db.user_scope(user_id) as conn:
+        run_token = db.claim_stock_judgment_run(conn, user_id)
+        conn.commit()
+
+    manager = CrawlManager()
+    manager._broadcast = AsyncMock()
+
+    import db as db_module
+
+    def _boom(conn, user_id):
+        raise RuntimeError("counting the billable set fell over")
+
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        monkeypatch.setattr(db_module, "count_unjudged_stock_items", _boom)
+        await manager._run_judgment_phase(user_id, run_token)
+    finally:
+        monkeypatch.undo()
+
+    with db.user_scope(user_id) as conn:
+        run = db.get_stock_judgment_run(conn, user_id)
+        written = conn.execute(
+            "SELECT COUNT(*) AS n FROM stock_item_judgments WHERE user_id = %s", [user_id]
+        ).fetchone()["n"]
+
+    assert run["status"] == "error"
+    assert written > 1, "the fan-out has to have written something for this to mean anything"
+    assert run["inherited"] == written - 1 > 0
+
+
 async def test_judgment_phase_releases_its_claim_when_cancelled(pg_schema):
     """Without the finally backstop a cancelled run leaves its row saying
     'running', and every later Refresh is refused until the heartbeat goes
