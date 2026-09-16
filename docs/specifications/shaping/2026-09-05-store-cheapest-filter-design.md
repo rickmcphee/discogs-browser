@@ -32,7 +32,10 @@ Touches:
 - `backend/db.py` — `stock_items.title_key` column and the index behind the
   filter; `replace_stock_items` and `upsert_stock_item_from_release` write
   the key; `_backfill_title_keys` runs
-  from `init_tenant_schema` for rows that predate the column;
+  from `init_tenant_schema` for rows that predate the column
+  (renamed `backfill_stock_keys` on 2026-09-16, when it took on a second
+  key — see
+  [`2026-09-16-record-level-judgment-design.md`](2026-09-16-record-level-judgment-design.md));
   `_stock_filter_sql` gains `cheapest` and the `_cheapest_clause` it appends;
   `get_stock_items` and `get_stock_source_counts` pass it through.
 - `backend/routers/stock.py` — `GET /stock` and `GET /stock/stats` gain a
@@ -138,7 +141,8 @@ Out of scope:
   backfill has run, an old binary can still be writing unkeyed rows — a
   store snapshot from a sync it was mid-way through, a marketplace match
   from its worker pool — and a boot-only backfill would never revisit them.
-  `backfill_title_keys` therefore also runs at the end of every stock sync,
+  `backfill_title_keys` (`backfill_stock_keys` since 2026-09-16, when
+  `record_key` joined it) therefore also runs at the end of every stock sync,
   beside the dead-queue-row sweep that already lives there, so the first
   sync any new machine completes keys whatever the old one left. It is
   normally a no-op, and a partial index on `title_key IS NULL` makes finding
