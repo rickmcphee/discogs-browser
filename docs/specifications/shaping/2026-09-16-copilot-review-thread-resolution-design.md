@@ -105,6 +105,26 @@ the claim. It is a cheaper objection than a paragraph, which is the point.
 **An outdated thread still needs resolving.** `is_outdated: true` means the code
 moved under the comment, not that anyone answered it.
 
+**Nothing is closed out on an unreviewed head.** Both halves of the signal are
+claims about one particular commit — the one Copilot last reviewed — and a push
+inverts them silently. The threads resolved a moment ago stay resolved, the
+ledger still reads complete, and neither has seen the new head; if that head's
+review then comes back clean or with only body-only findings, no thread ever
+opens to correct the impression. The window is small but it is exactly the
+window in which someone glances at the pull request and concludes the agent is
+finished.
+
+So the signal is readable only once the current head *has* a review, which is
+what the poll in `CLAUDE.md` already establishes — a review whose `commit_id`
+matches the head SHA. Until that review exists and its findings are closed out,
+the honest answer is "not yet", whatever the thread count says. The ledger
+therefore names the review and head commit it covers, so a reader compares that
+against the pull request's current head. A named head is preferred to a
+pending/complete flag deliberately: the head goes stale by itself and visibly,
+where a flag goes stale only if whoever pushed remembered to flip it, and the
+whole failure being fixed here is a signal that reads "done" because nobody
+updated it.
+
 **The owner's own review threads are left alone.** The owner resolving their own
 comment means "I am satisfied"; the agent resolving one would mean "I believe I
 have satisfied you." Those are different claims, and the distinction is worth
