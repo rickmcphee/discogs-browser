@@ -147,13 +147,16 @@ def _judgment_running(conn, user_id: int) -> bool:
     on whichever Machine served its start. The row also expires, so a worker
     that died mid-run cannot block a clear for ever.
 
-    Locks the row, and both callers then do their own write in the same
-    transaction. An unlocked read would be a check the answer outlives: a start
-    can claim the row in the gap between reading "idle" and deleting, and a
-    live run's next checkpoint can commit in the gap between reading "idle" and
-    importing -- in both cases leaving the write this guard exists to prevent
-    to happen anyway, just slightly later."""
-    run = db.get_stock_judgment_run(conn, user_id, for_update=True)
+    Takes the per-user run lock first, and both callers then do their own write
+    in the same transaction. An unlocked read would be a check the answer
+    outlives: a start can claim in the gap between reading "idle" and deleting,
+    and a live run's next checkpoint can commit in the gap between reading
+    "idle" and importing -- in both cases letting the write this guard exists
+    to prevent happen anyway, just slightly later. Locking the *row* would not
+    do: before a user's first run there is no row, so it would degrade to no
+    lock exactly when a first Refresh races a first import."""
+    db.lock_stock_judgment_run(conn, user_id)
+    run = db.get_stock_judgment_run(conn, user_id)
     return bool(run and run["running"])
 
 
@@ -167,10 +170,20 @@ def get_stock_judgment_status(request: Request):
     to read Refresh or Stop."""
     user_id = request.state.user_id
     with db.user_scope(user_id) as conn:
-        return {
-            "any_judged": db.has_any_stock_judgment(conn, user_id),
-            "run": _judgment_run(conn, user_id),
-        }
+        # The run is read *first*, and the order is load-bearing under READ
+        # COMMITTED, where these two statements can see different snapshots. A
+        # run that commits its judgments and closes between them would, read
+        # the other way round, answer "nothing judged" alongside "not running"
+        # -- and the client, told the run is over, stops polling and leaves
+        # Export and the Recommended filter disabled over judgments that exist.
+        #
+        # This way the skew can only run the harmless way. any_judged is
+        # monotonic for as long as a run holds the claim (clear and import are
+        # both refused while one does), so a run seen as still going can only
+        # be paired with a judgment count that is equal or newer -- which costs
+        # one more poll and nothing else.
+        run = _judgment_run(conn, user_id)
+        return {"any_judged": db.has_any_stock_judgment(conn, user_id), "run": run}
 
 
 class StockSyncStartRequest(BaseModel):
@@ -224,9 +237,11 @@ def stop_stock_judgment(request: Request):
         # never after it. user_scope sets app.user_id with set_config(..., true)
         # -- transaction-local -- so a commit here would drop the RLS scope and
         # leave the next query evaluating a policy that casts an empty string to
-        # int, turning every successful stop into a 500. Nothing in the suite
-        # can catch that: the test harness connects as the Postgres superuser,
-        # which bypasses RLS, so the policy expression is never evaluated. The
+        # int, turning every successful stop into a 500. No
+        # ordinary router test here can catch that: they connect as the Postgres
+        # superuser, which bypasses RLS, so the policy expression is never
+        # evaluated -- which is why test_stock_router.py's rls_enforced fixture
+        # exists, running this endpoint against the app_user role instead. The
         # read sees this transaction's own uncommitted write, which is exactly
         # the state the caller is asking about.
         run = _judgment_run(conn, user_id)

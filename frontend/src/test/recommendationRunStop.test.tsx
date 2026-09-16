@@ -248,6 +248,33 @@ describe('stopping a recommendation run from the profile page', () => {
     await waitFor(() => expect(getStock.mock.calls.length).toBeGreaterThan(beforeAdvance))
   })
 
+  it('refetches the Store for a run that began and ended between two reads', async () => {
+    // Mount with no run at all, which is what a tab that was open before the
+    // run started sees. Leaving that read unrecorded made the *next* one look
+    // like the first, so a short run on the other Machine finished without
+    // ever refetching this tab.
+    getJudgmentStatus.mockResolvedValue({ any_judged: false, run: null })
+    const row = await openProfile()
+    await waitFor(() => expect(within(row).getByRole('button')).toHaveTextContent('Refresh'))
+    fireEvent.click(await screen.findByRole('button', { name: /store/i }))
+    await waitFor(() => expect(getStock).toHaveBeenCalled())
+    const beforeRun = getStock.mock.calls.length
+
+    getJudgmentStatus.mockResolvedValue({
+      any_judged: true,
+      run: run({ status: 'complete', running: false, judged: 40 }),
+    })
+    // Nothing is polling -- no run was believed to be in flight -- so the start
+    // click is what sets the poll going, and its first tick is the read that
+    // discovers the run.
+    fireEvent.click(await screen.findByRole('button', { name: /profile/i }))
+    fireEvent.click(within(row).getByRole('button'))
+    await waitFor(() => expect(postJudgmentStart).toHaveBeenCalled())
+    await vi.advanceTimersByTimeAsync(PAST_ONE_POLL)
+
+    await waitFor(() => expect(getStock.mock.calls.length).toBeGreaterThan(beforeRun))
+  })
+
   it('reports a run that had already finished rather than failing the click', async () => {
     getJudgmentStatus.mockResolvedValue({ any_judged: true, run: run() })
     postJudgmentStop.mockResolvedValue({

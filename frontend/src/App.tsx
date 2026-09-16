@@ -235,9 +235,10 @@ export default function App() {
   // answer. Every direct writer bumps this first.
   const latestJudgmentRunSeq = useRef(0)
   // The last (status, judged) the poll saw, so it can tell a run that has
-  // advanced from one it has merely been asked about again. Starts null so the
-  // first read -- which is just "what is the state on load" -- does not count
-  // as movement and refetch the Store on every page load.
+  // advanced from one it has merely been asked about again. Null means "no
+  // read yet", and only that very first read is exempt from the bump -- it is
+  // "what is the state on load" rather than movement, and would otherwise
+  // refetch the Store on every page load.
   const lastJudgmentRunSeen = useRef<string | null>(null)
   const [serverReady, setServerReady] = useState(false)
   const [backendUp, setBackendUp] = useState<boolean | null>(null)
@@ -460,8 +461,13 @@ export default function App() {
       // makes them too, from the counters it can see -- gated on the run
       // having actually moved, or the poll would refetch every few seconds for
       // as long as a run lasts.
+      // "no run" is a baseline like any other, not a reason to record nothing:
+      // leaving the ref null through a mount-time `run: null` made the *next*
+      // read look like the first one, so a short cross-Machine run that began
+      // and ended between two reads suppressed the very bump it should have
+      // caused.
       const seen = `${s.run?.status ?? 'none'}/${s.run?.judged ?? 0}`
-      if (s.run && seen !== lastJudgmentRunSeen.current) {
+      if (seen !== lastJudgmentRunSeen.current) {
         if (lastJudgmentRunSeen.current !== null) {
           setStockSyncGeneration(g => g + 1)
           setStockJudgmentGeneration(g => g + 1)

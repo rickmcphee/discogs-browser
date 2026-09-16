@@ -3947,6 +3947,31 @@ _JUDGMENT_RUN_STALE_SQL = (
 )
 
 
+# Date-coded, following the pg_advisory_xact_lock(2026080901) convention in
+# this file and crawl_manager's STOCK_SYNC_LOCK_KEY.
+JUDGMENT_RUN_LOCK_KEY = 2026091601
+
+
+def lock_stock_judgment_run(conn, user_id: int):
+    """Serialize everything that decides whether this user's judgments may be
+    written: claiming a run, a run's own batch checkpoint, and the clear and
+    import guards. Held for the rest of the caller's transaction.
+
+    An advisory lock rather than SELECT ... FOR UPDATE on the run row, because
+    the row is the one thing that need not exist. Before a user's first
+    recommendation run there is nothing to lock, so a row lock silently
+    degrades to no lock at all in exactly the case a first Refresh races a
+    first import. It is also what lets a *stale* worker be serialized: its
+    checkpoint matches no row and so takes no row lock, but it takes this one,
+    which is what stops its last batch landing just after a clear.
+
+    Every holder takes this before touching the row, so the lock order is the
+    same everywhere and there is nothing to deadlock against."""
+    conn.execute(
+        "SELECT pg_advisory_xact_lock(%s, %s)", [JUDGMENT_RUN_LOCK_KEY, user_id]
+    )
+
+
 def claim_stock_judgment_run(conn, user_id: int) -> Optional[str]:
     """Claim the right to run a recommendation pass for this user, across every
     Machine rather than just this process. Returns the claim's run token, or
@@ -3962,6 +3987,7 @@ def claim_stock_judgment_run(conn, user_id: int) -> Optional[str]:
     stop_requested is reset by the claim. Without that, a flag the previous run
     honoured would still be sitting on the row, and this run would stop at its
     first checkpoint having judged nothing."""
+    lock_stock_judgment_run(conn, user_id)
     run_token = uuid.uuid4().hex
     row = conn.execute(
         f"""
@@ -4005,6 +4031,10 @@ def record_stock_judgment_progress(
     heartbeat has lapsed past the window is out of the protocol whether or not
     anyone has taken it over yet, so a worker that went quiet that long cannot
     come back and revive a row the client has already been told is finished."""
+    # Taken here rather than by the caller because this is the statement every
+    # batch runs, and holding it from here until that batch commits is what
+    # serializes the judgment write against a clear or an import.
+    lock_stock_judgment_run(conn, user_id)
     row = conn.execute(
         """
         UPDATE stock_judgment_runs SET
@@ -4083,7 +4113,7 @@ def request_stock_judgment_stop(conn, user_id: int) -> bool:
     return cursor.rowcount > 0
 
 
-def get_stock_judgment_run(conn, user_id: int, for_update: bool = False) -> Optional[dict]:
+def get_stock_judgment_run(conn, user_id: int) -> Optional[dict]:
     """The user's current or most recent recommendation run, or None if they
     have never started one.
 
@@ -4093,21 +4123,15 @@ def get_stock_judgment_run(conn, user_id: int, for_update: bool = False) -> Opti
     ever read. `stale` is carried separately so the UI can say what happened
     instead of silently going idle.
 
-    `for_update` locks the row for the rest of the caller's transaction, which
-    is what turns "is a run under way" from a glance into a decision that holds
-    while the caller acts on it. A reader that only glances is racing two
-    writers it cannot see: claim_stock_judgment_run (whose upsert takes the
-    same row) and a live run's own checkpoint (whose progress write does too).
-    Without the lock, clearing or importing judgments can read "idle" and then
-    have a run claimed underneath it, which is the interleaving both of those
-    guards exist to prevent."""
+    A caller that is about to *act* on the answer wants lock_stock_judgment_run
+    first -- this read on its own is a glance, and a glance is out of date the
+    moment it returns."""
     return conn.execute(
         f"""
         SELECT *,
                (status = 'running' AND NOT ({_JUDGMENT_RUN_STALE_SQL})) AS running,
                (status = 'running' AND {_JUDGMENT_RUN_STALE_SQL}) AS stale
         FROM stock_judgment_runs WHERE user_id = %s
-        {"FOR UPDATE" if for_update else ""}
         """,
         [user_id],
     ).fetchone()

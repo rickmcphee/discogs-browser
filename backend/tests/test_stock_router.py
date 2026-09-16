@@ -391,6 +391,30 @@ def test_stock_judge_status_carries_a_claimed_run(pg_test_db, authed_client_fact
     assert "run_token" not in run
 
 
+def test_judge_status_reads_the_run_before_the_judgment_count(pg_test_db, authed_client_factory, monkeypatch):
+    """Under READ COMMITTED these two statements can see different snapshots,
+    so their order decides which way the skew can fall. Run first means a run
+    seen as still going can only be paired with a judgment count that is equal
+    or newer -- one extra poll. The other way round, a run that commits its
+    judgments and closes between the two reads answers "nothing judged"
+    alongside "not running", and the client, told the run is over, stops
+    polling with Export and the Recommended filter disabled over judgments that
+    do exist."""
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+
+    order = []
+    real_run = db.get_stock_judgment_run
+    real_any = db.has_any_stock_judgment
+    monkeypatch.setattr(db, "get_stock_judgment_run", lambda *a, **k: (order.append("run"), real_run(*a, **k))[1])
+    monkeypatch.setattr(db, "has_any_stock_judgment", lambda *a, **k: (order.append("any_judged"), real_any(*a, **k))[1])
+
+    client = authed_client_factory(user["id"])
+    assert client.get("/api/stock/judge/status").status_code == 200
+    assert order == ["run", "any_judged"]
+
+
 def test_stop_stock_judgment_flags_the_calling_users_run(pg_test_db, authed_client_factory):
     with db.get_admin_pool().connection() as conn:
         user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")

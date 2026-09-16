@@ -210,22 +210,24 @@ the batch in hand is written even when the checkpoint that shares its
 transaction says the run has been taken over.
 
 The checkpoint goes **first** within that transaction, though, ahead of the
-upsert. Its `UPDATE` takes the run row's lock, and holding that lock until the
-commit is what serialises the batch against the two things that read the row to
-decide whether they may touch `stock_item_judgments` — clearing and importing.
-Read without the lock, "is a run under way" is a check the answer outlives: a
-start can claim the row between reading *idle* and deleting, and a live run's
-next checkpoint can commit between reading *idle* and importing, in both cases
-letting exactly the interleaving those guards exist to prevent happen anyway,
-a moment later. So both take the row `FOR UPDATE` and do their own write in the
-same transaction.
+upsert, and takes a per-user advisory lock (`pg_advisory_xact_lock`) as its own
+first statement. Holding that lock until the batch commits is what serialises
+the judgment write against the two things that decide whether they may touch
+`stock_item_judgments` — clearing and importing, which take the same lock
+before their own write. Read without it, "is a run under way" is a check the
+answer outlives: a start can claim between reading *idle* and deleting, and a
+live run's next checkpoint can commit between reading *idle* and importing, in
+both cases letting exactly the interleaving those guards exist to prevent
+happen anyway, a moment later.
 
-That serialisation covers a live run, not an expired one: a checkpoint whose
-claim has lapsed matches no row and therefore takes no lock, so a stale
-worker's last batch can still land just after a clear. That is the accepted
-side of the same trade — a stale worker only exists at all if one batch
-outlasted the staleness window, and a stray judgment surviving a clear is
-cheaper than a discarded batch, and is fixed by clicking Clear again.
+An advisory lock rather than `SELECT … FOR UPDATE` on the run row, because the
+row is the one thing that need not exist. Before a user's first run there is
+nothing to lock, so a row lock degrades silently to no lock at all — in exactly
+the case where a first Refresh races a first import. It also covers a *stale*
+worker, whose checkpoint matches no row and would take no row lock, but which
+still has a batch in hand: that is what stops its last write landing just after
+a clear. Every holder takes the lock before touching the row, so the lock order
+is the same everywhere and there is nothing to deadlock against.
 
 A run that finds it has been taken over stops **silently**: no terminal event,
 and no progress line either. The row and the narration both belong to the
@@ -270,14 +272,15 @@ an empty string to `int`, which raises. So the stop endpoint reads its run
 inside the same transaction as the write, before the commit, where it also
 sees that write.
 
-This deserves its own heading because the suite cannot catch it. Every router
-test reaches Postgres as the superuser, which has `BYPASSRLS`, so the policy
-expression is never evaluated and the broken order passes every assertion while
-answering `500` to every successful stop in production. `test_stock_router.py`
-therefore grows an `rls_enforced` fixture that repoints the app pool at
-`app_user` after the schema is built, and the stop endpoint is exercised
-through it. Confirmed by reverting the order: that test fails, and nothing else
-does.
+This deserves its own heading because the *ordinary* tests cannot catch it.
+Every router test reaches Postgres as the superuser, which has `BYPASSRLS`, so
+the policy expression is never evaluated and the broken order passes every
+assertion while answering `500` to every successful stop in production.
+`test_stock_router.py` therefore grows an `rls_enforced` fixture that repoints
+the app pool at `app_user` after the schema is built, and the stop endpoint is
+exercised through it — so the gap is closed, but only by a fixture that has to
+be asked for deliberately. Confirmed by reverting the order: that test fails,
+and nothing else does.
 
 ### The API
 
@@ -395,8 +398,9 @@ progress line for the poll to have to clear.
 - `POST /stock/judge/stop` flags the calling user's run and cannot touch
   another user's;
 - the stop endpoint answers under a pool authenticated as `app_user`, with the
-  tenant policies actually enforced (`rls_enforced`) — the one test in the file
-  that can catch a read placed after a commit;
+  tenant policies actually enforced (`rls_enforced`) — the only way in this
+  file to catch a read placed after a commit, since every other test bypasses
+  RLS;
 - the start response and the status endpoint carry the run;
 - clear and import refuse against a live row.
 

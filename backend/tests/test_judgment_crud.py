@@ -656,3 +656,65 @@ def test_one_users_run_is_not_another_users(pg_test_db):
         conn.commit()
     with db.user_scope(bob) as conn:
         assert db.get_stock_judgment_run(conn, bob)["stop_requested"] is False
+
+
+def test_lock_stock_judgment_run_excludes_a_second_holder_before_any_row_exists(pg_test_db):
+    """The lock has to work for a user whose first Refresh and first import
+    race each other, which is precisely when there is no run row to lock -- the
+    case a SELECT ... FOR UPDATE degrades to no lock at all."""
+    with db.get_admin_pool().connection() as conn:
+        user_id = _alice(conn)
+        conn.commit()
+
+    with db.user_scope(user_id) as holder:
+        assert db.get_stock_judgment_run(holder, user_id) is None
+        db.lock_stock_judgment_run(holder, user_id)
+
+        # A second session, while the first still holds it.
+        with db.user_scope(user_id) as contender:
+            got = contender.execute(
+                "SELECT pg_try_advisory_xact_lock(%s, %s) AS got",
+                [db.JUDGMENT_RUN_LOCK_KEY, user_id],
+            ).fetchone()["got"]
+            assert got is False
+            # A different user's lock is a different lock.
+            other = contender.execute(
+                "SELECT pg_try_advisory_xact_lock(%s, %s) AS got",
+                [db.JUDGMENT_RUN_LOCK_KEY, user_id + 1],
+            ).fetchone()["got"]
+            assert other is True
+        holder.commit()
+
+    # Released with the transaction that took it.
+    with db.user_scope(user_id) as conn:
+        got = conn.execute(
+            "SELECT pg_try_advisory_xact_lock(%s, %s) AS got",
+            [db.JUDGMENT_RUN_LOCK_KEY, user_id],
+        ).fetchone()["got"]
+        assert got is True
+
+
+def test_claim_and_checkpoint_hold_the_run_lock(pg_test_db):
+    """Both are on the write path a clear or an import has to be excluded from,
+    so both have to be holding the lock those guards take -- not merely
+    respecting the row."""
+    with db.get_admin_pool().connection() as conn:
+        user_id = _alice(conn)
+        conn.commit()
+
+    def _lock_is_held_by_someone_else():
+        with db.user_scope(user_id) as probe:
+            return probe.execute(
+                "SELECT pg_try_advisory_xact_lock(%s, %s) AS got",
+                [db.JUDGMENT_RUN_LOCK_KEY, user_id],
+            ).fetchone()["got"] is False
+
+    with db.user_scope(user_id) as conn:
+        token = db.claim_stock_judgment_run(conn, user_id)
+        assert _lock_is_held_by_someone_else()
+        conn.commit()
+
+    with db.user_scope(user_id) as conn:
+        db.record_stock_judgment_progress(conn, user_id, token, judged=40)
+        assert _lock_is_held_by_someone_else()
+        conn.commit()
