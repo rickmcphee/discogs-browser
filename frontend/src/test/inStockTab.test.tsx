@@ -805,6 +805,29 @@ describe('In Stock tab', () => {
     await waitFor(() => expect(postJudgmentStart).toHaveBeenCalled())
   })
 
+  // A rejected start used to render as nothing at all, which on a long catalog
+  // sync is indistinguishable from a button that does not work. Same lesson as
+  // reportStockSyncRejection.
+  it.each([
+    [
+      { started: false, running: false, stock_sync_running: true },
+      /In-stock sync running — recommendations refresh once it finishes\./,
+    ],
+    [
+      { started: false, running: true, stock_sync_running: false },
+      /Recommendations are already refreshing\./,
+    ],
+  ])('says why when Refresh Recommendations is turned away (%o)', async (result, message) => {
+    getUserSettings.mockResolvedValue({ ...defaultUserSettings, anthropic_api_key: 'sk-ant-test' })
+    postJudgmentStart.mockResolvedValue(result)
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: /profile/i }))
+    const description = await screen.findByText('Evaluate unprocessed Store items for recommendation, without a full catalog re-crawl.')
+    const row = description.closest('tr') as HTMLElement
+    fireEvent.click(within(row).getByText('Refresh'))
+    await waitFor(() => expect(screen.getByText(message)).toBeInTheDocument())
+  })
+
   it('disables Export until a judgment has completed', async () => {
     render(<App />)
     fireEvent.click(await screen.findByRole('button', { name: /profile/i }))

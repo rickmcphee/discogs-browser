@@ -315,7 +315,7 @@ export async function postPlexMatchStart(): Promise<{ started: boolean; running:
   return r.json()
 }
 
-export async function postJudgmentStart(): Promise<{ started: boolean; running: boolean }> {
+export async function postJudgmentStart(): Promise<{ started: boolean; running: boolean; stock_sync_running: boolean }> {
   const r = await apiFetch('/stock/judge/start', { method: 'POST' })
   if (!r.ok) throw new Error(await r.text())
   return r.json()

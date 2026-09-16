@@ -1117,7 +1117,16 @@ export default function App() {
 
   const handleRefreshRecommendations = useCallback(async () => {
     try {
-      await postJudgmentStart()
+      const result = await postJudgmentStart()
+      // Same lesson as reportStockSyncRejection above: a started=false nobody
+      // renders is a click that looks like it did nothing.
+      if (!result.started) {
+        setSyncStatus(
+          result.stock_sync_running
+            ? 'In-stock sync running — recommendations refresh once it finishes.'
+            : 'Recommendations are already refreshing.',
+        )
+      }
     } catch (e: any) {
       setSyncStatus(`Refresh recommendations failed to start: ${e.message}`)
     }

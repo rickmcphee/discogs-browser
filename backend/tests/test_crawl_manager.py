@@ -5850,7 +5850,9 @@ async def test_run_judgment_phase_broadcasts_complete_when_nothing_unjudged(pg_s
     statuses = [e["status"] for e in manager.recent_events()]
     assert statuses == ["stock_judgment_started", "stock_judgment_complete"]
     events = [e for e in manager.recent_events() if e["status"] == "stock_judgment_complete"]
-    assert events == [{"status": "stock_judgment_complete", "judged": 0, "id": 2, "user_id": alice["id"]}]
+    assert events == [
+        {"status": "stock_judgment_complete", "judged": 0, "inherited": 0, "id": 2, "user_id": alice["id"]}
+    ]
     assert any("nothing to do" in r.message for r in caplog.records)
 
 
@@ -6054,11 +6056,10 @@ async def test_judgment_running_for_one_user_does_not_block_another_users_judgme
     await asyncio.sleep(0.01)
 
 
-async def test_start_stock_sync_and_start_judgment_only_run_independently(pg_test_db, manager):
-    # Stock sync (global, no user context) and judgment (always per-user) no
-    # longer share a mutex -- unlike the old single-owner build, one user
-    # running a judgment pass must not block another crawl of the shared
-    # catalog, nor vice versa.
+async def test_start_stock_sync_runs_while_a_users_judgment_is_in_flight(pg_test_db, manager):
+    # One direction of the old mutex is gone for good: stock sync is global
+    # and judgment is per-user, so one user's judgment pass must not be able
+    # to hold up a crawl of the shared catalog.
     stock_event = asyncio.Event()
     judgment_event = asyncio.Event()
 
@@ -6072,14 +6073,41 @@ async def test_start_stock_sync_and_start_judgment_only_run_independently(pg_tes
     manager._sync_stock = _fake_sync_stock  # type: ignore
     manager._run_judgment_phase = _fake_judgment_phase  # type: ignore
 
-    await manager.start_stock_sync()
-    started = await manager.start_judgment_only(1)
-    assert started is True
+    assert await manager.start_judgment_only(1) is True
+    result = await manager.start_stock_sync()
+    assert result["started"] is True
     assert manager.stock_sync_running is True
     assert manager.judgment_running(1) is True
 
     stock_event.set()
     judgment_event.set()
+    await asyncio.sleep(0.01)
+
+
+async def test_start_judgment_only_is_refused_while_a_stock_sync_runs(pg_test_db, manager):
+    # The other direction is a guard, not a mutex, and it is about money: a
+    # sync replaces each crawler's whole snapshot, so a run started against
+    # one in progress pays to judge items that are about to be deleted.
+    stock_event = asyncio.Event()
+
+    async def _fake_sync_stock(crawler_id=None, lock_conn=None):
+        await stock_event.wait()
+        lock_conn.close()
+
+    async def _fake_judgment_phase(user_id):
+        pass
+
+    manager._sync_stock = _fake_sync_stock  # type: ignore
+    manager._run_judgment_phase = _fake_judgment_phase  # type: ignore
+
+    await manager.start_stock_sync()
+    assert await manager.start_judgment_only(1) is False
+    assert manager.judgment_running(1) is False
+
+    stock_event.set()
+    await asyncio.sleep(0.01)
+    # And starts normally once the sync is out of the way.
+    assert await manager.start_judgment_only(1) is True
     await asyncio.sleep(0.01)
 
 
@@ -7016,3 +7044,80 @@ async def test_sync_stock_enqueues_only_wanted_items_under_library_only(pg_schem
         assert conn.execute("SELECT COUNT(*) FROM stock_items").fetchone()["count"] == 2
         keys = [r["item_key"] for r in conn.execute("SELECT item_key FROM crawl_queue").fetchall()]
     assert keys == [db.compute_item_key("Wanted Artist", "Wanted Title", "https://x/1")]
+
+
+async def test_judgment_phase_bills_once_per_record_and_inherits_the_rest(pg_schema):
+    # The scheduled-crawl case end to end: one record, three listings -- two
+    # shops and a colour variant. The model must be asked once, and the other
+    # two listings must come out judged without a second call.
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute("UPDATE users SET anthropic_api_key = 'sk-alice' WHERE id = %s", [alice["id"]])
+        for name in ("Shop One", "Shop Two"):
+            db.register_crawler(conn, name, f"/{name}.py", crawler_type="catalog")
+        one = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Shop One'").fetchone()["id"]
+        two = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Shop Two'").fetchone()["id"]
+        db.replace_stock_items(conn, one, [
+            {"artist": "Artist A", "title": "Album A", "url": "https://one/a"},
+            {"artist": "Artist A", "title": "Album A (Red Vinyl)", "url": "https://one/red"},
+        ])
+        db.replace_stock_items(conn, two, [
+            {"artist": "Artist A", "title": "Album A", "url": "https://two/a"},
+        ])
+        conn.commit()
+
+    def _judge(client, taste, batch, label):
+        assert len(batch) == 1, "one record, so one item on the wire"
+        return [{"item_key": batch[0]["item_key"], "recommended": True, "reason": "fits"}]
+
+    events = []
+    manager = CrawlManager()
+    manager._broadcast = AsyncMock(side_effect=lambda e: events.append(e))
+    with patch("recommendations.judge_batch", side_effect=_judge) as mock_judge:
+        await manager._run_judgment_phase(alice["id"])
+
+    assert mock_judge.call_count == 1
+    complete = [e for e in events if e["status"] == "stock_judgment_complete"][0]
+    assert complete["judged"] == 1
+    assert complete["inherited"] == 2
+
+    with db.user_scope(alice["id"]) as conn:
+        rows = db.get_recommended_stock_items(conn, alice["id"])
+        assert {r["url"] for r in rows} == {"https://one/a", "https://one/red", "https://two/a"}
+        assert {r["reason"] for r in rows} == {"fits"}
+        assert db.count_unjudged_stock_items(conn, alice["id"]) == 0
+
+
+async def test_a_second_judgment_run_over_an_unchanged_catalog_calls_nothing(pg_schema):
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute("UPDATE users SET anthropic_api_key = 'sk-alice' WHERE id = %s", [alice["id"]])
+        db.register_crawler(conn, "Shop", "/s.py", crawler_type="catalog")
+        cid = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Shop'").fetchone()["id"]
+        db.replace_stock_items(conn, cid, [
+            {"artist": "Artist A", "title": "Album A", "url": "https://s/a", "price": 10.0},
+        ])
+        conn.commit()
+
+    def _judge(client, taste, batch, label):
+        return [{"item_key": batch[0]["item_key"], "recommended": True, "reason": "fits"}]
+
+    manager = CrawlManager()
+    manager._broadcast = AsyncMock()
+    with patch("recommendations.judge_batch", side_effect=_judge) as mock_judge:
+        await manager._run_judgment_phase(alice["id"])
+        assert mock_judge.call_count == 1
+
+        # The scheduled crawl runs again: same record, new price, re-slugged.
+        with db.get_admin_pool().connection() as conn:
+            db.replace_stock_items(conn, cid, [
+                {"artist": "Artist A", "title": "Album A", "url": "https://s/a-2026", "price": 8.0},
+            ])
+            conn.commit()
+
+        await manager._run_judgment_phase(alice["id"])
+        assert mock_judge.call_count == 1, "a repriced, re-slugged record is not a new question"
+
+    with db.user_scope(alice["id"]) as conn:
+        rows = db.get_recommended_stock_items(conn, alice["id"])
+        assert [(r["url"], r["price"]) for r in rows] == [("https://s/a-2026", 8.0)]
