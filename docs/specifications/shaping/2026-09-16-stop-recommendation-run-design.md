@@ -202,12 +202,26 @@ batch boundary — the ownership question for the same reason the sync asks it
 replacement, not just stop writing bookkeeping), the stop flag because that is
 the whole feature.
 
-Judgments are never discarded on either answer, committed or in hand. Unlike
-the sync — whose loss-of-claim path exists partly to keep a dispossessed worker
-out of `delete_orphaned_releases` — a judgment write is an idempotent upsert of
-something already paid for, and dropping it would only mean paying again. So
-the batch in hand is written even when the checkpoint that shares its
-transaction says the run has been taken over.
+Judgments already committed are never rolled back on either answer. The batch
+still *in hand* when the checkpoint reports the claim gone is a harder call,
+and it is dropped — which reverses an earlier version of this design, for a
+reason worth writing down.
+
+The argument for keeping it is that a judgment write is an idempotent upsert of
+something already paid for, so discarding it only means paying again. The
+argument that beats it is that clearing and importing judgments guard on this
+run, and the lock below orders a batch against a clear but cannot order it
+against one that already finished: a clear runs to completion while the worker
+sits inside `judge_batch`, long before that batch's transaction opens. A batch
+written anyway would quietly repopulate rows the user asked to clear, or
+overwrite verdicts they had just imported — so those guards would be promising
+an exclusion they do not deliver.
+
+What dropping it costs is bounded and mostly notional. A run that was taken
+over has a replacement which already selected these same still-unjudged items,
+so it is paying for them either way and nothing extra is lost. Only a run that
+went stale with *no* replacement loses anything real, and then only one batch,
+and only if a single Anthropic call outlasted `JUDGMENT_RUN_STALE_MINUTES`.
 
 The checkpoint goes **first** within that transaction, though, ahead of the
 upsert, and takes a per-user advisory lock (`pg_advisory_xact_lock`) as its own
@@ -223,11 +237,15 @@ happen anyway, a moment later.
 An advisory lock rather than `SELECT … FOR UPDATE` on the run row, because the
 row is the one thing that need not exist. Before a user's first run there is
 nothing to lock, so a row lock degrades silently to no lock at all — in exactly
-the case where a first Refresh races a first import. It also covers a *stale*
-worker, whose checkpoint matches no row and would take no row lock, but which
-still has a batch in hand: that is what stops its last write landing just after
-a clear. Every holder takes the lock before touching the row, so the lock order
-is the same everywhere and there is nothing to deadlock against.
+the case where a first Refresh races a first import. Every holder takes the
+lock before touching the row, so the lock order is the same everywhere and
+there is nothing to deadlock against.
+
+What the lock does *not* do is order a batch against a clear that has already
+finished — it excludes concurrent transactions, and a clear that ran while the
+worker was inside `judge_batch` was never concurrent with the batch's
+transaction at all. That gap is closed by dropping a batch whose claim is gone,
+above, not by the lock.
 
 A run that finds it has been taken over stops **silently**: no terminal event,
 and no progress line either. The row and the narration both belong to the
@@ -385,8 +403,9 @@ progress line for the poll to have to clear.
 - a stop flag set before the first batch stops the run without an Anthropic
   call;
 - a run that loses its claim mid-flight stops without finishing the remaining
-  batches, says nothing at all — progress included — and still commits the
-  batch it had in hand;
+  batches, says nothing at all — progress included — and drops the batch it had
+  in hand rather than writing it over a clear or an import that may have landed
+  while it was in the Anthropic call;
 - `start_judgment_only` leaves a stalled local task running rather than
   cancelling it when it takes its claim over;
 - a completed run closes its row `complete`; a failed one closes it `error`

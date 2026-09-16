@@ -10,8 +10,12 @@ guard described below no longer reads
 run's writes to `stock_item_judgments`, and with two Machines behind one
 hostname that run is on whichever one served its start, invisible to this
 process's task map. It also moved: it now runs inside the same transaction as
-the import itself, taking the run row `FOR UPDATE`, rather than ahead of the
-upload being read. Checked before the file was even parsed, it answered a
+the import itself, taking a per-user advisory lock
+(`db.lock_stock_judgment_run`) that a run's claim and its batch checkpoint take
+too, rather than ahead of the upload being read. An advisory lock rather than a
+lock on the run row, because before a user's first run there is no row, and a
+row lock there is silently no lock at all — which is exactly a first Refresh
+racing a first import. Checked before the file was even parsed, it answered a
 question about a moment that had passed by the time the rows landed, and a run
 claimed during the parse wrote concurrently anyway. One visible consequence: a
 malformed file is now rejected on its own merits *before* the busy check rather

@@ -275,6 +275,34 @@ describe('stopping a recommendation run from the profile page', () => {
     await waitFor(() => expect(getStock.mock.calls.length).toBeGreaterThan(beforeRun))
   })
 
+  it('ignores a start response whose snapshot predates a stop click', async () => {
+    // The POST is still in flight when the worker announces the run and the
+    // user clicks Stop, so its reply describes a moment before both. Letting
+    // it write would turn the disabled "Stopping…" back into "Stop".
+    let releaseStart: (v: unknown) => void = () => {}
+    postJudgmentStart.mockReturnValue(new Promise((resolve) => {
+      releaseStart = () => resolve({ started: true, running: true, run: run({ judged: 0 }) })
+    }))
+    getJudgmentStatus.mockResolvedValue({ any_judged: false, run: null })
+
+    const row = await openProfile()
+    fireEvent.click(within(row).getByRole('button'))
+    await waitFor(() => expect(postJudgmentStart).toHaveBeenCalled())
+
+    // The run announces itself, and the user stops it, both before the start
+    // reply lands.
+    await act(async () => {
+      SilentEventSource.instances[0].emit({ status: 'stock_judgment_started', id: 4 })
+    })
+    getJudgmentStatus.mockResolvedValue({ any_judged: true, run: run({ stop_requested: true }) })
+    postJudgmentStop.mockResolvedValue({ stopping: true, run: run({ stop_requested: true }) })
+    fireEvent.click(within(row).getByRole('button'))
+    await waitFor(() => expect(within(row).getByRole('button')).toHaveTextContent('Stopping…'))
+
+    await act(async () => { releaseStart(undefined) })
+    expect(within(row).getByRole('button')).toHaveTextContent('Stopping…')
+  })
+
   it('reports a run that had already finished rather than failing the click', async () => {
     getJudgmentStatus.mockResolvedValue({ any_judged: true, run: run() })
     postJudgmentStop.mockResolvedValue({

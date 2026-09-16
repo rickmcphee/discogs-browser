@@ -5751,14 +5751,54 @@ async def test_judgment_phase_stops_when_its_claim_is_taken_over(pg_schema):
 
     with db.user_scope(user_id) as conn:
         run = db.get_stock_judgment_run(conn, user_id)
-        # The dispossessed worker's own judgments are still committed: they are
-        # paid for, and an upsert of them is harmless to the run that replaced it.
+        # The dispossessed worker's batch is dropped rather than written. The
+        # run lock orders a batch against a concurrent clear, but a clear that
+        # ran while this worker sat inside judge_batch was never concurrent
+        # with the batch's transaction at all -- so writing anyway would
+        # repopulate rows the user asked to clear. Its replacement selected
+        # these same still-unjudged items, so nothing extra is paid for.
         kept = conn.execute(
             "SELECT COUNT(*) AS n FROM stock_item_judgments WHERE user_id = %s", [user_id]
         ).fetchone()["n"]
     assert run["status"] == "running"
     assert run["run_token"] == "somebody-else"
-    assert kept == recommendations.BATCH_SIZE
+    assert kept == 0
+
+
+async def test_judgment_phase_does_not_write_over_a_clear_that_landed_mid_batch(pg_schema):
+    """The case the dropped batch exists for, end to end. A clear runs while
+    the worker is inside judge_batch -- so it is not concurrent with the
+    batch's transaction and the run lock cannot order them -- and the batch
+    that lands afterwards must not bring the cleared judgments back."""
+    user_id = _judging_user_with_items(recommendations.BATCH_SIZE * 2, discogs_user_id=35)
+    with db.user_scope(user_id) as conn:
+        run_token = db.claim_stock_judgment_run(conn, user_id)
+        conn.commit()
+
+    def _judge(client, taste, batch, label=""):
+        # Mid-call: the run goes stale, so the clear's guard sees an idle user
+        # and goes ahead -- exactly the window this is about.
+        with db.get_admin_pool().connection() as conn:
+            conn.execute(
+                "UPDATE stock_judgment_runs SET heartbeat_at = clock_timestamp() "
+                f"- INTERVAL '{db.JUDGMENT_RUN_STALE_MINUTES + 1} minutes' WHERE user_id = %s",
+                [user_id],
+            )
+            conn.commit()
+        with db.user_scope(user_id) as conn:
+            db.clear_stock_judgments(conn, user_id)
+            conn.commit()
+        return [{"item_key": item["item_key"], "recommended": True, "reason": "judged"} for item in batch]
+
+    manager = CrawlManager()
+    with patch("recommendations.judge_batch", side_effect=_judge):
+        await manager._run_judgment_phase(user_id, run_token)
+
+    with db.user_scope(user_id) as conn:
+        remaining = conn.execute(
+            "SELECT COUNT(*) AS n FROM stock_item_judgments WHERE user_id = %s", [user_id]
+        ).fetchone()["n"]
+    assert remaining == 0
 
 
 async def test_judgment_phase_closes_its_run_row_on_completion_and_on_failure(pg_schema):

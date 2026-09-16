@@ -1246,12 +1246,18 @@ export default function App() {
   )
 
   const handleRefreshRecommendations = useCallback(async () => {
+    // Claimed before the request goes out, not after it comes back. The worker
+    // can broadcast stock_judgment_started, and the user can click Stop, while
+    // this POST is still in flight -- and this reply's snapshot predates both,
+    // so advancing the sequence on arrival would make a stale answer the
+    // newest writer and turn a disabled "Stopping…" back into "Stop".
+    const seq = ++latestJudgmentRunSeq.current
     try {
       const r = await postJudgmentStart()
+      if (seq !== latestJudgmentRunSeq.current) return
       // The reply carries the row, so the button flips to Stop on the response
       // alone. Waiting for stock_judgment_started would leave it reading
       // Refresh for the whole of a run whose events went to the other Machine.
-      latestJudgmentRunSeq.current++
       setRecommendationRunning(r.running)
       setRecommendationStopping(Boolean(r.run?.running && r.run.stop_requested))
       // A refused start used to pass in silence, which is the same
@@ -1267,13 +1273,15 @@ export default function App() {
   const handleStopRecommendations = useCallback(async () => {
     // Optimistic, and corrected by the reply a moment later: the click has to
     // change the button now, or it reads as ignored for as long as the request
-    // takes. Bumped first so a poll already in flight -- which read the row
-    // before the flag was written, and would answer "not stopping" -- cannot
-    // land on top of it and flick the button back to Stop.
-    latestJudgmentRunSeq.current++
+    // takes. Claimed first so anything already in flight -- a poll that read
+    // the row before the flag was written, a start response whose snapshot
+    // predates this click -- cannot land on top of it and flick the button
+    // back to Stop, and claimed again on arrival for the same reason.
+    const seq = ++latestJudgmentRunSeq.current
     setRecommendationStopping(true)
     try {
       const r = await postJudgmentStop()
+      if (seq !== latestJudgmentRunSeq.current) return
       latestJudgmentRunSeq.current++
       setRecommendationRunning(Boolean(r.run?.running))
       setRecommendationStopping(Boolean(r.run?.running && r.run.stop_requested))
@@ -1283,6 +1291,7 @@ export default function App() {
           : 'No recommendation run to stop — it had already finished.',
       )
     } catch (e: any) {
+      if (seq !== latestJudgmentRunSeq.current) return
       setRecommendationStopping(false)
       setSyncStatus(`Stop recommendations failed: ${e.message}`)
     }

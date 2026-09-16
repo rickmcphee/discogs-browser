@@ -2107,25 +2107,39 @@ class CrawlManager:
                     recommendations.judge_batch, client, taste_listing, batch, username
                 )
                 recommended_in_batch = 0
-                # The checkpoint rides the batch's own transaction, and goes
-                # first within it: its UPDATE takes the run row's lock, which is
-                # then held until this commits, so a clear or an import -- which
-                # take the same lock through _judgment_running -- wait for this
-                # batch instead of landing between the claim check and the write
-                # they are guarding against. It is also written when the batch
-                # produced nothing, because the heartbeat is what keeps the claim
-                # alive and the stop flag is what the next batch is waiting on.
+                # The checkpoint rides the batch's own transaction and goes
+                # first within it, taking the per-user run lock before anything
+                # is written, so a clear or an import -- which take the same
+                # lock through _judgment_running -- cannot land between this
+                # run's claim check and its write. It is also written when the
+                # batch produced nothing, because the heartbeat is what keeps
+                # the claim alive and the stop flag is what the next batch is
+                # waiting on.
+                #
+                # The write is conditional on that claim still holding, and
+                # this is the one place the design pays real money to be
+                # correct. Holding the lock orders this batch against a clear
+                # but cannot order it against one that already finished: a
+                # clear runs to completion while this worker sits inside
+                # judge_batch, long before this transaction opens. Writing
+                # anyway would then quietly repopulate rows the user asked to
+                # clear, or overwrite verdicts they just imported -- and those
+                # two guards would be promising an exclusion they do not
+                # deliver. So a batch whose claim is gone is dropped.
+                #
+                # What that costs is bounded and mostly notional. A run that
+                # was taken over has a replacement which already selected these
+                # same still-unjudged items, so it is paying for them either
+                # way and nothing extra is lost. Only a run that went stale
+                # with no replacement loses anything real, and only then one
+                # batch -- which requires a single Anthropic call to have
+                # outlasted JUDGMENT_RUN_STALE_MINUTES.
                 with user_scope(user_id) as conn:
                     progress = record_stock_judgment_progress(
                         conn, user_id, run_token, judged=judged + len(results)
                     )
-                    if results:
-                        # Written even when the checkpoint says this run was
-                        # taken over. These judgments are already paid for and
-                        # the upsert is idempotent, so keeping them costs
-                        # nothing and discarding them would make the next run
-                        # buy the same items again -- the one thing this whole
-                        # design is arranged to avoid.
+                    still_ours = progress is not None or run_token is None
+                    if results and still_ours:
                         upsert_stock_judgments(conn, user_id, results)
                         judged += len(results)
                         recommended_in_batch = sum(1 for r in results if r["recommended"])
