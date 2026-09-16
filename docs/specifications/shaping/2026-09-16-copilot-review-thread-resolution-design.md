@@ -190,6 +190,23 @@ wastes a session's time if it is not written down.
   `mcp__github__resolve_review_thread` takes that `id` directly. No GraphQL query
   needs writing.
 
+The *reviews* need the same treatment as the threads, and it is easy to leave
+half-done. `CLAUDE.md`'s review poll and its instruction to read every review
+body are written in `gh` terms, while the rule beside them records that the
+remote and web sessions have no `gh` — so the sessions most likely to be doing
+this work were told to run a gate they cannot run. Both halves have an MCP path:
+`method=get_reviews` returns the review list with bodies, which is where
+suppressed findings live, and `method=get_review_comments` returns the threads.
+
+Paginate both, and expect them to disagree about how. `get_reviews` is
+page-based (`page`/`perPage`) and returns the pull request's full history
+oldest-first, so the newest review is on the *last* page — a first-page read
+hands back the oldest rounds and looks like an answer. `get_review_comments` is
+cursor-based, reporting `pageInfo.hasNextPage` and an `endCursor` to pass back
+as `after`. Two paging models on one tool is not something a reader should have
+to discover by getting a wrong answer first, which is the only reason it is
+written down here.
+
 Identifying which threads are Copilot's is its own trap, and one this repository
 has already been bitten by once.
 [`2026-08-29-claude-on-pull-requests-design.md`](2026-08-29-claude-on-pull-requests-design.md)
