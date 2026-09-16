@@ -193,6 +193,63 @@ def test_the_pressing_key_still_ignores_word_order():
     assert title_key("Love Hate") == title_key("Hate Love")
 
 
+@pytest.mark.parametrize("a,b", [
+    ("Record One", "Album One"),
+    ("The Record", "The Album"),
+    ("New Order", "Order"),
+    ("Version Two", "Two"),
+    ("Colour By Numbers", "By Numbers"),
+])
+def test_a_noise_word_a_record_is_named_with_only_counts_as_noise_behind_a_fence(a, b):
+    """Some of the noise list is ordinary naming vocabulary, and deleting it
+    wherever it appears merged records that are not the same record: "Record
+    One" and "Album One" both came down to "one". Same artist, two albums, one
+    inheriting the other's verdict and a reason written about the other -- the
+    false merge this module errs away from. (Copilot, PR #368, round 22.)
+    """
+    assert record_key(a, "Artist") != record_key(b, "Artist")
+
+
+@pytest.mark.parametrize("decorated,plain", [
+    ("Easter Everywhere LP", "Easter Everywhere"),
+    ("Embrace The Black Light LP", "Embrace The Black Light"),
+    ("Hungry Ghost 10 Year Anniversary LP", "Hungry Ghost 10 Year Anniversary"),
+    ("Purple Rain Vinyl", "Purple Rain"),
+])
+def test_the_format_words_only_a_seller_writes_still_fold_away_unfenced(decorated, plain):
+    """What the rule above must not cost, and the reason it is a short list
+    rather than the whole one. These spellings are taken from this repo's
+    store fixtures, where an unfenced "LP" is the common case: fence-only for
+    every noise word would bill each of these apart from the plainly written
+    record, which is most of the saving.
+    """
+    assert record_key(decorated, "Artist") == record_key(plain, "Artist")
+
+
+@pytest.mark.parametrize("fenced", ["Kid A (New)", "Kid A (Record)", "Kid A - New Pressing"])
+def test_a_nameable_word_behind_a_fence_is_the_seller_talking_after_all(fenced):
+    """The fence is what separates the two readings: bracketed or behind a
+    trailing dash, "New" is a condition and not part of the name."""
+    assert record_key(fenced, "Artist") == record_key("Kid A", "Artist")
+
+
+def test_a_title_that_is_all_noise_keeps_its_spelling_even_when_some_is_nameable():
+    """Sparing "record" left `12" Record Sleeve` as the lone token "record" --
+    non-empty, so the all-noise fallback stood aside, and the size that was
+    the only thing telling two accessories apart went with the phrase fold.
+    A survivor that is itself noise vocabulary has identified nothing.
+    """
+    assert record_key('12" Record Sleeve') != record_key('7" Record Sleeve')
+    assert record_key('12" Record Sleeve') != ""
+
+
+def test_the_pressing_key_still_drops_every_noise_word():
+    """The other half of the split: title_key is untouched, so the Cheapest
+    filter, its index and every stored title_key keep their current values."""
+    assert title_key("Record One") == title_key("Album One") == "one"
+    assert title_key("Easter Everywhere LP") == title_key("Easter Everywhere")
+
+
 def test_a_fenced_segment_with_real_words_in_it_is_kept():
     # "Live at Leeds" is not a pressing variant, however it is punctuated.
     assert record_key("Something (Live at Leeds)") != record_key("Something")

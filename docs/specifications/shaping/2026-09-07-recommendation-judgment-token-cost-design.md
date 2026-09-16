@@ -189,8 +189,9 @@ Both are real and neither belongs in this change:
   correction worth recording. Fanning a verdict out over `(artist, title)`
   would not have been enough: stores word one record differently
   ("Kid A (Black Vinyl)" vs "Kid A"), so the fan-out needs a *fold* of the
-  title, not the title. It reuses `title_key.py` — one step coarser, as
-  `record_key` — rather than a raw pair. The interaction with
+  title, not the title. It reuses `title_key.py`, as `record_key` — coarser
+  than `title_key` on the fenced variant words and finer on word order and
+  on the noise words a record can be named with — rather than a raw pair. The interaction with
   `_not_owned_clause` this section flagged turned out to be the easy half:
   propagation simply runs under the same predicate the billable set does.
 

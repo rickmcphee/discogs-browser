@@ -60,6 +60,29 @@ _NOISE_WORDS = frozenset("""
     gatefold sleeve jacket and
 """.split())
 
+# The noise words a record can be *named* with, which therefore only read as
+# noise inside a fence. The rest of _NOISE_WORDS is vocabulary only a seller
+# writes -- "lp", "vinyl", "gatefold", "reissue" -- and stays droppable
+# wherever it appears, which is where nearly all of the saving is: unfenced
+# "LP" runs right through this repo's store fixtures, and folding it away is
+# what lets one shop's "Easter Everywhere LP" bill as the same record as
+# another's "Easter Everywhere".
+#
+# These are different, and the same fixtures show it: "record" appears
+# unfenced there too, and every time it is naming the product ("12\" Record
+# Sleeve", "Vinyl Styl Record Cleaning Fluid") rather than describing it.
+# Dropped unfenced, "Record One" and "Album One" both key as "one" -- two
+# albums by one artist merged, one inheriting the other's verdict and a reason
+# written about the other. That is the false merge this module errs away from,
+# and the reason these have to earn their removal by sitting behind a fence,
+# where "(New)" or "(Record)" really is the seller talking and not the name.
+# (Copilot, PR #368, round 22.)
+_NAMEABLE_NOISE = frozenset("""
+    record records album new version colour color coloured colored
+""".split())
+
+_RECORD_NOISE_WORDS = _NOISE_WORDS - _NAMEABLE_NOISE
+
 def _words(text: str) -> list:
     """Runs of word characters in any script, with the combining marks that
     belong to them.
@@ -122,22 +145,26 @@ def _artist_forms(artist: str) -> list:
     return sorted(forms, key=len, reverse=True)
 
 
-def title_key(title: str, artist: Optional[str] = None, ordered: bool = False) -> str:
+def title_key(title: str, artist: Optional[str] = None, for_record: bool = False) -> str:
     """The comparison key for `title`: never empty for a non-empty title.
 
-    `ordered` keeps the words in the order the title wrote them, and keeps a
-    repeat as a repeat. Only `record_key` passes it, and the difference is the
-    difference between the two keys' jobs. Sorting into a set makes the fold
-    forgiving of word order, which is what a *pressing* key wants: one store's
-    "Kid A Remastered" and another's "Remastered Kid A" are the same thing to
-    the Cheapest filter, and mis-grouping two rows there shows the wrong
-    price. A *record* key cannot afford that forgiveness, because the set also
-    makes "Love Hate" and "Hate Love" one key, and "Love Love" and "Love" one
-    key -- distinct albums by one artist, merged, with one inheriting the
-    other's verdict and a reason written about it. That is the false merge
-    this whole design errs away from, so record_key pays the other price: two
-    stores wording one record in different word orders bill it twice.
-    (Copilot, PR #368, round 21.)
+    `for_record` is the one switch between the two keys' jobs, and it makes
+    two differences that have the same cause: a pressing key can be forgiving
+    where a record key cannot, because a wrong answer costs a filter one row
+    and costs a judgment the wrong verdict on the wrong album.
+
+    It keeps the words in the order the title wrote them, and keeps a repeat
+    as a repeat. Sorting into a set makes the fold forgiving of word order,
+    which is what a *pressing* key wants: one store's "Kid A Remastered" and
+    another's "Remastered Kid A" are the same thing to the Cheapest filter,
+    and mis-grouping two rows there shows the wrong price. The set also makes
+    "Love Hate" and "Hate Love" one key, and "Love Love" and "Love" one key --
+    distinct albums by one artist, merged, with one inheriting the other's
+    verdict and a reason written about it. (Copilot, PR #368, round 21.)
+
+    It also spares the noise words a record can be *named* with, leaving them
+    for the fence rule in `record_key` -- see `_NAMEABLE_NOISE`, which is why
+    "Record One" and "Album One" stop being one key. (Round 22.)
 
     `artist`, when given, is stripped from the front of the title if a site
     wrote both in one name ("Aphex Twin - Selected Ambient Works"): a
@@ -152,6 +179,13 @@ def title_key(title: str, artist: Optional[str] = None, ordered: bool = False) -
     The fallback reads the words as they stood *before* the phrase removal,
     since that is what emptied a title like "180g" or "7 EP" in the first
     place.
+
+    Sparing the nameable words widens what counts as "entirely noise", and it
+    has to: with "record" spared, `12" Record Sleeve` came down to the single
+    token "record" -- non-empty, so the fallback stood aside -- and collided
+    with `7" Record Sleeve`, which is the same accessory in another size and
+    the same false merge one paragraph up. A survivor that is itself noise
+    vocabulary has not identified anything, so the raw spelling still wins.
     """
     folded = _fold(title)
     if artist:
@@ -164,10 +198,11 @@ def title_key(title: str, artist: Optional[str] = None, ordered: bool = False) -
     words = _words(folded)
     for pattern in _PHRASE_NOISE:
         folded = pattern.sub(" ", folded)
-    tokens = [t for t in _words(folded) if t not in _NOISE_WORDS]
-    if not tokens:
+    noise = _RECORD_NOISE_WORDS if for_record else _NOISE_WORDS
+    tokens = [t for t in _words(folded) if t not in noise]
+    if not tokens or all(t in _NAMEABLE_NOISE for t in tokens):
         tokens = words or [folded.strip() or title.strip()]
-    if ordered:
+    if for_record:
         return " ".join(tokens)
     return " ".join(sorted(set(tokens)))
 
@@ -364,13 +399,13 @@ def record_key(title: str, artist: Optional[str] = None) -> str:
         # unsplit and let title_key strip it: the cost is one variant not
         # folded away, which bills a record twice at worst -- the direction
         # this module errs in on purpose.
-        return title_key(stripped if stripped.strip() else title, artist, ordered=True)
+        return title_key(stripped if stripped.strip() else title, artist, for_record=True)
     parts = _SEGMENT_SPLIT.split(stripped)
     while len(parts) > 1 and _is_variant_segment(parts[-1]):
         parts.pop()
     rebuilt = " - ".join(p for p in parts if p.strip()).strip()
     if not rebuilt:
-        return title_key(title, artist, ordered=True)
+        return title_key(title, artist, for_record=True)
     # The artist is already off the front when prefix is truthy, so title_key
     # finds nothing to strip and keys the remainder as the bare title it is.
-    return title_key(rebuilt, artist, ordered=True)
+    return title_key(rebuilt, artist, for_record=True)

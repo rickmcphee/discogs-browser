@@ -168,6 +168,44 @@ about it. So `record_key` pays the other price instead — two stores wording
 one record in different word orders bill it twice, which is the split
 direction. (Raised by Copilot on PR #368, round 21.)
 
+The fence rule governs the *variant* words, and for a while it did not govern
+the noise list `title_key` shares with it — those came out wherever they
+appeared, and some of them are ordinary naming vocabulary. "Record One" and
+"Album One" both keyed as "one": two albums by one artist, merged, one handed
+the other's verdict and a reason written about the other. The same false merge
+as above, reached through the other word list. (Raised by Copilot on PR #368,
+round 22.)
+
+The obvious repair — fence the noise list too, exactly as the variant list is
+fenced — is the wrong one, and this repo's own store fixtures say why. Folding
+those pages down to their product titles and asking which noise words appear
+*outside* a bracket or trailing segment separates the list cleanly in two.
+`lp` is the common unfenced word, running right through those titles
+("Easter Everywhere LP", "Embrace The Black Light LP (Onyx Marble Vinyl)"),
+with `vinyl` behind it; fencing those would bill each of those listings apart from
+the same record written plainly, which is most of what this design saves.
+`record` also appears unfenced there — and every time it is *naming*
+the product ("12\" Record Sleeve", "Vinyl Styl Record Cleaning Fluid") rather
+than describing it. Sellers write the format words unfenced and the naming
+words only inside a fence, so the split is between the words, not between the
+positions.
+
+So a short list of noise words — `record`, `records`, `album`, `new`,
+`version`, `colour` and its spellings — is spared unfenced and left to the
+fence rule, and the rest of the noise list keeps coming out wherever it
+appears. The test is whether a record can plausibly be *named* with the word:
+`lp`, `gatefold` and `reissue` are vocabulary only a seller writes, while
+"record" and "album" are interchangeable names for the thing itself, which is
+what makes them uniquely prone to this merge. Behind a fence they read as the
+seller again, so "Kid A (New)" still folds onto "Kid A".
+
+Sparing them widened what counts as an all-noise title, and it had to. With
+`record` spared, `12" Record Sleeve` came down to the lone token "record" —
+non-empty, so the never-empty fallback stood aside — and collided with `7"
+Record Sleeve`, the same accessory in another size: a new false merge intro-
+duced by the fix for one. A survivor that is itself noise vocabulary has not
+identified anything, so the raw spelling still wins.
+
 `record_key` delegates its folding to `title_key` rather than post-filtering
 its output, because the punctuation that marks a fence is exactly what a
 token set has already discarded. It inherits the never-empty guarantee by
@@ -667,6 +705,13 @@ not worth folding into this one.
   word (`Numbered 123`, `2024 Reissue`, `2LP`) still folds away.
 - Word order and repeats separate records: `Love Hate`/`Hate Love` and
   `Love Love`/`Love` key apart, while the pressing key still groups them
+- A noise word a record can be named with is kept outside a fence and dropped
+  inside one: `Record One`/`Album One`, `The Record`/`The Album`, `New
+  Order`/`Order` and `Colour By Numbers`/`By Numbers` key apart, while `Kid A
+  (New)` still folds onto `Kid A` — and the format words a seller writes still
+  fold unfenced, so `Easter Everywhere LP` keys as `Easter Everywhere`. A
+  title left holding only noise vocabulary keeps its raw spelling, so `12"
+  Record Sleeve` and `7" Record Sleeve` stay apart.
 - The sweep's cost tracks the live catalog and not the identities table,
   which nothing prunes
 - A comma, a slash and a pipe are not fences: `Red, White & Blue`, `Ready,
