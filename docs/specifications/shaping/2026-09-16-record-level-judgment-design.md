@@ -400,10 +400,12 @@ It is called from `_run_judgment_phase`:
   the next. That is also why it needs no atomicity with the queries after it:
   the crawl worker pool writes stock rows continuously and takes no part in
   the stock-sync lock, so an old Machine can add an unkeyed row a moment after
-  the sweep commits, and that row simply sits out this run. It holds only
-  because the sweep keys a stock row and reconciles its identity in one
-  transaction; see the backfill section above. Normally a no-op, at the cost
-  recorded there.
+  the sweep commits, and that row simply sits out this run. What it does *not*
+  rest on is the sweep being atomic, because it is not: it commits between its
+  two passes, so a crash or a writer in between leaves an identity for the
+  next sweep. What it rests on is the sweep never committing a pair that is
+  equal and wrong, which the conditional writes give it — see the backfill
+  section above. Normally a no-op, at the cost recorded there.
 - **Before** selecting the unjudged set — but not to keep anything out of it.
   The billable set is grouped by record and anti-joined on the record, so a
   listing whose record already holds a verdict is excluded whether its own

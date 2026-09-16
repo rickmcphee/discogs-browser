@@ -2223,17 +2223,31 @@ class CrawlManager:
             # would leave every later statement on that connection with no RLS
             # identity at all.
             with user_scope(user_id) as conn:
-                inherited = propagate_stock_judgments(conn, user_id)
-                # Counted in the same transaction as the rows it counts, not
-                # at the pre-flight checkpoint below. Everything between here
-                # and there can raise -- the billable set is two queries and a
-                # taste read -- and the error close carries no count, so the
-                # row would keep saying 0 with these judgments committed. A
-                # client polling from the other Machine has only the row.
-                record_stock_judgment_progress(
-                    conn, user_id, run_token, inherited=inherited
-                )
+                # The claim first, before anything is written, exactly as each
+                # batch does it below. propagate_stock_judgments inserts into
+                # stock_item_judgments, and the lock this takes is what orders
+                # that write against a clear or an import. The sweep above can
+                # run for the best part of a second, and a run taken over or
+                # expired during it would otherwise recreate rows a Clear had
+                # just removed.
+                progress = record_stock_judgment_progress(conn, user_id, run_token)
+                if progress is not None or run_token is None:
+                    inherited = propagate_stock_judgments(conn, user_id)
+                    # Counted in the same transaction as the rows it counts,
+                    # not at the pre-flight checkpoint below. Everything
+                    # between here and there can raise -- the billable set is
+                    # two queries and a taste read -- and the error close
+                    # carries no count, so the row would keep saying 0 with
+                    # these judgments committed. A client polling from the
+                    # other Machine has only the row.
+                    record_stock_judgment_progress(
+                        conn, user_id, run_token, inherited=inherited
+                    )
+                else:
+                    inherited = 0
                 conn.commit()
+            if taken_over(progress):
+                return
             with user_scope(user_id) as conn:
                 total_unjudged = count_unjudged_stock_items(conn, user_id)
                 unjudged = get_unjudged_stock_items(conn, user_id, limit)

@@ -6025,6 +6025,78 @@ async def test_a_run_that_fails_before_its_counts_still_records_what_it_inherite
     assert run["inherited"] == written - 1 > 0
 
 
+async def test_a_dispossessed_run_does_not_propagate(pg_schema):
+    """The first fan-out is a write to stock_item_judgments, so it has to
+    prove the claim first, exactly as each batch does.
+
+    The sweep before it can run for the best part of a second on a real
+    catalog, which is long enough for this run to be taken over. Writing after
+    that means writing alongside the replacement -- and the lock this check
+    takes is the one that orders a judgment write against a clear or an
+    import, so skipping it is also how a stale worker gets to write across
+    one of those. (Copilot, PR #368, round 20.)
+    """
+    user_id = _judging_user_with_items(2, discogs_user_id=38)
+
+    # One judged listing and a second of the same record, so propagation has
+    # something to write if it runs at all.
+    with db.user_scope(user_id) as conn:
+        first = db.get_unjudged_stock_items(conn, user_id, limit=1)[0]
+        db.upsert_stock_judgments(conn, user_id, [
+            {"item_key": first["item_key"], "recommended": True, "reason": "fits"},
+        ])
+        conn.commit()
+    with db.get_admin_pool().connection() as conn:
+        crawler_id = conn.execute(
+            "SELECT id FROM crawlers WHERE site_name = 'Stock Site'"
+        ).fetchone()["id"]
+        db.replace_stock_items(conn, crawler_id, [
+            {"artist": first["artist"], "title": first["title"], "price": 1.0,
+             "currency": "USD", "url": "https://x/first"},
+            {"artist": first["artist"], "title": first["title"], "price": 2.0,
+             "currency": "USD", "url": "https://x/second"},
+        ])
+        conn.commit()
+    with db.user_scope(user_id) as conn:
+        before = conn.execute(
+            "SELECT COUNT(*) AS n FROM stock_item_judgments WHERE user_id = %s", [user_id]
+        ).fetchone()["n"]
+
+    with db.user_scope(user_id) as conn:
+        stale_token = db.claim_stock_judgment_run(conn, user_id)
+        conn.commit()
+    # This worker goes quiet for longer than the window while it sweeps, so
+    # another Machine takes the run over.
+    with db.get_admin_pool().connection() as conn:
+        conn.execute(
+            "UPDATE stock_judgment_runs SET heartbeat_at = clock_timestamp() "
+            f"- INTERVAL '{db.JUDGMENT_RUN_STALE_MINUTES + 1} minutes' WHERE user_id = %s",
+            [user_id],
+        )
+        conn.commit()
+    with db.user_scope(user_id) as conn:
+        assert db.claim_stock_judgment_run(conn, user_id) is not None
+        conn.commit()
+
+    manager = CrawlManager()
+    manager._broadcast = AsyncMock()
+    with patch("recommendations.judge_batch", return_value=[]) as judge:
+        await manager._run_judgment_phase(user_id, stale_token)
+
+    judge.assert_not_called()
+    with db.user_scope(user_id) as conn:
+        after = conn.execute(
+            "SELECT COUNT(*) AS n FROM stock_item_judgments WHERE user_id = %s", [user_id]
+        ).fetchone()["n"]
+    assert after == before, "a run that no longer owns its claim wrote judgments anyway"
+
+    # And it stopped silently: the run belongs to the replacement, so this
+    # worker must not narrate an ending over it.
+    statuses = [c.args[0]["status"] for c in manager._broadcast.call_args_list]
+    assert "stock_judgment_complete" not in statuses
+    assert "stock_judgment_error" not in statuses
+
+
 async def test_judgment_phase_releases_its_claim_when_cancelled(pg_schema):
     """Without the finally backstop a cancelled run leaves its row saying
     'running', and every later Refresh is refused until the heartbeat goes

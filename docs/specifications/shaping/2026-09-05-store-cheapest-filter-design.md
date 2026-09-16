@@ -145,8 +145,13 @@ Out of scope:
   `record_key` joined it) therefore also runs at the end of every stock sync,
   beside the dead-queue-row sweep that already lives there, so the first
   sync any new machine completes keys whatever the old one left. It is
-  normally a no-op, and a partial index on `title_key IS NULL` makes finding
-  that out a lookup rather than a scan. `COALESCE(title_key, title)` in the
+  normally a no-op. It used to find that out from a partial index on
+  `title_key IS NULL`; that index was dropped on 2026-09-16, when the sweep
+  stopped asking which keys were missing and began re-folding every row to
+  catch one that is merely *stale* — which an old binary produces with no NULL
+  to mark it. It is a scan now, at a cost recorded in the
+  [record-level judgment design](2026-09-16-record-level-judgment-design.md).
+  `COALESCE(title_key, title)` in the
   clause covers the window in between: an unkeyed row groups on its raw
   title, which can only split, never merge. (Raised by Copilot on PR #294.) The backfill
   matters more than it looks: the grouping treats every NULL as *one* key,
