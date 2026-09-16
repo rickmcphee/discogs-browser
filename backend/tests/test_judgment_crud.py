@@ -1057,13 +1057,18 @@ def _old_binary_update(conn, item_key, listing_title, artist="Artist A"):
 def test_the_sweep_repairs_a_stale_key_no_column_is_null_to_mark(pg_test_db):
     """The dangerous way a stored key goes wrong is not by being missing.
 
-    An old binary updating an existing release-crawler row preserves
-    `record_key` while `listing_title` moves, so the row ends up holding a
-    fold of a title it no longer has, with nothing NULL anywhere. The identity
-    beside it keeps the same stale value, so the disagreement pass sees
-    agreement and leaves them too. That is a false *merge*: this listing joins
-    a record it is not, and takes that record's verdict. (Copilot, PR #368,
-    round 13.)
+    An old binary updating an existing release-crawler row preserved
+    `record_key` while `listing_title` moved, leaving a fold of a title the row
+    no longer has with nothing NULL anywhere -- and an identity holding the
+    same stale value, so the disagreement pass saw agreement and left them
+    too. A false *merge*: this listing joins a record it is not, and takes
+    that record's verdict. (Copilot, PR #368, round 13.)
+
+    A trigger now clears such a key at the moment that write happens, so this
+    state is no longer reachable *going forward*. It is still reachable from
+    history -- rows that went stale before the guard shipped -- which is why
+    the sweep still recomputes rather than asking which keys are missing. The
+    trigger is switched off to build the state the guard would now prevent.
     """
     with db.get_admin_pool().connection() as conn:
         item_key = _seed_release_crawler_item(
@@ -1076,7 +1081,9 @@ def test_the_sweep_repairs_a_stale_key_no_column_is_null_to_mark(pg_test_db):
         ).fetchone()["record_key"]
         assert before == record_key("Album A Remixes", "Artist A")
 
+        conn.execute("ALTER TABLE stock_items DISABLE TRIGGER stock_items_clear_stale_fold_keys")
         _old_binary_update(conn, item_key, "Album A Deluxe")
+        conn.execute("ALTER TABLE stock_items ENABLE TRIGGER stock_items_clear_stale_fold_keys")
         conn.commit()
 
         # Nothing is NULL, and the two tables still agree -- on a key neither
@@ -1247,6 +1254,99 @@ def test_the_sweep_does_not_deadlock_against_a_release_crawler_write(pg_test_db)
     assert proxy.fired, "the sweep never reached its identity pass"
     assert not sweep_error, f"the sweep was aborted: {sweep_error}"
     assert not worker_error, f"the crawl write was aborted: {worker_error}"
+
+
+def test_an_old_binarys_update_clears_the_key_it_left_behind(pg_test_db):
+    """The write that creates a stale key is the write that has to clear it.
+
+    backfill_stock_keys repairs one, but not fast enough: between a sweep
+    returning and the judgment queries that follow it, a stale key is non-NULL,
+    so the billable set compares it and can group the listing under a record it
+    is not -- and the per-listing judgment that follows survives every later
+    sweep, because the item_key floor reads it as judged for good.
+
+    NULL is the one value every reader already handles. (Copilot, PR #368,
+    round 15.)
+    """
+    with db.get_admin_pool().connection() as conn:
+        item_key = _seed_release_crawler_item(
+            conn, "Marketplace", "https://m/a", "Album A Remixes"
+        )
+        conn.commit()
+
+        # Exactly what the old binary's statement does: the title moves, the
+        # key it does not know about is left alone.
+        _old_binary_update(conn, item_key, "Album A Deluxe")
+        conn.commit()
+
+        row = conn.execute(
+            "SELECT title_key, record_key FROM stock_items WHERE item_key = %s", [item_key]
+        ).fetchone()
+        assert row["record_key"] is None, (
+            "a key its source has moved away from must not survive the write"
+        )
+        # title_key is not collateral: the old binary knows that column and
+        # wrote it correctly, so throwing it away would cost a fold for nothing.
+        assert row["title_key"] == title_key("Album A Deluxe", "Artist A")
+
+        # And the identity, whose own writer preserves its key the same way.
+        conn.execute(
+            "UPDATE stock_item_identities SET title = %s WHERE item_key = %s",
+            ["Album A Something Else", item_key],
+        )
+        conn.commit()
+        identity = conn.execute(
+            "SELECT record_key FROM stock_item_identities WHERE item_key = %s", [item_key]
+        ).fetchone()
+        assert identity["record_key"] is None
+
+
+def test_the_sweeps_own_writes_do_not_trip_the_trigger(pg_test_db):
+    """It writes keys and leaves source fields alone, so a guard that fires on
+    "source moved, key did not" must never see it -- or the sweep would undo
+    itself and never converge."""
+    with db.get_admin_pool().connection() as conn:
+        item_key = _seed_release_crawler_item(
+            conn, "Marketplace", "https://m/a", "Album A Remixes"
+        )
+        conn.commit()
+        conn.execute("UPDATE stock_items SET record_key = NULL WHERE item_key = %s", [item_key])
+        conn.commit()
+
+        assert db.backfill_stock_keys(conn) > 0
+        conn.commit()
+        row = conn.execute(
+            "SELECT record_key FROM stock_items WHERE item_key = %s", [item_key]
+        ).fetchone()
+        assert row["record_key"] == record_key("Album A Remixes", "Artist A")
+        # Converged: nothing left to do, rather than a key it keeps clearing.
+        assert db.backfill_stock_keys(conn) == 0
+
+
+def test_a_live_writer_keeps_the_keys_it_writes(pg_test_db):
+    """The guard must not fire for the writers that do know the columns, or
+    every marketplace match would cost an extra fold."""
+    with db.get_admin_pool().connection() as conn:
+        item_key = _seed_release_crawler_item(
+            conn, "Marketplace", "https://m/a", "Album A Remixes"
+        )
+        conn.commit()
+        crawler_id = conn.execute(
+            "SELECT id FROM crawlers WHERE site_name = 'Marketplace'"
+        ).fetchone()["id"]
+        catalog_release = conn.execute("SELECT * FROM catalog WHERE discogs_id = 'r1'").fetchone()
+        # Same path again with a different name for what it matched.
+        db.upsert_stock_item_from_release(conn, "r1", crawler_id, catalog_release, {
+            "url": "https://m/a", "price": 11.0, "currency": "USD",
+            "title": "Album A Deluxe",
+        })
+        conn.commit()
+
+        row = conn.execute(
+            "SELECT title_key, record_key FROM stock_items WHERE item_key = %s", [item_key]
+        ).fetchone()
+        assert row["record_key"] == record_key("Album A Deluxe", "Artist A")
+        assert row["title_key"] == title_key("Album A Deluxe", "Artist A")
 
 
 def test_a_sibling_is_not_rebilled_after_an_identity_is_reconciled(pg_test_db):

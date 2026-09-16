@@ -190,19 +190,35 @@ _SEGMENT_SPLIT = re.compile(r"\s+-\s+|\s*[–—|/]\s*")
 
 
 def _artist_bare_key(text: str) -> str:
-    """What `_artist_sort_sql` computes for an artist: punctuation folded,
-    then a leading "the " or trailing ", the" dropped.
+    """The key `_split_leading_artist` compares a candidate prefix against:
+    accents and apostrophes off, then punctuation folded, then a leading
+    "the " or trailing ", the" dropped.
 
     That order, and one key rather than a set of accepted spellings, because
-    that is what SQL produces — the record group's artist half is exactly this
-    expression. Comparing bare key against bare key makes the test symmetric,
-    which matters: the article can sit on either side, in a store's
-    "The-Beatles - Abbey Road" or in a stored artist "Beatles, The", and only
-    normalising both catches both. Folding after expanding would leave
-    "The-Beatles" with no " the " to find at all, since its article is joined
-    by a hyphen until the punctuation fold turns it into a space.
+    the last two steps are what `_artist_sort_sql` produces — the record
+    group's artist half is exactly that expression. Comparing bare key against
+    bare key makes the test symmetric, which matters: the article can sit on
+    either side, in a store's "The-Beatles - Abbey Road" or in a stored artist
+    "Beatles, The", and only normalising both catches both. Folding after
+    expanding would leave "The-Beatles" with no " the " to find at all, since
+    its article is joined by a hyphen until the punctuation fold turns it into
+    a space.
+
+    `_fold` first, which SQL does *not* do, and this is deliberately more
+    permissive than the expression it otherwise mirrors. The two folds used to
+    live on separate paths -- this one punctuation-only, a fallback below
+    accent-only -- so a name spelled differently in *both* ways matched
+    neither: with "Beyoncé & Jay-Z", a listing titled "Beyonce and Jay Z -
+    Album (Red)" kept the whole prefix, and since what followed read as a
+    variant segment the key came out as the artist's name with no title in it
+    at all, against "album" for the same record written plainly.
+
+    Being looser than SQL costs nothing here. This key only decides whether a
+    title leads with its own artist, so that the artist can be cut off; the
+    comparison SQL has to agree with is the one between two *artist columns*,
+    which is untouched.
     """
-    base = _punct_fold(text)
+    base = _punct_fold(_fold(text))
     if base.startswith("the ") and base[4:]:
         return base[4:]
     if base.endswith(", the") and base[:-5]:

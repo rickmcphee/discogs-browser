@@ -198,6 +198,21 @@ def test_an_artist_spelled_differently_from_the_title_still_folds_the_variant():
     assert record_key("Björk - Post (Red)", "Bjork") == record_key("Post", "Bjork")
 
 
+@pytest.mark.parametrize("artist,written", [
+    # Accent and punctuation at once. Each fold used to live on a separate
+    # path -- the prefix test punctuation-only, its fallback accent-only -- so
+    # a name spelled differently in both ways matched neither, kept its whole
+    # prefix, and (the trailing segment reading as a variant) keyed as the
+    # artist's name with no title in it at all. (Copilot, PR #368, round 15.)
+    ("Beyoncé & Jay-Z", "Beyonce and Jay Z - Album (Red)"),
+    ("Beyoncé & Jay-Z", "Beyoncé & Jay-Z - Album (Red)"),
+    ("Sigur Rós & Jón", "Sigur Ros and Jon - Album (Red)"),
+    ("Mötley-Crüe", "Motley Crue - Album (Red)"),
+])
+def test_an_artist_spelled_differently_in_two_ways_at_once_is_still_the_prefix(artist, written):
+    assert record_key(written, artist) == record_key("Album", artist)
+
+
 def test_an_artist_that_is_not_a_prefix_does_not_suppress_the_split():
     # No artist prefix at all, so the trailing-variant pop still applies.
     assert record_key("Back in Black - Red Vinyl", "AC/DC") == record_key("Back in Black", "AC/DC")

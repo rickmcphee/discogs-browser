@@ -600,8 +600,10 @@ ALTER TABLE listings ADD COLUMN IF NOT EXISTS listing_image_url TEXT;
 -- The fold of `title` two stores' rows share when they sell the same pressing
 -- (title_key.py): what the Store tab's Cheapest filter groups rows by, with
 -- the artist's bare key and the currency. Written by replace_stock_items and
--- upsert_stock_item_from_release; backfill_stock_keys sweeps any NULL at boot
--- and at the end of every stock sync.
+-- upsert_stock_item_from_release; backfill_stock_keys re-folds every row at
+-- boot and at the end of every stock sync, repairing a key that is missing
+-- *or* stale -- an old binary preserves one it does not know about while the
+-- title moves, which leaves no NULL to look for.
 ALTER TABLE stock_items ADD COLUMN IF NOT EXISTS title_key TEXT;
 
 -- The coarser fold two rows share when they are the same *record* rather than
@@ -609,6 +611,69 @@ ALTER TABLE stock_items ADD COLUMN IF NOT EXISTS title_key TEXT;
 -- billed per, so a red and a black copy of one album are one paid verdict.
 -- Written and swept by the same paths as title_key above.
 ALTER TABLE stock_items ADD COLUMN IF NOT EXISTS record_key TEXT;
+
+-- A fold key whose source has moved is worse than one that is missing, and
+-- only the database can catch it at the moment it happens.
+--
+-- The deployment is rolling, so an old binary goes on writing these tables
+-- after a new one has added a key column. Its INSERT does not name a column
+-- it has never heard of, so ON CONFLICT DO UPDATE *preserves* the key while
+-- the title moves -- leaving a key folded from a title the row no longer has,
+-- with nothing NULL to mark it. backfill_stock_keys repairs that, but it
+-- cannot repair it *fast*: between one sweep returning and the judgment
+-- queries that follow, such a row is non-NULL, so the billable set compares
+-- it, groups the listing under a record it is not, and can hand it that
+-- record's verdict. The per-listing judgment then survives every later sweep,
+-- because `_judged_record_sql`'s item_key floor reads it as judged for good.
+--
+-- So the write that creates the hazard is the write that clears it. A key
+-- left untouched while its source fields change is by definition not derived
+-- from them, and NULL is the one value every reader already handles: skipped
+-- by the judgment path, COALESCEd to the raw title by the Cheapest filter,
+-- and re-folded by the next sweep.
+--
+-- Each key is judged on its own, because the old binary knows `title_key` and
+-- writes it correctly; nulling that too would throw away a good value. A
+-- writer that changes a title to one folding to the *same* key trips this and
+-- costs one re-fold, which is the cheap side of a test that cannot itself
+-- fold. The sweep never trips it: it writes keys and leaves sources alone.
+CREATE OR REPLACE FUNCTION clear_fold_keys_left_behind() RETURNS trigger AS $$
+BEGIN
+    IF (NEW.artist IS DISTINCT FROM OLD.artist
+        OR NEW.title IS DISTINCT FROM OLD.title
+        OR NEW.listing_title IS DISTINCT FROM OLD.listing_title) THEN
+        IF NEW.title_key IS NOT DISTINCT FROM OLD.title_key THEN
+            NEW.title_key := NULL;
+        END IF;
+        IF NEW.record_key IS NOT DISTINCT FROM OLD.record_key THEN
+            NEW.record_key := NULL;
+        END IF;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Its own function: stock_item_identities has no listing_title and no
+-- title_key, and naming a missing column would raise at trigger time.
+CREATE OR REPLACE FUNCTION clear_identity_fold_key_left_behind() RETURNS trigger AS $$
+BEGIN
+    IF (NEW.artist IS DISTINCT FROM OLD.artist OR NEW.title IS DISTINCT FROM OLD.title)
+       AND NEW.record_key IS NOT DISTINCT FROM OLD.record_key THEN
+        NEW.record_key := NULL;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS stock_items_clear_stale_fold_keys ON stock_items;
+CREATE TRIGGER stock_items_clear_stale_fold_keys
+    BEFORE UPDATE ON stock_items
+    FOR EACH ROW EXECUTE FUNCTION clear_fold_keys_left_behind();
+
+DROP TRIGGER IF EXISTS stock_item_identities_clear_stale_fold_key ON stock_item_identities;
+CREATE TRIGGER stock_item_identities_clear_stale_fold_key
+    BEFORE UPDATE ON stock_item_identities
+    FOR EACH ROW EXECUTE FUNCTION clear_identity_fold_key_left_behind();
 
 -- Expression indexes, because every artist read path case-folds now: the
 -- artist filters in get_library_releases/get_stock_items, and

@@ -172,6 +172,17 @@ raw offsets. There the title goes on unsplit for `title_key` to strip, costing
 one variant not folded away — a record billed twice at worst, which is the
 direction this module errs in on purpose.
 
+Its prefix test applies **both** folds — accents and apostrophes off, then the
+punctuation fold — before comparing. They lived on separate paths at first,
+this one punctuation-only with an accent-only fallback behind it, so a name
+spelled differently in both ways at once matched neither: with "Beyoncé &
+Jay-Z", a listing titled "Beyonce and Jay Z - Album (Red)" kept its whole
+prefix, and because what followed then read as a variant segment the key came
+out as the artist's name with no title in it at all. Being looser than SQL
+costs nothing here: this key only decides whether a title leads with its own
+artist, and the comparison SQL has to agree with is the one between two
+*artist columns*.
+
 Its prefix test compares *bare artist keys* — what `_artist_sort_sql`
 computes: punctuation folded ("&" to "and", "-" to a space), then a leading
 "the " or trailing ", the" dropped. That fold, in that order, because it is
@@ -279,7 +290,21 @@ the better answer. The identity pass, which cannot compare source fields since
 the value it writes comes from the stock row, compares against the key its own
 `SELECT` returned.
 
-With those three, the sweep stays a convenience rather than a correctness
+One thing the sweep cannot do, however it selects, is repair a stale key
+*fast*. Between a sweep returning and the judgment queries that follow it, a
+key an old binary left behind is non-NULL, so the billable set compares it —
+groups the listing under a record it is not, and can hand it that record's
+verdict. Worse, the per-listing judgment that results outlives the repair: the
+`item_key` floor below reads that listing as judged for good, reason and all,
+written about a different album. So the write that creates the hazard is the
+write that clears it: a `BEFORE UPDATE` trigger on each table nulls a fold key
+whose source fields moved without it. NULL is the one value every reader
+already handles — skipped by the judgment path, `COALESCE`d to the raw title
+by the Cheapest filter, re-folded by the next sweep. The sweep's recompute
+stays, because the trigger only guards writes made from now on and rows can
+already be stale from before it.
+
+With those, the sweep stays a convenience rather than a correctness
 guard. An unkeyed stock row is skipped by everything; a keyed stock row whose
 key is stale, or whose identity disagrees with it, is not — and the sweep is
 the only thing that can repair either, so it must never commit one and never
@@ -602,6 +627,10 @@ user actually reads.
   moving `listing_title` while preserving `record_key` — is repaired, and the
   same writer racing the sweep gets its newer title left alone rather than
   overwritten.
+- That write no longer produces the state at all: the trigger clears the key
+  it left behind, leaves the `title_key` it wrote correctly, does not fire for
+  the sweep's own writes (which would never converge), and does not fire for a
+  live writer that keys what it writes.
 - A record whose judged listing is no longer stocked at all still answers
   "already judged" — the case a join through `stock_items` would miss.
 - Two simultaneous starts for one user produce one run, and two users'

@@ -1857,11 +1857,11 @@ class CrawlManager:
             # Off the event loop: the sweep folds every stock row in Python to
             # find the stale ones, which is CPU-bound and proportional to the
             # catalog. Normally it rewrites nothing -- a non-zero count means
-            # rows an older binary wrote during a rolling deploy. See
-            # backfill_stock_keys.
+            # rows an older binary left with no key, or with one folded from a
+            # title it has since moved off. See backfill_stock_keys.
             keyed = await run_in_threadpool(self._sweep_stock_keys)
             if keyed:
-                log.info("Keyed %d stock and identity rows written without a fold key", keyed)
+                log.info("Re-keyed %d stock and identity rows whose fold key was missing or stale", keyed)
             if swept:
                 # INFO, not WARNING: routers/logs.py filters in SQL by exact
                 # level membership (WHERE level = ANY(...)), not
@@ -2204,7 +2204,10 @@ class CrawlManager:
             # backfill_stock_keys against the round trips that follow it.
             swept = await run_in_threadpool(self._sweep_stock_keys)
             if swept:
-                log.info("Keyed %d stock and identity rows before judging for %s", swept, username)
+                log.info(
+                    "Re-keyed %d stock and identity rows, missing or stale, before judging for %s",
+                    swept, username,
+                )
 
             # Before the counts, not after -- but not to keep anything out of
             # the billable set, which already excludes a listing whose record
