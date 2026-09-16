@@ -465,6 +465,31 @@ describe('stopping a recommendation run from the profile page', () => {
     expect(within(row).getByRole('button')).toHaveTextContent('Refresh')
   })
 
+  it('keeps Stopping… when a poll lands mid-request with the pre-stop row', async () => {
+    // The poll can tick while the stop POST is in flight and read the row
+    // before the flag commits. Acting on that answer re-enables the button
+    // over a stop that is already on its way -- and then discards the stop's
+    // own reply for being older than the read.
+    getJudgmentStatus.mockResolvedValue({ any_judged: true, run: run() })
+    let releaseStop: (v: unknown) => void = () => {}
+    postJudgmentStop.mockReturnValue(new Promise((resolve) => {
+      releaseStop = () => resolve({ stopping: true, run: run({ stop_requested: true }) })
+    }))
+
+    const row = await openProfile()
+    await waitFor(() => expect(within(row).getByRole('button')).toHaveTextContent('Stop'))
+    fireEvent.click(within(row).getByRole('button'))
+    await waitFor(() => expect(within(row).getByRole('button')).toHaveTextContent('Stopping…'))
+
+    // A poll tick, still answering from before the stop committed.
+    await vi.advanceTimersByTimeAsync(PAST_ONE_POLL)
+    expect(within(row).getByRole('button')).toHaveTextContent('Stopping…')
+    expect(within(row).getByRole('button')).toBeDisabled()
+
+    await act(async () => { releaseStop(undefined) })
+    expect(within(row).getByRole('button')).toHaveTextContent('Stopping…')
+  })
+
   it('says so when a start is refused by a run already under way', async () => {
     postJudgmentStart.mockResolvedValue({ started: false, running: true, run: run() })
     const row = await openProfile()

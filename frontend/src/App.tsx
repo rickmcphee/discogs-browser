@@ -242,6 +242,13 @@ export default function App() {
   // handler actually needs to know is whether the *user* has since asked for
   // something else.
   const latestJudgmentActionSeq = useRef(0)
+  // True while a stop the user asked for is in flight. A status read issued in
+  // that window is not authoritative about the stop flag -- it can reach the
+  // row before the stop commits and answer "not stopping" about a stop that is
+  // already on its way -- so it is allowed to refresh everything else and not
+  // these two flags. Without this the poll re-enables the button mid-request
+  // and the stop's own reply, being older than that read, is then discarded.
+  const judgmentStopPending = useRef(false)
   // The last (status, judged) the poll saw, so it can tell a run that has
   // advanced from one it has merely been asked about again. Null means "no
   // read yet", and only that very first read is exempt from the bump -- it is
@@ -460,8 +467,10 @@ export default function App() {
         // that is actually spending, leaving its button stuck on Stop.
         return null
       }
-      setRecommendationRunning(Boolean(s.run?.running))
-      setRecommendationStopping(Boolean(s.run?.running && s.run.stop_requested))
+      if (!judgmentStopPending.current) {
+        setRecommendationRunning(Boolean(s.run?.running))
+        setRecommendationStopping(Boolean(s.run?.running && s.run.stop_requested))
+      }
       // The judgments this run has written are invisible to an already-open
       // Store tab unless something tells it to refetch, and on the Machine
       // that is not running the job nothing does: the generation bumps live on
@@ -1342,12 +1351,16 @@ export default function App() {
     // predates this click -- cannot land on top of it and flick the button
     // back to Stop, and claimed again on arrival for the same reason.
     const action = ++latestJudgmentActionSeq.current
-    const seq = ++latestJudgmentRunSeq.current
+    latestJudgmentRunSeq.current++
+    judgmentStopPending.current = true
     setRecommendationStopping(true)
     try {
       const r = await postJudgmentStop()
       if (action !== latestJudgmentActionSeq.current) return
-      if (seq !== latestJudgmentRunSeq.current) return
+      // No read-sequence check here: a poll tick during this request bumps that
+      // counter, and checking it would discard the one answer that actually
+      // knows whether the stop landed. The bump instead, so a read still in
+      // flight is superseded by this reply rather than the other way round.
       latestJudgmentRunSeq.current++
       setRecommendationRunning(Boolean(r.run?.running))
       setRecommendationStopping(Boolean(r.run?.running && r.run.stop_requested))
@@ -1366,8 +1379,13 @@ export default function App() {
       )
     } catch (e: any) {
       if (action !== latestJudgmentActionSeq.current) return
+      latestJudgmentRunSeq.current++
       setRecommendationStopping(false)
       setSyncStatus(`Stop recommendations failed: ${e.message}`)
+    } finally {
+      // Only the newest stop releases the suppression; an older one losing the
+      // race must not re-open the window its successor is still inside.
+      if (action === latestJudgmentActionSeq.current) judgmentStopPending.current = false
     }
   }, [setSyncStatus])
 

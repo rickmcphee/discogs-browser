@@ -6318,8 +6318,17 @@ async def test_start_judgment_only_leaves_a_taken_over_local_task_to_stop_itself
     assert not stalled.cancelled()
     assert not stalled.done()
     assert manager._judgment_tasks[judging_user] is not stalled
+    # Held by the manager, not merely by this test's local variable. The dict
+    # entry above was its only strong reference and has just been overwritten,
+    # and asyncio keeps only weak references to tasks -- so without this the
+    # task that was deliberately left alive to commit its paid batch is
+    # collectable before it gets there.
+    assert stalled in manager._superseded_judgment_tasks
     wedged.set()
     await asyncio.sleep(0.01)
+    # And released once it ends, so a long-lived manager does not accumulate
+    # finished tasks.
+    assert stalled not in manager._superseded_judgment_tasks
 
 
 async def test_judgment_running_for_one_user_does_not_block_another_users_judgment(manager, pg_schema):

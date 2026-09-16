@@ -113,6 +113,13 @@ class CrawlManager:
         # other and so have to share one. Lazily created for the same reason.
         self._sync_start_locks: dict[int, asyncio.Lock] = {}
         self._judgment_tasks: dict[int, asyncio.Task] = {}
+        # Judgment tasks whose claim was taken over and which are deliberately
+        # left running to finish the batch they have already paid for (see
+        # start_judgment_only). They are no longer in _judgment_tasks, and
+        # asyncio keeps only weak references to tasks, so without somewhere to
+        # hold them the very task that change exists to preserve is collectable
+        # before it reaches the checkpoint that would commit its work.
+        self._superseded_judgment_tasks: set = set()
         self._plex_match_tasks: dict[int, asyncio.Task] = {}
         self._worker_tasks: list[asyncio.Task] = []
         self._pool_running = False
@@ -1981,6 +1988,12 @@ class CrawlManager:
                 "it will stop at its next checkpoint",
                 self._username_for_log(user_id),
             )
+            # Held deliberately. The line below drops this task's only strong
+            # reference, and a task nothing references can be garbage collected
+            # mid-flight -- which would throw away the in-flight batch that not
+            # cancelling it was entirely about. Discarded again when it ends.
+            self._superseded_judgment_tasks.add(previous)
+            previous.add_done_callback(self._superseded_judgment_tasks.discard)
         self._judgment_tasks[user_id] = asyncio.create_task(
             self._run_judgment_phase(user_id, run_token)
         )
