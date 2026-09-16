@@ -6002,19 +6002,19 @@ async def test_judgment_running_false_initially(manager):
 
 
 async def test_start_judgment_only_returns_true_when_idle(manager):
-    async def _fake_judgment_phase(user_id):
+    async def _fake_judgment_phase(user_id, lock_conn=None):
         await asyncio.sleep(0)
 
     manager._run_judgment_phase = _fake_judgment_phase  # type: ignore
     started = await manager.start_judgment_only(1)
-    assert started == {"started": True, "stock_sync_running": False}
+    assert started == {"started": True, "running": True, "stock_sync_running": False}
     await asyncio.sleep(0.01)
 
 
 async def test_start_judgment_only_returns_false_when_already_running(manager, pg_schema):
     event = asyncio.Event()
 
-    async def _fake_judgment_phase(user_id):
+    async def _fake_judgment_phase(user_id, lock_conn=None):
         await event.wait()
 
     manager._run_judgment_phase = _fake_judgment_phase  # type: ignore
@@ -6036,7 +6036,7 @@ async def test_judgment_running_for_one_user_does_not_block_another_users_judgme
     collection sync's sync_running/_sync_task."""
     event = asyncio.Event()
 
-    async def _fake_judgment_phase(user_id):
+    async def _fake_judgment_phase(user_id, lock_conn=None):
         await event.wait()
 
     manager._run_judgment_phase = _fake_judgment_phase  # type: ignore
@@ -6067,7 +6067,7 @@ async def test_start_stock_sync_runs_while_a_users_judgment_is_in_flight(pg_test
         await stock_event.wait()
         lock_conn.close()
 
-    async def _fake_judgment_phase(user_id):
+    async def _fake_judgment_phase(user_id, lock_conn=None):
         await judgment_event.wait()
 
     manager._sync_stock = _fake_sync_stock  # type: ignore
@@ -6094,7 +6094,7 @@ async def test_start_judgment_only_is_refused_while_a_stock_sync_runs(pg_schema,
         await stock_event.wait()
         lock_conn.close()
 
-    async def _fake_judgment_phase(user_id):
+    async def _fake_judgment_phase(user_id, lock_conn=None):
         pass
 
     manager._sync_stock = _fake_sync_stock  # type: ignore
@@ -6102,7 +6102,7 @@ async def test_start_judgment_only_is_refused_while_a_stock_sync_runs(pg_schema,
 
     await manager.start_stock_sync()
     refused = await manager.start_judgment_only(1)
-    assert refused == {"started": False, "stock_sync_running": True}
+    assert refused == {"started": False, "running": False, "stock_sync_running": True}
     assert manager.judgment_running(1) is False
 
     stock_event.set()
@@ -7137,7 +7137,7 @@ async def test_start_judgment_only_is_refused_while_another_machine_holds_the_sy
     import config
     from crawl_manager import STOCK_SYNC_LOCK_KEY
 
-    async def _fake_judgment_phase(user_id):
+    async def _fake_judgment_phase(user_id, lock_conn=None):
         pass
 
     manager._run_judgment_phase = _fake_judgment_phase  # type: ignore
@@ -7150,7 +7150,7 @@ async def test_start_judgment_only_is_refused_while_another_machine_holds_the_sy
         # No local task, so the old guard would have waved this through.
         assert manager.stock_sync_running is False
         refused = await manager.start_judgment_only(1)
-        assert refused == {"started": False, "stock_sync_running": True}
+        assert refused == {"started": False, "running": False, "stock_sync_running": True}
         assert manager.judgment_running(1) is False
     finally:
         holder.execute("SELECT pg_advisory_unlock(%s)", [STOCK_SYNC_LOCK_KEY])
@@ -7165,7 +7165,7 @@ async def test_judgment_starts_when_the_lock_state_cannot_be_read(pg_schema, man
     Refresh button is worse than one that occasionally lets a run through."""
     import db as db_module
 
-    async def _fake_judgment_phase(user_id):
+    async def _fake_judgment_phase(user_id, lock_conn=None):
         pass
 
     manager._run_judgment_phase = _fake_judgment_phase  # type: ignore
@@ -7190,7 +7190,7 @@ async def test_two_simultaneous_starts_for_one_user_create_one_run(pg_schema, ma
     started_runs = []
     release = asyncio.Event()
 
-    async def _fake_judgment_phase(user_id):
+    async def _fake_judgment_phase(user_id, lock_conn=None):
         started_runs.append(user_id)
         await release.wait()
 
@@ -7223,7 +7223,7 @@ async def test_simultaneous_starts_for_different_users_both_run(pg_schema, manag
     started_runs = []
     release = asyncio.Event()
 
-    async def _fake_judgment_phase(user_id):
+    async def _fake_judgment_phase(user_id, lock_conn=None):
         started_runs.append(user_id)
         await release.wait()
 
@@ -7241,3 +7241,101 @@ async def test_simultaneous_starts_for_different_users_both_run(pg_schema, manag
 
     release.set()
     await asyncio.sleep(0.01)
+
+
+async def test_start_judgment_only_is_refused_while_another_machine_runs_this_users_judgment(
+    pg_schema, manager
+):
+    """The asyncio lock orders two requests that reach *this* process and
+    says nothing about two that reach different Machines, where
+    _judgment_tasks is a different dict and both see an idle one. Both would
+    issue paid model calls for the same records. (Copilot, PR #368.)
+    """
+    import psycopg
+    import config
+    from crawl_manager import JUDGMENT_LOCK_NAMESPACE
+
+    async def _fake_judgment_phase(user_id, lock_conn=None):
+        pass
+
+    manager._run_judgment_phase = _fake_judgment_phase  # type: ignore
+
+    other_machine = psycopg.connect(config.DIRECT_APP_DATABASE_URL, autocommit=True)
+    try:
+        assert other_machine.execute(
+            "SELECT pg_try_advisory_lock(%s, %s)", [JUDGMENT_LOCK_NAMESPACE, 1]
+        ).fetchone()[0] is True
+        # No local task, so every in-process check waves this through.
+        assert manager.judgment_running(1) is False
+        refused = await manager.start_judgment_only(1)
+        assert refused == {"started": False, "running": True, "stock_sync_running": False}
+        assert manager.judgment_running(1) is False
+
+        # A different user is untouched: the lock is keyed per user.
+        other = await manager.start_judgment_only(2)
+        assert other["started"] is True
+        await asyncio.sleep(0.01)
+    finally:
+        other_machine.execute(
+            "SELECT pg_advisory_unlock(%s, %s)", [JUDGMENT_LOCK_NAMESPACE, 1]
+        )
+        other_machine.close()
+
+    assert (await manager.start_judgment_only(1))["started"] is True
+    await asyncio.sleep(0.01)
+
+
+async def test_the_judgment_lock_is_released_when_the_run_finishes(pg_schema, manager):
+    """Held for the run's lifetime and no longer, so a second Refresh after
+    one finishes is not refused."""
+    import psycopg
+    import config
+    from crawl_manager import JUDGMENT_LOCK_NAMESPACE
+
+    async def _fake_judgment_phase(user_id, lock_conn=None):
+        pass
+
+    manager._run_judgment_phase = _fake_judgment_phase  # type: ignore
+
+    assert (await manager.start_judgment_only(1))["started"] is True
+    await asyncio.sleep(0.05)
+
+    probe = psycopg.connect(config.DIRECT_APP_DATABASE_URL, autocommit=True)
+    try:
+        assert probe.execute(
+            "SELECT pg_try_advisory_lock(%s, %s)", [JUDGMENT_LOCK_NAMESPACE, 1]
+        ).fetchone()[0] is True, "the finished run should have released its lock"
+        probe.execute("SELECT pg_advisory_unlock(%s, %s)", [JUDGMENT_LOCK_NAMESPACE, 1])
+    finally:
+        probe.close()
+
+
+async def test_the_judgment_lock_is_released_when_the_run_fails(pg_schema, manager):
+    """In a finally, so a failed run frees the user to start another rather
+    than locking them out until the process dies."""
+    import psycopg
+    import config
+    from crawl_manager import JUDGMENT_LOCK_NAMESPACE
+
+    # The real _run_judgment_phase, with a user that has no Anthropic key, so
+    # it takes an early-return path rather than a faked one.
+    with db.get_admin_pool().connection() as conn:
+        db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+
+    manager._broadcast = AsyncMock()
+    assert (await manager.start_judgment_only(1))["started"] is True
+    for _ in range(50):
+        if not manager.judgment_running(1):
+            break
+        await asyncio.sleep(0.02)
+    assert manager.judgment_running(1) is False
+
+    probe = psycopg.connect(config.DIRECT_APP_DATABASE_URL, autocommit=True)
+    try:
+        assert probe.execute(
+            "SELECT pg_try_advisory_lock(%s, %s)", [JUDGMENT_LOCK_NAMESPACE, 1]
+        ).fetchone()[0] is True
+        probe.execute("SELECT pg_advisory_unlock(%s, %s)", [JUDGMENT_LOCK_NAMESPACE, 1])
+    finally:
+        probe.close()

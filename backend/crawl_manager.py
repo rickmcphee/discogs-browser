@@ -12,6 +12,13 @@ log = get_logger("crawl_manager")
 # pg_advisory_xact_lock(2026080901) convention.
 STOCK_SYNC_LOCK_KEY = 2026081601
 
+# The namespace half of the per-user judgment lock, taken in the two-int form
+# `pg_try_advisory_lock(JUDGMENT_LOCK_NAMESPACE, user_id)`. Two ints rather
+# than one date-coded bigint because the second half has to be the user: a
+# judgment run is per-user, so two users must never contend, and only the
+# same user's run on another Machine may be refused.
+JUDGMENT_LOCK_NAMESPACE = 2026091601
+
 # The longest a collection sync may go without recording progress, which is
 # also the longest its claim can go without a heartbeat. Paired with
 # db.SYNC_RUN_STALE_MINUTES: this has to stay far enough below it that the
@@ -1931,21 +1938,61 @@ class CrawlManager:
             log.warning("Could not read the stock sync lock; allowing judgment to start", exc_info=True)
             return False
 
+    def _acquire_judgment_lock(self, user_id: int):
+        """`(conn, got)` for this user's cross-Machine judgment lock.
+        Blocking; call it off the event loop. The connection holds the lock
+        and is closed by _run_judgment_phase's finally, which releases it.
+
+        The same connection rules as start_stock_sync's lock and for the same
+        reasons: not a pooled connection, because a session-scoped lock would
+        be handed back out to unrelated work while still held;
+        autocommit=True, so a run lasting minutes never sits
+        idle-in-transaction where a managed Postgres can kill the backend and
+        silently release the lock; DIRECT_APP_DATABASE_URL, because a
+        transaction pooler can put this session's statements on different
+        backends.
+
+        Fails open, unlike start_stock_sync's, which lets the error surface.
+        A stock sync that cannot take its lock must not run -- concurrent
+        replace_stock_items would corrupt the shared catalog. A judgment that
+        cannot take its lock is only risking a duplicate charge in the rare
+        case that a second request is in flight on another Machine right now,
+        and refusing every Refresh while the database is unreachable is the
+        worse trade.
+        """
+        import psycopg
+        import config
+        try:
+            conn = psycopg.connect(config.DIRECT_APP_DATABASE_URL, autocommit=True)
+            got = conn.execute(
+                "SELECT pg_try_advisory_lock(%s, %s)", [JUDGMENT_LOCK_NAMESPACE, user_id]
+            ).fetchone()[0]
+            if not got:
+                conn.close()
+                return None, False
+            return conn, True
+        except Exception:
+            log.warning(
+                "Could not take the judgment lock for user %s; starting anyway", user_id, exc_info=True
+            )
+            return None, True
+
     async def start_judgment_only(self, user_id: int) -> dict:
-        """Returns `{"started": bool, "stock_sync_running": bool}`.
+        """Returns `{"started": bool, "running": bool, "stock_sync_running": bool}`.
 
         A dict for the same reason start_stock_sync returns one: this method
         is the only place that knows *which* refusal happened, and the caller
-        cannot re-derive it -- `stock_sync_running` is the local flag, which
-        reads false for a sync running on another Machine.
+        cannot re-derive it. Both local flags lie about another Machine --
+        `stock_sync_running` reads false for a sync running there, and
+        `judgment_running` reads false for this user's own run running there.
 
         The whole sequence runs under one lock, for the reason spelled out on
-        start_stock_sync's: the lock check below awaits, and _judgment_tasks
-        is not assigned until after it, so two requests for one user could
-        both clear the running check, both wait, and both create a task --
-        the second merely overwriting the first handle while both runs went
-        on spending that user's Anthropic credit on the same items. The
-        check-and-assign has to be atomic across that await, and asyncio's
+        start_stock_sync's: the checks below await, and _judgment_tasks is not
+        assigned until after them, so two requests for one user could both
+        clear the running check, both wait, and both create a task -- the
+        second merely overwriting the first handle while both runs went on
+        spending that user's Anthropic credit on the same items. The
+        check-and-assign has to be atomic across those awaits, and asyncio's
         single-threaded scheduling only makes it so when nothing suspends in
         between.
         """
@@ -1954,7 +2001,7 @@ class CrawlManager:
         async with self._judgment_start_lock:
             if self.judgment_running(user_id):
                 log.warning("Judgment already running for %s, ignoring start request", self._username_for_log(user_id))
-                return {"started": False, "stock_sync_running": False}
+                return {"started": False, "running": True, "stock_sync_running": False}
             # A stock sync replaces each crawler's whole snapshot, so judging
             # against one in progress spends the user's own Anthropic credit on
             # items that are about to be deleted. Held here rather than in the
@@ -1967,11 +2014,28 @@ class CrawlManager:
                     "Stock sync running, ignoring judgment start request for %s",
                     self._username_for_log(user_id),
                 )
-                return {"started": False, "stock_sync_running": True}
-            self._judgment_tasks[user_id] = asyncio.create_task(self._run_judgment_phase(user_id))
-            return {"started": True, "stock_sync_running": False}
+                return {"started": False, "running": False, "stock_sync_running": True}
+            # And the same again for this user's own run. The asyncio lock
+            # above orders two requests that reach *this* process; it says
+            # nothing about two that reach different Machines, where
+            # _judgment_tasks is a different dict and both see an idle one.
+            # Held in Postgres for the run's lifetime, keyed per user so two
+            # users stay independent, and released by the session dying if a
+            # Machine does -- session-scoped advisory locks cannot strand a
+            # user unable to refresh.
+            lock_conn, got_lock = await run_in_threadpool(self._acquire_judgment_lock, user_id)
+            if not got_lock:
+                log.warning(
+                    "Judgment already running on another instance for %s, ignoring start request",
+                    self._username_for_log(user_id),
+                )
+                return {"started": False, "running": True, "stock_sync_running": False}
+            self._judgment_tasks[user_id] = asyncio.create_task(
+                self._run_judgment_phase(user_id, lock_conn)
+            )
+            return {"started": True, "running": True, "stock_sync_running": False}
 
-    async def _run_judgment_phase(self, user_id: int):
+    async def _run_judgment_phase(self, user_id: int, lock_conn=None):
         from db import (
             get_identity_pool, user_scope, get_unjudged_stock_items, count_unjudged_stock_items,
             get_taste_listing, upsert_stock_judgments, propagate_stock_judgments,
@@ -2074,6 +2138,13 @@ class CrawlManager:
         except Exception as e:
             log.error("Judgment phase failed for %s: %s", username, e, exc_info=True)
             await broadcast({"status": "stock_judgment_error", "error": str(e)})
+        finally:
+            # Releases the per-user advisory lock start_judgment_only took.
+            # In a finally rather than at the end of the try, so a cancelled
+            # or failed run frees the user to start another one rather than
+            # leaving them locked out until the process dies.
+            if lock_conn is not None:
+                lock_conn.close()
 
     async def _run_plex_match(
         self, user_id: int, base_url: str, token: str, threshold: int,

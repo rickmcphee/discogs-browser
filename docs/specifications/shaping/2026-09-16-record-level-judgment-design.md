@@ -281,7 +281,9 @@ free, and it is the inner side of propagation's `LATERAL`.
 ### The billable set
 
 `get_unjudged_stock_items` groups by `(_artist_sort_sql(artist),
-COALESCE(record_key, title_key, title))` and returns one row per group.
+COALESCE(record_key, title))` — the same pair the match uses, `title_key`
+deliberately absent for the reason given under Storage — and returns one row
+per group.
 `DISTINCT ON` picks the representative deterministically: lowest `item_key`
 within the group, so a run judging the same catalog twice batches it
 identically. `count_unjudged_stock_items` counts the same groups.
@@ -316,11 +318,35 @@ genuine sync start would report itself as running on another instance.
 It fails open. A cost guard that turns a database hiccup into a dead Refresh
 button is worse than one that occasionally lets a run through.
 
-`start_judgment_only` therefore returns `{"started", "stock_sync_running"}`
-rather than a bool, for the reason `start_stock_sync`'s docstring already
-gives for its own dict: it is the only place that knows which refusal
-happened, and the caller cannot re-derive it — the local flag reads false for
-a sync on another Machine.
+**The same argument applies to the per-user guard, which is why it gets the
+same treatment.** `judgment_running` reads `_judgment_tasks`, a dict in this
+process, so two Refresh clicks routed to different Machines both see an idle
+one and both start — two runs, same user, same records, both billed. An
+asyncio lock cannot help: it orders requests that reach one process and knows
+nothing of the other. So a judgment run also takes a Postgres advisory lock,
+in the two-int form `(JUDGMENT_LOCK_NAMESPACE, user_id)` so that two *users*
+never contend and only the same user's run elsewhere is refused, held for the
+run's lifetime on its own direct connection and released in
+`_run_judgment_phase`'s `finally`.
+
+A `finally` rather than the end of the try, and session-scoped rather than
+transaction-scoped, for the same reason: neither a failed run nor a Machine
+dying may leave a user unable to refresh. A session-scoped lock dies with its
+connection.
+
+This one fails open where `start_stock_sync`'s does not, and the asymmetry is
+deliberate. A stock sync that cannot take its lock *must not run* —
+concurrent `replace_stock_items` calls corrupt the shared catalog. A judgment
+that cannot take its lock risks one duplicate charge in the rare case that a
+second request is in flight elsewhere at that moment, and refusing every
+Refresh while the database is unreachable is the worse trade.
+
+`start_judgment_only` therefore returns
+`{"started", "running", "stock_sync_running"}` rather than a bool, for the
+reason `start_stock_sync`'s docstring already gives for its own dict: it is
+the only place that knows which refusal happened, and the caller cannot
+re-derive it. Both local flags lie about another Machine, so the router
+forwards this answer whole rather than re-reading either.
 
 The client does need a change, and skipping it would reintroduce a failure
 this app has already had once. `handleRefreshRecommendations` discards the
@@ -389,6 +415,9 @@ user actually reads.
   "already judged" — the case a join through `stock_items` would miss.
 - Two simultaneous starts for one user produce one run, and two users'
   simultaneous starts both run.
+- A start is refused while another Machine holds that user's judgment lock,
+  while a different user's start is not; and the lock is released when the
+  run finishes *and* when it fails, so neither leaves the user locked out.
 - A listing whose `record_key` has not been swept yet still reads as judged
   when it has its own judgment, and a sibling listing of that record is still
   billed only once.
