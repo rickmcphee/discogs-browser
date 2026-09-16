@@ -11,10 +11,10 @@ currently give up: **when is the agent working this branch done with what Copilo
 said?**
 
 Nothing on the pull request answers that. `copilot_code_review` posts a review
-per push, each review carries findings, and the record of what happened to each
-finding is prose scattered down a timeline that interleaves the owner's own
-reviews, CI, and pushes. Reading it is the only way to know, and reading it is
-the cost the signal is supposed to remove.
+per push — most carrying findings, some clean — and the record of what happened
+to each finding is prose scattered down a timeline that interleaves the owner's
+own reviews, CI, and pushes. Reading it is the only way to know, and reading it
+is the cost the signal is supposed to remove.
 
 GitHub already has the control that would say it — a review thread is either open
 or resolved, and the unresolved count sits at the top of the Files tab. It was
@@ -205,9 +205,19 @@ permit and stops being worth reading.
 
 ## Consequences
 
-- An open Copilot thread on a pull request now carries a meaning it did not
-  before: the agent is not finished with it. The owner can read the unresolved
-  count instead of the timeline.
+- An open **Copilot** thread on a pull request now carries a meaning it did not
+  before: the agent is not finished with it.
+- The signal is over Copilot's threads specifically, **not** over GitHub's
+  unresolved-conversation badge, and the gap between the two is worth knowing
+  because the badge does not distinguish authors. Two cases above deliberately
+  leave a thread open after the agent is done with it: the owner's own threads,
+  which are the owner's to resolve, and — if `required_review_thread_resolution`
+  is ever enabled — promotion pull request threads, which are left for a human by
+  design. On a pull request carrying either, a nonzero badge is not evidence of
+  unfinished agent work, and the question to ask is whether any *Copilot* thread
+  is open. Where neither applies, which is the ordinary case, badge and signal
+  agree. That is a real cost to reading this at a glance, and it is the price of
+  the two exceptions rather than an oversight in them.
 - That meaning is only as good as the reply discipline above. A session that
   resolves without replying has not saved the owner a read, it has hidden one.
 - Suppressed findings get a written disposition they previously only got when
