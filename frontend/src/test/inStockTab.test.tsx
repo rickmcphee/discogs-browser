@@ -961,6 +961,27 @@ describe('In Stock tab', () => {
     await waitFor(() => expect(recommendedRadio().disabled).toBe(true))
   })
 
+  // A run can now write judgments without judging anything: propagation gives
+  // a record's verdict to its other listings, and that run reports judged: 0.
+  // Gating on `judged` alone left Recommended disabled in any client whose
+  // bootstrap fetch had returned any_judged: false. (Copilot, PR #368.)
+  it('enables Recommended when a run inherits judgments without judging any', async () => {
+    getUserSettings.mockResolvedValue({ ...defaultUserSettings, anthropic_api_key: 'sk-ant-test' })
+    getJudgmentStatus.mockResolvedValue({ any_judged: false })
+    render(<App />)
+    await waitFor(() => expect(screen.getByText('Store')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Store'))
+    await waitFor(() => expect(recommendedRadio().disabled).toBe(true))
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
+    const source = getLastCrawlSource()
+    source.emit({ status: 'stock_judgment_started' })
+    source.emit({ status: 'stock_judgment_complete', judged: 0, inherited: 7, id: 1 })
+    await waitFor(() => expect(recommendedRadio().disabled).toBe(false))
+    await waitFor(() => expect(
+      screen.getByText(/0 items checked, 7 matched to records already judged/),
+    ).toBeInTheDocument())
+  })
+
   it('does not let a slow bootstrap judgment-status response overwrite a newer SSE-driven one', async () => {
     getUserSettings.mockResolvedValue({ ...defaultUserSettings, anthropic_api_key: 'sk-ant-test' })
     let resolveBootstrap: (v: { any_judged: boolean }) => void = () => {}

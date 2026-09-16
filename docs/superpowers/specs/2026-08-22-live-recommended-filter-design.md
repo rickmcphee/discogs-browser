@@ -64,6 +64,19 @@ Four changes, all in `frontend/src/App.tsx`, no new endpoints.
    or an empty catalog: without the guard, `stock_judgment_complete` would
    still unlock `Recommended` with zero actual judgments.
 
+   **(Amended 2026-09-16, branch `claude/wizardly-goldberg-mxvey2`:** the
+   `stock_judgment_complete` half is now `judged > 0 || inherited > 0`. A run
+   can write judgments without judging anything, which was not possible when
+   this was written: `propagate_stock_judgments` gives a record's verdict to
+   its other listings, and a run that only does that reports `judged: 0`
+   alongside a non-zero `inherited`. Gating on `judged` alone left
+   `Recommended` and Export disabled in a client whose bootstrap
+   `any_judged` was still false. The reasoning above is otherwise intact —
+   both counts being zero still means nothing was judged, so a fully-failed
+   run and an empty catalog stay guarded. `stock_judgment_progress` is
+   unchanged: progress events carry no `inherited`. See
+   [`2026-09-16-record-level-judgment-design.md`](../../specifications/shaping/2026-09-16-record-level-judgment-design.md).**)**
+
 3. **`stockSyncGeneration` bumps on judgment events**, same pattern as the
    existing `stock_sync_progress`/`stock_sync_complete` handlers: add
    `setStockSyncGeneration(g => g + 1)` to both the `stock_judgment_progress`

@@ -641,13 +641,23 @@ export default function App() {
       }
       if (event.status === 'stock_judgment_complete') {
         setSyncing(false)
-        if ((event.judged ?? 0) > 0) {
+        const judged = event.judged ?? 0
+        const inherited = event.inherited ?? 0
+        // Either count proves judgments now exist. A run that judged nothing
+        // but inherited something still wrote rows, and gating on `judged`
+        // alone left Recommended and Export disabled in any client whose
+        // bootstrap fetch had returned any_judged: false.
+        if (judged > 0 || inherited > 0) {
           latestHasJudgedItemsSeq.current++
           setHasJudgedItems(true)
         }
         setStockSyncGeneration(g => g + 1)
         setStockJudgmentGeneration(g => g + 1)
-        setSyncStatus(`Finished finding recommendations — ${event.judged} items checked`, event.id ?? null)
+        const inheritedPart = inherited > 0 ? `, ${inherited} matched to records already judged` : ''
+        setSyncStatus(
+          `Finished finding recommendations — ${judged} items checked${inheritedPart}`,
+          event.id ?? null,
+        )
         return
       }
       if (event.status === 'stock_judgment_error') {

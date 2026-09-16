@@ -88,6 +88,10 @@ export interface CrawlEvent {
   source?: string
   sources?: string[]
   judged?: number
+  // Listings that got a verdict without a model call, because another
+  // listing of the same record already had one. Evidence that judgments
+  // exist just as much as `judged` is — a run can inherit without judging.
+  inherited?: number
   done?: number
   label?: string
   matched?: number

@@ -251,6 +251,15 @@ It is called from `_run_judgment_phase`:
 The count is logged and carried on the `stock_judgment_complete` event as
 `inherited`, so the saving is visible rather than merely believed.
 
+That counter is not only cosmetic, and the client has to read it. A run that
+inherits without judging reports `judged: 0`, and the
+[live-recommended-filter design](../../superpowers/specs/2026-08-22-live-recommended-filter-design.md)
+flips `hasJudgedItems` on `judged > 0` — a rule written when "this run wrote
+judgments" and "this run judged something" were the same statement. They are
+not any more, so the completion handler takes either count, and the status
+line says how many listings were matched rather than reporting nothing
+happened.
+
 ### What it costs to run
 
 Measured on a throwaway 9,000-row catalog shaped like the problem — 3,000
@@ -432,3 +441,6 @@ user actually reads.
   judged afterwards.
 - The Refresh Recommendations click renders a reason when the start is
   rejected, and distinguishes a running sync from a running judgment.
+- A completion carrying only `inherited` enables `Recommended` in a client
+  whose bootstrap `any_judged` was false, and a completion with both counts
+  zero still leaves it disabled.
