@@ -487,7 +487,11 @@ export default function App() {
       // identically -- a previous `complete/40` and a fresh one-batch run that
       // also reaches `complete/40` between two reads are indistinguishable
       // without it, and the Store would sit on the older run's judgments.
-      const seen = `${s.run?.started_at ?? 'none'}/${s.run?.status ?? 'none'}/${s.run?.judged ?? 0}`
+      // inherited is in the key beside judged: a run can write rows to
+      // stock_item_judgments without judging anything, and those rows are
+      // exactly what the Store tab needs to refetch for.
+      const seen = `${s.run?.started_at ?? 'none'}/${s.run?.status ?? 'none'}`
+        + `/${s.run?.judged ?? 0}/${s.run?.inherited ?? 0}`
       if (seen !== lastJudgmentRunSeen.current) {
         if (lastJudgmentRunSeen.current !== null) {
           setStockSyncGeneration(g => g + 1)

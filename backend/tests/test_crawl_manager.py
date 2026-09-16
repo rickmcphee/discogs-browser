@@ -5828,6 +5828,75 @@ async def test_judgment_phase_closes_its_run_row_on_completion_and_on_failure(pg
     assert (run["status"], run["running"], run["error"]) == ("error", False, "boom")
 
 
+async def test_an_inherit_only_run_records_what_it_inherited_on_its_row(pg_schema):
+    """`inherited` has to live on the run row, not only on the SSE event.
+
+    That event reaches subscribers of the Machine running the job, and the
+    deployment does not guarantee that is the one holding a given browser's
+    stream -- which is the whole reason the row exists. A client on the other
+    Machine follows by polling, and without this it is told a run that spent
+    nothing checked nothing. The inherit-only run is the case that makes it
+    visible: `judged` is 0 and the count is the only thing that happened.
+    (Copilot, PR #368, round 14.)
+    """
+    user_id = _judging_user_with_items(2, discogs_user_id=34)
+
+    # Judge one listing, then give its record a second listing to inherit.
+    with db.user_scope(user_id) as conn:
+        first = db.get_unjudged_stock_items(conn, user_id, limit=1)[0]
+        db.upsert_stock_judgments(conn, user_id, [
+            {"item_key": first["item_key"], "recommended": True, "reason": "fits"},
+        ])
+        conn.commit()
+    with db.get_admin_pool().connection() as conn:
+        crawler_id = conn.execute(
+            "SELECT id FROM crawlers WHERE site_name = 'Stock Site'"
+        ).fetchone()["id"]
+        db.replace_stock_items(conn, crawler_id, [
+            {"artist": first["artist"], "title": first["title"], "price": 1.0,
+             "currency": "USD", "url": "https://x/first"},
+            {"artist": first["artist"], "title": first["title"], "price": 2.0,
+             "currency": "USD", "url": "https://x/second"},
+        ])
+        conn.commit()
+
+    with db.user_scope(user_id) as conn:
+        run_token = db.claim_stock_judgment_run(conn, user_id)
+        conn.commit()
+
+    manager = CrawlManager()
+    manager._broadcast = AsyncMock()
+    with patch("recommendations.judge_batch", return_value=[]) as judge:
+        await manager._run_judgment_phase(user_id, run_token)
+
+    judge.assert_not_called()
+    with db.user_scope(user_id) as conn:
+        run = db.get_stock_judgment_run(conn, user_id)
+    assert run["judged"] == 0
+    assert run["inherited"] > 0, (
+        "a poll-following client is told nothing happened otherwise"
+    )
+    assert (run["status"], run["running"]) == ("complete", False)
+
+
+async def test_a_claim_resets_the_inherited_count(pg_schema):
+    """It is a per-run counter like `judged`, so a new run must not read as
+    having inherited what the last one did."""
+    user_id = _judging_user_with_items(0, discogs_user_id=35)
+    # A scope per transaction: user_scope sets app.user_id transaction-locally,
+    # so a read after a commit in the same block has no RLS identity at all.
+    with db.user_scope(user_id) as conn:
+        token = db.claim_stock_judgment_run(conn, user_id)
+        db.finish_stock_judgment_run(conn, user_id, token, "complete", judged=3, inherited=7)
+        conn.commit()
+    with db.user_scope(user_id) as conn:
+        assert db.get_stock_judgment_run(conn, user_id)["inherited"] == 7
+        db.claim_stock_judgment_run(conn, user_id)
+        conn.commit()
+    with db.user_scope(user_id) as conn:
+        assert db.get_stock_judgment_run(conn, user_id)["inherited"] == 0
+
+
 async def test_judgment_phase_releases_its_claim_when_cancelled(pg_schema):
     """Without the finally backstop a cancelled run leaves its row saying
     'running', and every later Refresh is refused until the heartbeat goes

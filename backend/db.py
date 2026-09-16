@@ -900,6 +900,13 @@ CREATE TABLE IF NOT EXISTS stock_judgment_runs (
     finished_at TIMESTAMP,
     run_token TEXT
 );
+-- Listings that took a verdict their record already held, rather than being
+-- paid for. On the row and not only on the SSE event, because the event
+-- reaches subscribers of the Machine running the job and the deployment does
+-- not guarantee that is the one holding the browser's stream. A client on the
+-- other Machine follows the run by polling, and without this it is told a run
+-- that spent nothing checked nothing.
+ALTER TABLE stock_judgment_runs ADD COLUMN IF NOT EXISTS inherited INTEGER NOT NULL DEFAULT 0;
 
 CREATE TABLE IF NOT EXISTS user_hidden_crawlers (
     user_id INTEGER NOT NULL REFERENCES users(id),
@@ -1062,7 +1069,8 @@ def backfill_stock_keys(conn) -> int:
     """Make every stored fold key match the row it was folded from, and every
     stock_item_identities row carry the record_key its live stock row does.
     Returns how many rows that rewrote. Blocking and CPU-bound; call it off
-    the event loop.
+    the event loop. **Commits `conn` between its two passes** -- see the note
+    on the deadlock that buys.
 
     Python-side rather than an UPDATE in TENANT_SCHEMA because both folds live
     in title_key.py, and one copy of them is the point.
@@ -1146,6 +1154,28 @@ def backfill_stock_keys(conn) -> int:
                 stale,
             )
             keyed_rows = cur.rowcount
+    # Committed before the identity pass starts, so this transaction never
+    # holds a stock_items row lock while waiting for a stock_item_identities
+    # one. That pairing is a deadlock against upsert_stock_item_from_release,
+    # which takes them the other way round -- identity first, then the stock
+    # row -- and Postgres resolves it by aborting somebody: either a crawl
+    # result is lost, or this sweep raises and takes a judgment run down with
+    # a "deadlock detected" the user sees.
+    #
+    # Committing rather than reordering the passes, because there is no order
+    # to agree on: the two live writers disagree with each other.
+    # upsert_stock_item_from_release goes identity then stock;
+    # replace_stock_items deletes the crawler's stock rows *first* and upserts
+    # identities after. Matching either one picks a fight with the other.
+    # Holding neither lock across the other pass conflicts with neither.
+    #
+    # The cost is a window where a stock row is keyed and its identity is not,
+    # and it is the affordable direction: the record match then fails to find
+    # a judged record for its siblings, which bills one of them a second time,
+    # where the pair being equal on a stale key bills a verdict to the wrong
+    # record entirely. The next sweep repairs it, since the identity pass
+    # below selects on exactly that disagreement.
+    conn.commit()
     # Copied from the item's live stock row where it still has one, not folded
     # again from this table's own artist/title. The two tables' names disagree
     # on the release-crawler path: stock_items keys off `listing_title` (the
@@ -4362,7 +4392,7 @@ def claim_stock_judgment_run(conn, user_id: int) -> Optional[str]:
         VALUES (%(user_id)s, 'running', %(run_token)s)
         ON CONFLICT (user_id) DO UPDATE SET
             status = 'running', run_token = EXCLUDED.run_token,
-            judged = 0, total = NULL, error = NULL, stop_requested = FALSE,
+            judged = 0, inherited = 0, total = NULL, error = NULL, stop_requested = FALSE,
             started_at = CURRENT_TIMESTAMP,
             heartbeat_at = clock_timestamp(), finished_at = NULL
         WHERE stock_judgment_runs.status <> 'running' OR {_JUDGMENT_RUN_STALE_SQL}
@@ -4379,6 +4409,7 @@ def record_stock_judgment_progress(
     run_token: Optional[str],
     judged: Optional[int] = None,
     total: Optional[int] = None,
+    inherited: Optional[int] = None,
 ) -> Optional[dict]:
     """Advance the run's counters and its heartbeat, and read back whether a
     stop has been asked for. COALESCE so a caller can move one field without
@@ -4406,6 +4437,7 @@ def record_stock_judgment_progress(
         """
         UPDATE stock_judgment_runs SET
             judged = COALESCE(%(judged)s, judged),
+            inherited = COALESCE(%(inherited)s, inherited),
             total = COALESCE(%(total)s, total),
             heartbeat_at = clock_timestamp()
         WHERE user_id = %(user_id)s AND status = 'running'
@@ -4413,7 +4445,8 @@ def record_stock_judgment_progress(
               AND NOT ({stale})
         RETURNING stop_requested
         """.format(stale=_JUDGMENT_RUN_STALE_SQL),
-        {"user_id": user_id, "run_token": run_token, "judged": judged, "total": total},
+        {"user_id": user_id, "run_token": run_token, "judged": judged,
+         "total": total, "inherited": inherited},
     ).fetchone()
     return {"stop_requested": row["stop_requested"]} if row else None
 
@@ -4425,6 +4458,7 @@ def finish_stock_judgment_run(
     status: str,
     judged: Optional[int] = None,
     error: Optional[str] = None,
+    inherited: Optional[int] = None,
 ) -> bool:
     """Close the run. Returns whether this call is the one that closed it.
 
@@ -4441,6 +4475,7 @@ def finish_stock_judgment_run(
         UPDATE stock_judgment_runs SET
             status = %(status)s,
             judged = COALESCE(%(judged)s, judged),
+            inherited = COALESCE(%(inherited)s, inherited),
             error = %(error)s,
             heartbeat_at = clock_timestamp(),
             finished_at = CURRENT_TIMESTAMP
@@ -4450,7 +4485,7 @@ def finish_stock_judgment_run(
         """.format(stale=_JUDGMENT_RUN_STALE_SQL),
         {
             "user_id": user_id, "run_token": run_token, "status": status,
-            "judged": judged, "error": error,
+            "judged": judged, "error": error, "inherited": inherited,
         },
     )
     return cursor.rowcount > 0

@@ -128,7 +128,7 @@ def unsave_stock_item(item_key: str, request: Request):
 # abandoned run still says 'running' -- see db.get_stock_judgment_run), and the
 # row also carries a heartbeat and a claim token that are bookkeeping, not news.
 _JUDGMENT_RUN_FIELDS = (
-    "status", "running", "stale", "judged", "total", "error",
+    "status", "running", "stale", "judged", "inherited", "total", "error",
     "stop_requested", "started_at", "finished_at",
 )
 

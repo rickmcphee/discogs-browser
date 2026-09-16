@@ -2085,7 +2085,7 @@ class CrawlManager:
         async def broadcast(event: dict):
             await self._broadcast({**event, "user_id": user_id})
 
-        async def close(event: dict, status: str, judged=None, error=None):
+        async def close(event: dict, status: str, judged=None, error=None, inherited=None):
             """Record the run's outcome, then announce it -- in that order.
 
             A dispossessed worker can reach any of these endings, and the close
@@ -2098,7 +2098,9 @@ class CrawlManager:
             Only a definite False silences it. None means the close could not be
             attempted, which is no evidence of a takeover, and a run with no
             token never entered the claim protocol at all."""
-            closed = self._finish_judgment_run(user_id, run_token, status, judged=judged, error=error)
+            closed = self._finish_judgment_run(
+                user_id, run_token, status, judged=judged, error=error, inherited=inherited
+            )
             if not (run_token is not None and closed is False):
                 await broadcast(event)
 
@@ -2133,7 +2135,7 @@ class CrawlManager:
                         "status": "stock_judgment_stopped",
                         "judged": judged, "total": total, "inherited": inherited,
                     },
-                    "stopped", judged=judged,
+                    "stopped", judged=judged, inherited=inherited,
                 )
                 log.info(
                     "Recommendation run stopped for %s after %d records judged, %d listings inherited",
@@ -2233,7 +2235,7 @@ class CrawlManager:
             if not unjudged:
                 await close(
                     {"status": "stock_judgment_complete", "judged": 0, "inherited": inherited},
-                    "complete", judged=0,
+                    "complete", judged=0, inherited=inherited,
                 )
                 log.info("Found 0/0 items to judge for %s, nothing to do", username)
                 return
@@ -2246,7 +2248,7 @@ class CrawlManager:
             # clicked Refresh is in, and honouring it costs them nothing.
             with user_scope(user_id) as conn:
                 progress = record_stock_judgment_progress(
-                    conn, user_id, run_token, total=len(unjudged)
+                    conn, user_id, run_token, total=len(unjudged), inherited=inherited
                 )
                 conn.commit()
             if taken_over(progress) or await stop_requested(progress, 0, len(unjudged), inherited):
@@ -2289,7 +2291,8 @@ class CrawlManager:
                 # outlasted JUDGMENT_RUN_STALE_MINUTES.
                 with user_scope(user_id) as conn:
                     progress = record_stock_judgment_progress(
-                        conn, user_id, run_token, judged=judged + len(results)
+                        conn, user_id, run_token, judged=judged + len(results),
+                        inherited=inherited,
                     )
                     still_ours = progress is not None or run_token is None
                     if results and still_ours:
@@ -2324,7 +2327,7 @@ class CrawlManager:
 
             await close(
                 {"status": "stock_judgment_complete", "judged": judged, "inherited": inherited},
-                "complete", judged=judged,
+                "complete", judged=judged, inherited=inherited,
             )
             log.info(
                 "Stock judgment complete for %s: %d records judged, %d listings inherited",

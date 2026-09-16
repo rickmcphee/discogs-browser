@@ -377,8 +377,17 @@ It is called from `_run_judgment_phase`:
   so deferring the fan-out to the end of the run would show a partial set for
   the duration of it.
 
-The count is logged and carried on the `stock_judgment_complete` event as
-`inherited`, so the saving is visible rather than merely believed.
+The count is logged, carried on the `stock_judgment_complete` event as
+`inherited`, **and recorded on the run's own row**, so the saving is visible
+rather than merely believed. On the row and not only on the event, because
+that event reaches subscribers of the Machine running the job and the
+deployment does not guarantee it is the one holding a given browser's stream —
+which is the whole reason `stock_judgment_runs` exists (see the
+[stop-a-run design](2026-09-16-stop-recommendation-run-design.md)). A client
+following by polling would otherwise be told a run that spent nothing checked
+nothing. `record_stock_judgment_progress` and `finish_stock_judgment_run` both
+carry it, a claim resets it beside `judged`, and `GET /api/stock/judge/status`
+returns it on the run.
 
 That counter is not only cosmetic, and the client has to read it. A run that
 inherits without judging reports `judged: 0`, and the
@@ -584,6 +593,11 @@ user actually reads.
 - Neither pass overwrites what a worker committed between its own read and
   write: one test races the stock pass, one races the identity pass, and each
   asserts the worker's newer key survives in *both* tables.
+- The sweep does not deadlock against a release-crawler write holding the
+  identity it is about to want — the test drives exactly that interleaving and
+  fails with `DeadlockDetected` if the two passes share a transaction.
+- An inherit-only run records what it inherited on its row, and a fresh claim
+  resets that counter beside `judged`.
 - A stale key with nothing NULL to mark it — the state an old binary leaves by
   moving `listing_title` while preserving `record_key` — is repaired, and the
   same writer racing the sweep gets its newer title left alone rather than

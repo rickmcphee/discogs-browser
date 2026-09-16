@@ -131,6 +131,12 @@ export interface StockJudgmentRun {
   running: boolean
   stale: boolean
   judged: number
+  // Listings that took a verdict their record already held, rather than being
+  // paid for. Carried on the row and not only on the SSE event: that event
+  // reaches subscribers of the Machine running the job, and a client polling
+  // from the other one would otherwise be told a run that spent nothing
+  // checked nothing.
+  inherited: number
   // Null until the run has counted the items it is going to judge, which it
   // does before the first Anthropic call.
   total: number | null

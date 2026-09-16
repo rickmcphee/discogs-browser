@@ -1,3 +1,4 @@
+import time
 from datetime import datetime
 
 import pytest
@@ -1159,6 +1160,93 @@ def test_the_sweep_yields_to_an_old_binary_that_moved_the_title_mid_sweep(pg_tes
             "SELECT record_key FROM stock_items WHERE item_key = %s", [item_key]
         ).fetchone()
     assert row["record_key"] == record_key("Album A Deluxe", "Artist A")
+
+
+def test_the_sweep_does_not_deadlock_against_a_release_crawler_write(pg_test_db):
+    """The sweep writes stock rows and then identities; a release-crawler
+    write takes them the other way round -- identity first, then the stock row
+    it belongs to. One transaction holding both is a cycle, and Postgres
+    resolves it by aborting somebody: a lost crawl result, or a judgment run
+    that fails in front of the user with "deadlock detected".
+
+    There is no order to agree on, either: replace_stock_items deletes its
+    crawler's stock rows before upserting identities, so the two live writers
+    already disagree with each other. The sweep commits between its passes
+    instead, holding neither lock across the other. (Copilot, PR #368,
+    round 14.)
+    """
+    import threading
+    import psycopg
+    import config
+
+    with db.get_admin_pool().connection() as conn:
+        item_key = _seed_release_crawler_item(
+            conn, "Marketplace", "https://m/a", "Album A Remixes"
+        )
+        conn.commit()
+        # Both passes must have work to do, or neither takes its lock.
+        conn.execute("UPDATE stock_items SET record_key = NULL WHERE item_key = %s", [item_key])
+        conn.execute(
+            "UPDATE stock_item_identities SET record_key = %s WHERE item_key = %s",
+            [record_key("Album A", "Artist A"), item_key],
+        )
+        conn.commit()
+
+    holds_identity = threading.Event()
+    release_worker = threading.Event()
+    worker_error = []
+
+    def _release_crawler_write():
+        worker = psycopg.connect(config.DATABASE_URL)
+        try:
+            worker.execute("SET deadlock_timeout = '200ms'")
+            worker.execute(
+                "UPDATE stock_item_identities SET title = %s WHERE item_key = %s",
+                ["Album A", item_key],
+            )
+            holds_identity.set()
+            release_worker.wait(timeout=10)
+            # Blocks while the sweep still holds this row from its first pass.
+            worker.execute(
+                "UPDATE stock_items SET listing_title = %s WHERE item_key = %s",
+                ["Album A Deluxe", item_key],
+            )
+            worker.commit()
+        except Exception as e:
+            worker_error.append(e)
+            worker.rollback()
+        finally:
+            worker.close()
+
+    thread = threading.Thread(target=_release_crawler_write)
+    thread.start()
+    assert holds_identity.wait(timeout=10)
+
+    def _let_the_worker_reach_for_the_stock_row():
+        # Fired straight after the stock pass's UPDATE, so the sweep is
+        # holding that row. Give the worker long enough to queue behind it,
+        # then let the sweep go on to want the identity the worker holds.
+        release_worker.set()
+        time.sleep(0.5)
+
+    sweep_error = []
+    with db.get_admin_pool().connection() as conn:
+        conn.execute("SET deadlock_timeout = '200ms'")
+        proxy = _FireAfter(
+            conn, "FROM stock_item_identities i", _let_the_worker_reach_for_the_stock_row
+        )
+        try:
+            db.backfill_stock_keys(proxy)
+            conn.commit()
+        except Exception as e:
+            sweep_error.append(e)
+            conn.rollback()
+
+    thread.join(timeout=10)
+    assert not thread.is_alive()
+    assert proxy.fired, "the sweep never reached its identity pass"
+    assert not sweep_error, f"the sweep was aborted: {sweep_error}"
+    assert not worker_error, f"the crawl write was aborted: {worker_error}"
 
 
 def test_a_sibling_is_not_rebilled_after_an_identity_is_reconciled(pg_test_db):
