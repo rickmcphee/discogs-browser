@@ -16,6 +16,18 @@ class BotDetectedError(Exception):
     """Raised by a crawler when it detects an anti-bot interstitial."""
 
 
+# Rejected before parsing rather than after, because urlparse and a browser
+# disagree about these and it is the browser that ultimately fetches the URL.
+# Backslash is the sharp one: WHATWG treats "\" as "/" in a special scheme, so
+# "https://evil.example\@www.ebay.com/itm/1" is host evil.example to a browser
+# while urlparse reads "evil.example\" as userinfo and answers www.ebay.com --
+# which turns a hostname allowlist into a redirect to anywhere. C0 controls,
+# DEL and space go with it: a browser strips or rejects them, and which of
+# those Python does has changed across releases, so the host a URL resolves to
+# would otherwise depend on the interpreter.
+_PARSER_DIFFERENTIAL_RE = re.compile(r"[\\\x00-\x20\x7f]")
+
+
 def https_host(url) -> Optional[str]:
     """The hostname of `url` when it is a well-formed https URL, else None.
 
@@ -26,6 +38,10 @@ def https_host(url) -> Optional[str]:
     unterminated IPv6 literal -- so a caller that parses inline aborts the
     whole crawl over one bad string. On the stock-item path that reads to the
     consecutive-failure breaker as the site being down.
+
+    A URL can also parse *differently* here than in the browser that will
+    fetch it, which for the eBay link is an allowlist bypass -- see
+    `_PARSER_DIFFERENTIAL_RE` above.
 
     And a prefix test passes "https:///x.jpg", which has no hostname and is
     neither a link nor a picture -- as does "https://h:not-a-port/x.jpg",
@@ -38,6 +54,8 @@ def https_host(url) -> Optional[str]:
     them already has in hand.
     """
     if not isinstance(url, str) or not url:
+        return None
+    if _PARSER_DIFFERENTIAL_RE.search(url):
         return None
     try:
         parsed = urlparse(url)

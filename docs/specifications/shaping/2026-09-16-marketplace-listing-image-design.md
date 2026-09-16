@@ -141,7 +141,22 @@ Out of scope:
   a broken thumbnail, which is precisely the fallback this design promises.
   `https_host` parses inside a `try`, reads `.port` there too so the parse is
   finished rather than merely started, answers None rather than raising, and
-  requires a hostname — so every caller simply falls back. It
+  requires a hostname — so every caller simply falls back.
+- **A URL that parses differently here than in the browser is rejected
+  outright.** The guard answers a question about what the *browser* will do
+  with a string, so where `urlparse` and WHATWG disagree, `urlparse` is the
+  wrong authority. Backslash is the sharp case: WHATWG treats `\` as `/` in a
+  special scheme, so `"https://evil.example\@www.ebay.com/itm/1"` is host
+  `evil.example` to a browser while `urlparse` reads `evil.example\` as
+  userinfo and answers `www.ebay.com` — which turns `_is_ebay_item_url`, a
+  hostname allowlist guarding a link the user clicks, into a redirect to
+  anywhere. C0 controls, DEL and space are rejected with it: a browser strips
+  or rejects them, and which of those Python does has changed across
+  releases, so the host would otherwise depend on the interpreter (`urlparse`
+  answers `www.ebay.com` for the NUL variant of the same spoof). Rejecting
+  the class before parsing is the safer fix than matching browser
+  normalisation, and costs only a fallback to the target's own art or to the
+  `legacyItemId` link. It
   lives in `crawler.py` because `amazon.py` and `ebay_api.py` both already
   import from there, and because the third caller — `_is_ebay_item_url`,
   which had the identical inline parse on `itemWebUrl` and predates this
@@ -181,8 +196,13 @@ Out of scope:
 - `backend/tests/test_crawler_utils.py` — `https_host` directly: it returns
   the host of a good URL, keeps a valid explicit port, rejects a host-less
   `https:///…` and a malformed or out-of-range port, answers None rather
-  than raising on `"https://["`, and rejects non-https, empty and non-string
-  values. This is where the Amazon guard is actually covered:
+  than raising on `"https://["`, rejects the backslash and NUL hostname
+  spoofs along with tab/newline/space, and rejects non-https, empty and
+  non-string values.
+- `backend/tests/test_ebay_api.py` also covers the spoof end to end: a
+  `itemWebUrl` of `"https://evil.example\@www.ebay.com/itm/123"` does not
+  satisfy the allowlist and the listing falls back to the `legacyItemId`
+  link. This is where the Amazon guard is actually covered:
   `search()` is Playwright-driven and, per `CLAUDE.md`, not unit-tested, so
   routing its check through a shared pure function is what makes it testable
   at all.

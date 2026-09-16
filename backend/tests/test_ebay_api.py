@@ -267,6 +267,34 @@ async def test_search_ebay_rejects_a_picture_url_with_no_host(monkeypatch):
     assert result[0]["cover_image_url"] is None
 
 
+async def test_search_ebay_rejects_a_backslash_hostname_spoof_in_itemweburl(monkeypatch):
+    # End to end on the allowlist _is_ebay_item_url exists for: urlparse reads
+    # the host below as www.ebay.com, but a browser navigates to evil.example.
+    # The link is rendered for the user to click, so the guard has to answer
+    # the browser's question, not urlparse's -- it falls back to the legacy id.
+    import ebay_api
+
+    async def fake_token(app_id, cert_id):
+        return "tok"
+
+    payload = {"itemSummaries": [{
+        "title": "Miles Davis Kind of Blue Vinyl LP 180g Reissue",
+        "price": {"value": "19.99", "currency": "USD"},
+        "itemWebUrl": "https://evil.example\\@www.ebay.com/itm/123",
+        "legacyItemId": "789",
+        "condition": "New",
+    }]}
+    monkeypatch.setattr(ebay_api, "get_token", fake_token)
+    monkeypatch.setattr(ebay_api.httpx, "AsyncClient", lambda *a, **k: _FakeClient(payload))
+
+    result = await ebay_api.search_ebay(
+        {"artist": "Miles Davis", "title": "Kind of Blue", "format": "Vinyl"},
+        "app", "cert", seller=None, limit=5, log_prefix="eBay", fallback_url="https://www.ebay.com/sch",
+    )
+
+    assert result[0]["url"] == "https://www.ebay.com/itm/789"
+
+
 async def test_search_ebay_falls_back_to_the_legacy_url_when_itemweburl_is_unparseable(monkeypatch):
     # Same hazard on the link, which predates the picture: _is_ebay_item_url
     # parsed inline too, so a malformed itemWebUrl raised instead of failing

@@ -184,6 +184,25 @@ def test_https_host_keeps_a_valid_explicit_port():
     assert https_host("https://images.example:8443/cover.jpg") == "images.example"
 
 
+def test_https_host_rejects_a_backslash_that_would_reparse_in_the_browser():
+    # The sharp one. WHATWG treats "\" as "/" in a special scheme, so a
+    # browser reads the host below as evil.example, while urlparse reads
+    # "evil.example\" as userinfo and answers www.ebay.com -- turning the eBay
+    # hostname allowlist into a redirect to anywhere.
+    assert https_host("https://evil.example\\@www.ebay.com/itm/1") is None
+    assert https_host("https://evil.example\\\\@www.ebay.com/itm/1") is None
+
+
+def test_https_host_rejects_control_characters_and_space():
+    # A browser strips or rejects these, and which of them Python strips has
+    # changed across releases -- so the host would otherwise depend on the
+    # interpreter. urlparse answers www.ebay.com for the NUL case.
+    assert https_host("https://evil.example\x00@www.ebay.com/itm/1") is None
+    assert https_host("https://www.ebay.com\t/itm/1") is None
+    assert https_host("https://www.ebay.com\n/itm/1") is None
+    assert https_host("https://www.ebay.com /itm/1") is None
+
+
 def test_https_host_rejects_non_https_and_non_strings():
     assert https_host("http://plain.example/x.jpg") is None
     assert https_host("data:image/png;base64,iVBORw0KGgo=") is None
