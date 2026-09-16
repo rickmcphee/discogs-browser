@@ -176,8 +176,8 @@ _VARIANT_WORDS = frozenset("""
 
 # A bracketed aside, and the separators a store puts a variant behind when it
 # does not bracket it. The bare hyphen needs whitespace on both sides or
-# "Non-Stop" would split into two segments; the typographic dashes, pipe,
-# slash and comma do not.
+# "Non-Stop" would split into two segments; the typographic dashes, pipe and
+# slash do not.
 _BRACKETED = re.compile(r"[(\[{][^)\]}]*[)\]}]")
 # No comma. A comma is ordinary title punctuation far more often than it is a
 # metadata boundary -- "Red, White & Blue", "Ready, Set" -- and since the words

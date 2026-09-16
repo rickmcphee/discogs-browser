@@ -222,16 +222,35 @@ Both write paths compute the key once and put the identical value in both
 tables, so the two can never drift into disagreeing about which record an
 item_key belongs to.
 
-The backfill has to reconcile them too, and this is easy to get wrong: on the
-release-crawler path the two tables' own titles genuinely differ, since
-`stock_items` keys off `listing_title` (the marketplace's name for what it
-matched) while the identity stores the catalog target's name. A backfill
-reading each table's own columns would put a different key in each, and since
-the judgment path matches identity against stock row, a historical judgment
-whose two keys disagree simply stops being found — and is billed again,
-silently. So the backfill keys an identity from its live stock row where it
-still has one, falling back to its own name only for an item that no longer
-has one.
+The backfill has to reconcile them too, and this is easy to get wrong twice.
+
+First, on the release-crawler path the two tables' own titles genuinely
+differ, since `stock_items` keys off `listing_title` (the marketplace's name
+for what it matched) while the identity stores the catalog target's name. A
+backfill reading each table's own columns would put a different key in each,
+and since the judgment path matches identity against stock row, a historical
+judgment whose two keys disagree simply stops being found — and is billed
+again, silently. So the backfill keys the stock rows first and then *copies*
+each identity's key from its live stock row, falling back to folding its own
+name only for an item that no longer has one. Equal by construction rather
+than by two derivations agreeing.
+
+Second, it has to look at every identity with a stock row, not only at those
+missing a key. An item out of stock when a new machine boots is keyed from the
+identity's own name, there being no `listing_title` to read; restock it from a
+machine still running the old binary and the stock row arrives unkeyed, to be
+folded by the next sweep from a `listing_title` that may read differently. A
+sweep selecting on `record_key IS NULL` alone would find that identity already
+set and never look again, and the pair would stay unequal for as long as the
+row lived — the same silent re-billing, now permanent. The identity pass
+therefore selects on *disagreement*: no key, or a key the live stock row does
+not share.
+
+Both passes are one transaction, and that is what lets the sweep stay a
+convenience rather than a correctness guard. An unkeyed stock row is skipped
+by everything; a keyed stock row whose identity disagrees is not, and the
+sweep is the only thing that can produce that pair — so it must never commit
+one.
 
 Populated by `replace_stock_items` and `upsert_stock_item_from_release`, and
 swept by the boot/end-of-sync backfill that today fills `title_key` only. That
@@ -239,6 +258,14 @@ backfill is renamed `backfill_stock_keys` — it no longer fills one key, or one
 table — and fills any of the three columns where NULL, so a rolling deploy
 whose old process is still writing `record_key`-less rows is repaired by the
 next sweep exactly as it already is for `title_key`.
+
+Its cost is no longer a pair of index lookups. The stock pass still answers
+from the partial indexes on the NULL keys, but the identity pass compares
+against another table, which no index on the identities can answer, so it
+walks them. Measured at 9,000 rows: about 23 ms in the steady state where it
+finds nothing, against roughly 1,840 ms for the whole-catalog replace it
+follows. The partial index on the identities' NULL keys is dropped with this
+change — it had no reader left, and every upsert was still maintaining it.
 
 **A missing key is not compared at all.** Every query that reads `record_key`
 also requires it to be present, on both sides, and an unkeyed stock row simply
@@ -298,11 +325,17 @@ It is called from `_run_judgment_phase`:
   the next. That is also why it needs no atomicity with the queries after it:
   the crawl worker pool writes stock rows continuously and takes no part in
   the stock-sync lock, so an old Machine can add an unkeyed row a moment after
-  the sweep commits, and that row simply sits out this run. Normally a no-op,
-  and the partial indexes on the NULL keys make finding that out a lookup.
-- **Before** selecting the unjudged set, so verdicts from earlier runs reach
-  listings that appeared since — the new-URL and second-shop cases — and those
-  listings drop out of the billable set before a batch is built.
+  the sweep commits, and that row simply sits out this run. It holds only
+  because the sweep keys a stock row and reconciles its identity in one
+  transaction; see the backfill section above. Normally a no-op, at the cost
+  recorded there.
+- **Before** selecting the unjudged set — but not to keep anything out of it.
+  The billable set is grouped by record and anti-joined on the record, so a
+  listing whose record already holds a verdict is excluded whether its own
+  row has been written or not. What running first buys is the two things only
+  a written per-listing row gives: `inherited`, so a run that spends nothing
+  still reports having done something, and the rows the Recommended filter
+  matches on, in place for the view the user refreshes into.
 - **After each batch's upsert**, so a verdict just paid for reaches its
   sibling listings while the run is still going. The Recommended filter
   updates per batch (see the
@@ -508,6 +541,9 @@ user actually reads.
 - The billable set's representative is stable across repeated calls.
 - `backfill_stock_keys` fills a NULL `record_key` on a stock row whose
   `title_key` is already set, and on an identity row.
+- It also reconciles an identity whose key its live stock row does not share —
+  the pair a boot sweep plus an old binary's restock leaves — and having done
+  so, finds nothing left to do on the next call.
 - A record whose judged listing is no longer stocked at all still answers
   "already judged" — the case a join through `stock_items` would miss.
 - Two simultaneous starts for one user produce one run, and two users'
@@ -516,11 +552,13 @@ user actually reads.
   while a different user's start is not; and the lock is released when the
   run finishes *and* when it fails, so neither leaves the user locked out.
 - A listing whose `record_key` has not been swept yet still reads as judged
-  when it has its own judgment, and a sibling listing of that record is still
-  billed only once.
+  when it has its own judgment; and with the key missing everywhere, nothing
+  is billed at all rather than being compared against something else.
 - A judged record's sibling left unkeyed by an old binary — the mixed state,
-  not the all-NULL one — is in the billable set before a sweep and out of it
-  after, and the judgment run sweeps before it counts.
+  not the all-NULL one — sits out the run before a sweep and inherits after
+  it, and the judgment run sweeps before it counts.
+- A sibling of a record whose identity was left holding a different key is not
+  billed again once the sweep has reconciled the two.
 - The lock acquisition closes its connection when the lock query raises, and
   a run cancelled at its opening broadcast still releases its lock — that
   broadcast awaits, so it is a cancellation point, and it has to sit inside

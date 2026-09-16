@@ -7343,8 +7343,15 @@ async def test_the_judgment_lock_is_released_when_the_run_fails(pg_schema, manag
 
 async def test_the_judgment_run_sweeps_missing_keys_before_it_counts(pg_schema, manager):
     """The sweep is a call ordering, so this pins the ordering rather than the
-    end state: a mixed keyed/unkeyed catalog re-bills a judged record's
-    siblings, and only a sweep *ahead of* the counting queries prevents it.
+    end state.
+
+    Not because an unkeyed row would otherwise be billed -- the billable set
+    and propagation both skip one. What the ordering buys is participation: a
+    row keyed first can inherit a verdict and be judged on *this* run instead
+    of sitting out until the next. Propagation ahead of the counts likewise
+    buys the two things only a written per-listing row gives, `inherited` and
+    the rows the Recommended filter matches on; the counts already exclude a
+    judged record's listings whether propagation has run or not.
     (Copilot, PR #368.)
     """
     calls = []

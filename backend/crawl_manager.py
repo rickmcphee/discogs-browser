@@ -2103,24 +2103,38 @@ class CrawlManager:
             # mis-billed whether this runs or not. What it buys is that such a
             # row takes part in *this* run instead of waiting for the next.
             #
+            # That holds only because the sweep keys a stock row and reconciles
+            # its identity in one transaction. A keyed stock row whose identity
+            # still holds a different key *would* be mis-billed -- the record
+            # match runs one against the other -- and the sweep is the only
+            # thing that can produce that pair, so it must never leave one
+            # behind. See backfill_stock_keys.
+            #
             # Which is also why it does not need to be atomic with the queries
             # below. The crawl worker pool writes stock rows continuously and
             # takes no part in the stock-sync lock, so an old Machine can add
             # an unkeyed row a moment after this commits; that row simply sits
-            # out this run. Normally a no-op, and the partial indexes on the
-            # NULL keys make finding that out a lookup rather than a scan.
+            # out this run. Normally a no-op, at a cost measured against the
+            # sync it follows in backfill_stock_keys.
             with get_app_pool().connection() as conn:
                 swept = backfill_stock_keys(conn)
                 conn.commit()
             if swept:
                 log.info("Keyed %d stock and identity rows before judging for %s", swept, username)
 
-            # Before the counts, not after: every listing that can inherit a
-            # verdict from an earlier run must do so now, or it lands in the
-            # billable set and gets paid for a second time. In a scope of its
-            # own because user_scope sets app.user_id transaction-locally, so
-            # committing inside one and carrying on would leave every later
-            # statement on that connection with no RLS identity at all.
+            # Before the counts, not after -- but not to keep anything out of
+            # the billable set, which already excludes a listing whose record
+            # holds a verdict whether its own row has been written or not.
+            # What running first buys is the two things only a written row
+            # gives: `inherited`, reported below and to the browser so a run
+            # that spends nothing still reads as having done something, and
+            # the per-listing rows the Recommended filter matches on, in place
+            # for the view the user refreshes into.
+            #
+            # In a scope of its own because user_scope sets app.user_id
+            # transaction-locally, so committing inside one and carrying on
+            # would leave every later statement on that connection with no RLS
+            # identity at all.
             with user_scope(user_id) as conn:
                 inherited = propagate_stock_judgments(conn, user_id)
                 conn.commit()

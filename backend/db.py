@@ -693,8 +693,11 @@ CREATE INDEX IF NOT EXISTS stock_items_record_key_null_idx
 CREATE INDEX IF NOT EXISTS stock_item_identities_record_fold_idx
     ON stock_item_identities ({_artist_sort_sql("artist", escape_percent=False)},
                               record_key);
-CREATE INDEX IF NOT EXISTS stock_item_identities_record_key_null_idx
-    ON stock_item_identities (item_key) WHERE record_key IS NULL;
+-- Dropped rather than added: the identity half of backfill_stock_keys no
+-- longer asks only for a NULL key. It asks whether the key matches the one on
+-- the item's live stock row, and no index on this table answers that, so the
+-- partial index had no reader left while every upsert still maintained it.
+DROP INDEX IF EXISTS stock_item_identities_record_key_null_idx;
 """
 
 
@@ -1004,9 +1007,9 @@ def _ensure_role(conn, role_name: str, password: str, bypass_rls: bool):
 
 
 def backfill_stock_keys(conn) -> int:
-    """Key every row missing stock_items.title_key or record_key, and every
-    stock_item_identities row missing record_key; returns how many rows were
-    touched across both.
+    """Key every row missing stock_items.title_key or record_key, and give
+    every stock_item_identities row the record_key its live stock row carries;
+    returns how many rows were touched across both.
 
     Python-side rather than an UPDATE in TENANT_SCHEMA because both folds live
     in title_key.py, and one copy of them is the point. Rows still NULL would
@@ -1022,37 +1025,73 @@ def backfill_stock_keys(conn) -> int:
     unkeyed rows -- a store snapshot, a marketplace match -- after a new
     machine's boot sweep has already run, and the boot sweep never revisits
     them. The sync-end sweep does, on the first sync any new machine runs.
-    Idempotent, and normally empty: the partial index on NULL keys makes the
-    empty case a lookup rather than a scan.
+
+    Idempotent, and normally a no-op. Finding that out costs a lookup on an
+    empty partial index for the stock rows; the identity pass below compares
+    against another table, which no index on it can answer, so that one walks
+    the identities. Measured at 9,000 rows: ~23 ms, against the ~1,840 ms the
+    replace it follows costs.
 
     The same derivation as the two live writers: the name the site gave the
     item when it gave one (a release-crawler row's listing_title, which can
     name a different pressing than the target), else the title, with the
     artist along to strip a leading "Artist - ".
     """
-    # Keyed from the item's live stock row where it still has one, not from
-    # this table's own artist/title. The two disagree on the release-crawler
-    # path: stock_items keys off `listing_title` (the marketplace's name for
-    # what it matched), while the identity stores the catalog target's name,
-    # and the live writers reconcile that by putting one computed value in
-    # both. A backfill reading only this table would not, and the mismatch is
-    # silent and expensive -- _judged_record_sql matches identity to stock
-    # row, so a historical judgment whose two keys disagree stops being found
-    # and the item is billed again. An item with no stock row left has no
-    # listing_title to recover and falls back to its own name.
+    # Stock rows first, identities second, because the identity pass below
+    # copies its answer from them.
+    rows = conn.execute(
+        "SELECT id, artist, title, listing_title FROM stock_items "
+        "WHERE title_key IS NULL OR record_key IS NULL"
+    ).fetchall()
+    if rows:
+        with conn.cursor() as cur:
+            # Both columns rewritten whenever either is missing, rather than
+            # one UPDATE per column: the two derive from the same three
+            # fields, so a row needing one is no cheaper to fix than a row
+            # needing both, and the pair can never be left disagreeing about
+            # which title they read.
+            cur.executemany(
+                "UPDATE stock_items SET title_key = %s, record_key = %s WHERE id = %s",
+                [
+                    (
+                        title_key(row["listing_title"] or row["title"], row["artist"]),
+                        record_key(row["listing_title"] or row["title"], row["artist"]),
+                        row["id"],
+                    )
+                    for row in rows
+                ],
+            )
+    # Copied from the item's live stock row where it still has one, not folded
+    # again from this table's own artist/title. The two tables' names disagree
+    # on the release-crawler path: stock_items keys off `listing_title` (the
+    # marketplace's name for what it matched), while the identity stores the
+    # catalog target's name, and the live writers reconcile that by putting
+    # one computed value in both. So does this, by taking the stock row's.
+    #
+    # Selected on disagreement and not merely on a NULL key, because a NULL is
+    # not the only way the two can come apart, and the other way is permanent.
+    # An item out of stock at boot is keyed here from the identity's own name;
+    # restock it from an old Machine mid-deploy and the stock row arrives
+    # unkeyed, to be folded by the next sweep from a listing_title that may
+    # read differently. A sweep that asked only for a NULL identity key would
+    # find this one already set and leave the two unequal for good --
+    # _judged_record_sql matches identity against stock row, so every sibling
+    # pressing of a judged record would stop finding it and be billed again.
+    # An item with no stock row left has no listing_title to recover and falls
+    # back to its own name.
     identities = conn.execute(
         """
-        SELECT i.item_key, i.artist, i.title,
-               s.artist AS stock_artist, s.title AS stock_title, s.listing_title
+        SELECT i.item_key, i.artist, i.title, s.record_key AS stock_record_key
         FROM stock_item_identities i
         LEFT JOIN LATERAL (
-            SELECT artist, title, listing_title
+            SELECT record_key
             FROM stock_items s
             WHERE s.item_key = i.item_key
             ORDER BY s.last_seen DESC, s.id
             LIMIT 1
         ) s ON TRUE
         WHERE i.record_key IS NULL
+           OR (s.record_key IS NOT NULL AND s.record_key <> i.record_key)
         """
     ).fetchall()
     if identities:
@@ -1061,37 +1100,14 @@ def backfill_stock_keys(conn) -> int:
                 "UPDATE stock_item_identities SET record_key = %s WHERE item_key = %s",
                 [
                     (
-                        record_key(
-                            row["listing_title"] or row["stock_title"] or row["title"],
-                            row["stock_artist"] or row["artist"],
-                        ),
+                        row["stock_record_key"]
+                        if row["stock_record_key"] is not None
+                        else record_key(row["title"], row["artist"]),
                         row["item_key"],
                     )
                     for row in identities
                 ],
             )
-    rows = conn.execute(
-        "SELECT id, artist, title, listing_title FROM stock_items "
-        "WHERE title_key IS NULL OR record_key IS NULL"
-    ).fetchall()
-    if not rows:
-        return len(identities)
-    with conn.cursor() as cur:
-        # Both columns rewritten whenever either is missing, rather than one
-        # UPDATE per column: the two derive from the same three fields, so a
-        # row needing one is no cheaper to fix than a row needing both, and
-        # the pair can never be left disagreeing about which title they read.
-        cur.executemany(
-            "UPDATE stock_items SET title_key = %s, record_key = %s WHERE id = %s",
-            [
-                (
-                    title_key(row["listing_title"] or row["title"], row["artist"]),
-                    record_key(row["listing_title"] or row["title"], row["artist"]),
-                    row["id"],
-                )
-                for row in rows
-            ],
-        )
     return len(rows) + len(identities)
 
 

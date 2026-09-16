@@ -821,6 +821,109 @@ def test_a_judgment_survives_the_backfill_for_a_release_crawler_row(pg_test_db):
         assert db.count_unjudged_stock_items(conn, alice["id"]) == 0
 
 
+def _seed_release_crawler_item(conn, site, url, listing_title, artist="Artist A", title="Album A"):
+    """One release-crawler stock row plus its identity, keyed by the live path
+    from the name the site gave what it matched."""
+    db.register_crawler(conn, site, f"/{site}.py")
+    crawler_id = conn.execute(
+        "SELECT id FROM crawlers WHERE site_name = %s", [site]
+    ).fetchone()["id"]
+    db.upsert_catalog_release(conn, {
+        "discogs_id": "r1", "artist": artist, "title": title, "year": None,
+        "label": None, "format": None, "barcode": None, "cover_image_url": None,
+        "discogs_url": None,
+    })
+    catalog_release = conn.execute("SELECT * FROM catalog WHERE discogs_id = 'r1'").fetchone()
+    db.upsert_stock_item_from_release(conn, "r1", crawler_id, catalog_release, {
+        "url": url, "price": 10.0, "currency": "USD", "title": listing_title,
+    })
+    return db.compute_item_key(artist.title(), title, url)
+
+
+def test_backfill_reconciles_an_identity_keyed_before_its_stock_row_came_back(pg_test_db):
+    """An identity can be left holding a key its own stock row disagrees with,
+    and nothing but this sweep can put them back together.
+
+    The item is out of stock when a new machine boots, so the boot sweep has
+    no listing_title to read and keys the identity from the catalog target's
+    own name. An old machine still running the previous binary then restocks
+    it, writing a stock row with no record_key at all and leaving the identity
+    alone. The next sweep folds that stock row from its listing_title -- a
+    different name, so a different key.
+
+    A sweep that asked only for a NULL identity key would find this one
+    already set and never look again, so the two would stay unequal for as
+    long as the row lived.
+    """
+    listing_title = "Album A Remixes"
+    assert record_key(listing_title, "Artist A") != record_key("Album A", "Artist A")
+
+    with db.get_admin_pool().connection() as conn:
+        item_key = _seed_release_crawler_item(conn, "Marketplace", "https://m/a", listing_title)
+        conn.commit()
+
+        # The state that sequence leaves: identity folded from its own name,
+        # stock row not folded at all.
+        conn.execute(
+            "UPDATE stock_item_identities SET record_key = %s WHERE item_key = %s",
+            [record_key("Album A", "Artist A"), item_key],
+        )
+        conn.execute("UPDATE stock_items SET record_key = NULL WHERE item_key = %s", [item_key])
+        conn.commit()
+
+        db.backfill_stock_keys(conn)
+        conn.commit()
+
+        stock = conn.execute(
+            "SELECT artist, record_key FROM stock_items WHERE item_key = %s", [item_key]
+        ).fetchone()
+        identity = conn.execute(
+            "SELECT record_key FROM stock_item_identities WHERE item_key = %s", [item_key]
+        ).fetchone()
+        assert stock["record_key"] == record_key(listing_title, stock["artist"])
+        assert identity["record_key"] == stock["record_key"]
+        # And having reconciled them, it has nothing left to do.
+        assert db.backfill_stock_keys(conn) == 0
+
+
+def test_a_sibling_is_not_rebilled_after_an_identity_is_reconciled(pg_test_db):
+    """The consequence of the above, end to end. A second shop's copy of the
+    same record finds its verdict by matching its own record_key against the
+    identities, so an identity left holding a different key hides the judgment
+    it points at and the record goes back in front of the model."""
+    listing_title = "Album A Remixes"
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        judged_key = _seed_release_crawler_item(
+            conn, "Marketplace", "https://m/a", listing_title
+        )
+        conn.commit()
+
+        conn.execute(
+            "UPDATE stock_item_identities SET record_key = %s WHERE item_key = %s",
+            [record_key("Album A", "Artist A"), judged_key],
+        )
+        conn.execute("UPDATE stock_items SET record_key = NULL WHERE item_key = %s", [judged_key])
+        conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        db.upsert_stock_judgments(conn, alice["id"], [
+            {"item_key": judged_key, "recommended": True, "reason": "fits"},
+        ])
+        conn.commit()
+
+    with db.get_admin_pool().connection() as conn:
+        # A second shop stocks the same record under the same name. Written by
+        # the live path, so its own two keys agree from the start.
+        _seed_release_crawler_item(conn, "Other Shop", "https://o/a", listing_title)
+        conn.commit()
+        db.backfill_stock_keys(conn)
+        conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        assert db.count_unjudged_stock_items(conn, alice["id"]) == 0
+
+
 def test_an_unswept_record_key_does_not_rebill_an_already_judged_listing(pg_test_db):
     """A rolling deploy's old process writes record_key NULL while still
     populating title_key, so the identity and its own stock row disagree about
@@ -854,10 +957,14 @@ def test_an_unswept_record_key_does_not_rebill_an_already_judged_listing(pg_test
         assert db.get_unjudged_stock_items(conn, alice["id"], limit=0) == []
 
 
-def test_an_unswept_sibling_listing_is_still_billed_once(pg_test_db):
-    """The other half of the same window: a second listing of a judged record
-    with no record_key falls back to the raw title on both sides, so it still
-    recognises the record rather than keying against a folded value."""
+def test_an_unswept_catalog_bills_nothing_at_all(pg_test_db):
+    """The other half of the same window, with the key missing everywhere.
+
+    Nothing compares a row that has no record_key against anything else, so a
+    judged record's sibling is not billed a second time -- it is left out of
+    the run entirely and picked up once backfill_stock_keys has keyed it. A
+    delay, never a charge.
+    """
     with db.get_admin_pool().connection() as conn:
         alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
         one, two = _seed_two_crawlers(conn)
@@ -883,19 +990,19 @@ def test_an_unswept_sibling_listing_is_still_billed_once(pg_test_db):
 
     with db.user_scope(alice["id"]) as conn:
         assert db.count_unjudged_stock_items(conn, alice["id"]) == 0
+        assert db.get_unjudged_stock_items(conn, alice["id"], limit=0) == []
 
 
 def test_a_sibling_left_unkeyed_by_an_old_binary_is_swept_before_it_is_rebilled(pg_test_db):
-    """Mixed keyed/unkeyed state, which the all-NULL fallback does not cover.
+    """Mixed keyed/unkeyed state: a rolling deploy's new process keys the
+    identities, then an old process writes a stock row with no record_key.
 
-    A rolling deploy's new process backfills identities, then an old process
-    writes a stock row with no record_key at all. The judged listing's
-    identity now holds a folded key while its sibling's stock row falls back
-    to the raw title; the two never compare equal, so the sibling enters the
-    billable set. Both halves are asserted here -- the hazard and the sweep
-    that removes it -- because the fix is a call ordering, and a test that
-    only checked the end state would still pass if the sweep moved.
-    (Copilot, PR #368.)
+    Both halves are asserted here. Before the sweep the sibling is simply out
+    of the run -- not billed, and not inheriting either, because an unkeyed
+    row takes no part in the record match in either direction. After it, the
+    row is keyed and inherits the verdict its record already holds, which is
+    what the sweep is for and why it runs first.
+    (Copilot, PR #368, rounds 5 and 10.)
     """
     with db.get_admin_pool().connection() as conn:
         alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
