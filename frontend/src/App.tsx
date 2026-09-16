@@ -521,13 +521,26 @@ export default function App() {
   // committing the claim, so an immediate read can win that race and answer
   // `run: null` about a run that is about to exist. Ending there would hide it
   // for good, since nothing else is coming. Returns whether a run is under way.
+  //
+  // Fenced on the action counter, because the retry spans seconds and a user
+  // can act inside it. Every attempt calls refreshJudgmentStatus, which bumps
+  // latestJudgmentRunSeq -- so a retry landing after a Refresh click holds a
+  // token newer than the start request's, reads the row before that claim
+  // commits, and the accepted start response is discarded by its own sequence
+  // check. Where this browser's SSE is served by the other Machine nothing
+  // else corrects it, and a paid run sits behind a button still reading
+  // Refresh. A newer action is newer truth and drives its own reads, so this
+  // one stops. Read rather than bumped: callers that own an action take it
+  // first and must not fence themselves out. (Copilot, PR #368, round 25.)
   const discoverJudgmentRun = useCallback(async (waitForRun = false): Promise<boolean> => {
+    const action = latestJudgmentActionSeq.current
     for (let attempt = 0; attempt < POLL_READ_ATTEMPTS; attempt++) {
       const status = await refreshJudgmentStatus()
       if (status?.run?.running) return true
       if (status && !waitForRun) return false
       if (attempt < POLL_READ_ATTEMPTS - 1) {
         await new Promise(r => setTimeout(r, JUDGMENT_RUN_POLL_MS))
+        if (action !== latestJudgmentActionSeq.current) return false
       }
     }
     return false

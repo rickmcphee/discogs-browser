@@ -284,6 +284,43 @@ describe('stopping a recommendation run from the profile page', () => {
     )
   })
 
+  // The retry above spans seconds, and a user can act inside it. Each attempt
+  // calls refreshJudgmentStatus, which bumps latestJudgmentRunSeq -- so a
+  // retry landing after a Refresh click takes a token newer than the start
+  // request's, reads the row before the claim commits, and the accepted start
+  // response is thrown out by its own sequence check. On the Machine that does
+  // not serve this browser's SSE nothing else corrects it, leaving a paid run
+  // behind a button that still says Refresh. (Copilot, PR #368, round 25.)
+  it('abandons the retry when the user starts a run inside it', async () => {
+    getJudgmentStatus.mockResolvedValue({ any_judged: true, run: null })
+    const row = await openProfile()
+    await waitFor(() => expect(within(row).getByRole('button')).toHaveTextContent('Refresh'))
+
+    // The ending's first read fails, so the retry is asleep.
+    getJudgmentStatus.mockRejectedValueOnce(new Error('network'))
+    await act(async () => {
+      SilentEventSource.instances[0].emit({
+        status: 'stock_judgment_complete', judged: 12, total: 300, id: 9,
+      })
+    })
+
+    // The start is held open, so the retry fires while the claim is still
+    // uncommitted and the row it reads still says idle.
+    let acceptStart: (v: unknown) => void = () => {}
+    postJudgmentStart.mockImplementationOnce(() => new Promise((resolve) => { acceptStart = resolve }))
+    fireEvent.click(within(row).getByRole('button'))
+    await act(async () => { await vi.advanceTimersByTimeAsync(PAST_ONE_POLL) })
+
+    // The claim lands. Its response is the only thing that can flip the button,
+    // and a retry that bumped the read counter past it throws it away.
+    getJudgmentStatus.mockResolvedValue({ any_judged: true, run: run() })
+    await act(async () => {
+      acceptStart({ started: true, running: true, run: run() })
+    })
+
+    await waitFor(() => expect(within(row).getByRole('button')).toHaveTextContent('Stop'))
+  })
+
   it('keeps Stopping… when a started event is delivered after the stop click', async () => {
     getJudgmentStatus.mockResolvedValue({ any_judged: true, run: run() })
     const row = await openProfile()

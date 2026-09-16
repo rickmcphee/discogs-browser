@@ -78,7 +78,7 @@ _NOISE_WORDS = frozenset("""
 # where "(New)" or "(Record)" really is the seller talking and not the name.
 # (Copilot, PR #368, round 22.)
 _NAMEABLE_NOISE = frozenset("""
-    record records album new version colour color coloured colored
+    record records album new version colour color coloured colored and
 """.split())
 
 _RECORD_NOISE_WORDS = _NOISE_WORDS - _NAMEABLE_NOISE
@@ -195,6 +195,16 @@ def title_key(title: str, artist: Optional[str] = None, for_record: bool = False
                 folded = stripped
                 break
     folded = _HYPHEN_JOIN.sub(r"\1", folded)
+    if for_record:
+        # "&" and "and" become one word before the conjunction is spared, or
+        # sparing it would split the two spellings of one record -- "Fire &
+        # Ice" tokenises without a conjunction at all, since "&" is not a word
+        # character, against "Fire and Ice" which keeps one. Dropping "and"
+        # was how that was held together, and dropping it is what merges "Love
+        # and Hate" onto "Love Hate". Folding the symbol to the word settles
+        # both, and it is the same fold `_artist_punct_fold_sql` already
+        # applies on the artist half. (Copilot, PR #368, round 25.)
+        folded = folded.replace("&", " and ")
     words = _words(folded)
     for pattern in _PHRASE_NOISE:
         folded = pattern.sub(" ", folded)

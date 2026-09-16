@@ -394,9 +394,13 @@ on a 9,000-row catalog against roughly 1,840 ms for the whole-catalog replace
 it follows — where the NULL-only version cost about 23 ms. That 23 ms was a
 fast answer to a question that missed the case worth asking about. Both
 callers run it off the event loop, since it is CPU-bound Python growing with
-the catalog. All three partial indexes on the NULL keys are dropped with the
-query that used them: a scan reads every row regardless, and every write was
-still paying to maintain them.
+the catalog. The partial indexes on the NULL keys go with the query that used
+them: the stock pass reads every row regardless, and every write was still
+paying to maintain them. Both of the `stock_items` ones stay dropped. The one
+on `stock_item_identities` came back later, when the sweep stopped reading
+that table whole and asked it only for the unkeyed orphans — which gave the
+index a reader again, and is what keeps this bounded by the live catalog
+rather than by every URL a shop has ever used.
 
 **A missing key is not compared at all.** Every query that reads `record_key`
 also requires it to be present, on both sides, and an unkeyed stock row simply

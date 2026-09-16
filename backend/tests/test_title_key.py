@@ -250,6 +250,28 @@ def test_the_pressing_key_still_drops_every_noise_word():
     assert title_key("Easter Everywhere LP") == title_key("Easter Everywhere")
 
 
+def test_a_conjunction_is_part_of_the_name_and_survives_both_its_spellings():
+    """"and" was dropped wherever it appeared, which merged "Love and Hate"
+    onto "Love Hate" -- two records, one verdict. It could not simply be
+    spared: "&" is not a word character, so "Fire & Ice" tokenises without a
+    conjunction at all and sparing the word alone would split it from "Fire
+    and Ice", the same record written the other way. The symbol folds to the
+    word first, as `_artist_punct_fold_sql` already does on the artist half,
+    and then the word is kept. (Copilot, PR #368, round 25.)
+    """
+    assert record_key("Love and Hate", "Artist") != record_key("Love Hate", "Artist")
+    assert record_key("Rock and Roll", "Artist") != record_key("Rock Roll", "Artist")
+    assert record_key("Fire & Ice", "Artist") == record_key("Fire and Ice", "Artist")
+    # Behind a fence it is the seller's wording again, and still folds away.
+    assert record_key("Kid A (Red and Black)", "Artist") == record_key("Kid A", "Artist")
+
+
+def test_the_pressing_key_still_folds_the_conjunction_away():
+    """The Cheapest filter must go on grouping one pressing spelled both
+    ways, and it does that by dropping the word rather than keeping it."""
+    assert title_key("Fire & Ice") == title_key("Fire and Ice") == "fire ice"
+
+
 def test_a_fenced_segment_with_real_words_in_it_is_kept():
     # "Live at Leeds" is not a pressing variant, however it is punctuated.
     assert record_key("Something (Live at Leeds)") != record_key("Something")
