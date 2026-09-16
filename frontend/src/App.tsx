@@ -486,6 +486,23 @@ export default function App() {
     }
   }, [])
 
+  // The discovery read, retried a bounded number of times, in the shape the
+  // collection sync's own discovery poll already uses.
+  //
+  // A single attempt is not enough anywhere this is called. On the Machine that
+  // is not running the job nothing else is coming -- no stock_judgment_* event
+  // arrives, and the poll below only runs once a run is already believed to be
+  // in flight -- so one dropped request leaves the button reading Refresh for
+  // the whole of a paid run, with no way to stop it.
+  const discoverJudgmentRun = useCallback(async () => {
+    for (let attempt = 0; attempt < POLL_READ_ATTEMPTS; attempt++) {
+      if (await refreshJudgmentStatus()) return
+      if (attempt < POLL_READ_ATTEMPTS - 1) {
+        await new Promise(r => setTimeout(r, JUDGMENT_RUN_POLL_MS))
+      }
+    }
+  }, [refreshJudgmentStatus])
+
   // Continuous, unconditional health poll -- drives `backendUp`, which gates
   // BackendDownScreen for both "backend not up yet" and "backend went down
   // mid-session" the same way, since the frontend can't tell those apart.
@@ -544,10 +561,10 @@ export default function App() {
     getUserSettings().then((s) => {
       setHasAnthropicKey(Boolean(s.anthropic_api_key))
     }).catch(() => {})
-    refreshJudgmentStatus()
+    discoverJudgmentRun()
     fetchPriceStatus()
     hasAvatar().then((exists) => setAvatarVersion(exists ? Date.now() : 0)).catch(() => {})
-  }, [authState, backendUp, serverReady, setSyncStatus, fetchPriceStatus, refreshJudgmentStatus])
+  }, [authState, backendUp, serverReady, setSyncStatus, fetchPriceStatus, discoverJudgmentRun])
 
   // Persistent SSE connection — reconnects on error. Gated on authState only
   // (not backendUp) -- it reconnects through any backend outage on its own
@@ -1270,6 +1287,12 @@ export default function App() {
         setSyncStatus('A recommendation run is already under way — use Stop to end it.')
       }
     } catch (e: any) {
+      // Fenced exactly like the success path above. A rejection can arrive
+      // after a started event has enabled Stop and the user has clicked it, and
+      // both the message and the recovery read below would then talk over that
+      // newer state -- the read especially, since its snapshot can predate the
+      // stop commit and would turn the disabled "Stopping…" back into "Stop".
+      if (seq !== latestJudgmentRunSeq.current) return
       setSyncStatus(`Refresh recommendations failed to start: ${e.message}`)
       // A failed request is not a failed start. The server may have claimed
       // the run and created the task before the connection dropped, in which
@@ -1277,9 +1300,9 @@ export default function App() {
       // polling it and a button still reading Refresh. So the row is asked
       // instead of assumed -- and if it says a run is going, that read starts
       // the poll and flips the button.
-      refreshJudgmentStatus()
+      discoverJudgmentRun()
     }
-  }, [setSyncStatus, refreshJudgmentStatus])
+  }, [setSyncStatus, discoverJudgmentRun])
 
   const handleStopRecommendations = useCallback(async () => {
     // Optimistic, and corrected by the reply a moment later: the click has to

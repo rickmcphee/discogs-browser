@@ -378,6 +378,49 @@ describe('stopping a recommendation run from the profile page', () => {
     await waitFor(() => expect(within(row).getByRole('button')).toHaveTextContent('Refresh'))
   })
 
+  it('keeps looking for a run when the mount-time read fails once', async () => {
+    // On the Machine that is not running the job, this read is the only thing
+    // that can discover a run at all -- no event arrives, and the poll only
+    // starts once one is believed to be in flight. A single dropped request
+    // would hide a whole paid run behind a Refresh button.
+    getJudgmentStatus.mockRejectedValueOnce(new Error('network'))
+      .mockResolvedValue({ any_judged: false, run: run({ judged: 40 }) })
+
+    const row = await openProfile()
+    await vi.advanceTimersByTimeAsync(PAST_ONE_POLL)
+
+    await waitFor(() => expect(within(row).getByRole('button')).toHaveTextContent('Stop'))
+    expect(postJudgmentStart).not.toHaveBeenCalled()
+  })
+
+  it('does not let a failed start response talk over a newer stop', async () => {
+    // The rejection arrives after the run announced itself and the user
+    // stopped it. Neither the message nor the recovery read may act on it: the
+    // read's snapshot can predate the stop commit and would re-enable the
+    // button.
+    let rejectStart: (e: unknown) => void = () => {}
+    postJudgmentStart.mockReturnValue(new Promise((_resolve, reject) => {
+      rejectStart = () => reject(new Error('network'))
+    }))
+    getJudgmentStatus.mockResolvedValue({ any_judged: false, run: null })
+
+    const row = await openProfile()
+    fireEvent.click(within(row).getByRole('button'))
+    await waitFor(() => expect(postJudgmentStart).toHaveBeenCalled())
+
+    await act(async () => {
+      SilentEventSource.instances[0].emit({ status: 'stock_judgment_started', id: 5 })
+    })
+    getJudgmentStatus.mockResolvedValue({ any_judged: true, run: run({ stop_requested: true }) })
+    postJudgmentStop.mockResolvedValue({ stopping: true, run: run({ stop_requested: true }) })
+    fireEvent.click(within(row).getByRole('button'))
+    await waitFor(() => expect(within(row).getByRole('button')).toHaveTextContent('Stopping…'))
+
+    await act(async () => { rejectStart(undefined) })
+    expect(within(row).getByRole('button')).toHaveTextContent('Stopping…')
+    expect(screen.queryByText(/failed to start/)).not.toBeInTheDocument()
+  })
+
   it('says so when a start is refused by a run already under way', async () => {
     postJudgmentStart.mockResolvedValue({ started: false, running: true, run: run() })
     const row = await openProfile()
