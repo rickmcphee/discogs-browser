@@ -54,14 +54,33 @@ def _words(text: str) -> set:
     return set(text.lower().split())
 
 
+def _https_host(url) -> Optional[str]:
+    """The hostname of `url` when it is a well-formed https URL, else None.
+
+    urlparse *raises* on a malformed authority -- "https://[" is an
+    unterminated IPv6 literal -- so a caller that parses inline aborts the
+    whole crawl over one bad string in a response that is otherwise fine.
+    Every value read here comes from eBay's API and is handed to the browser
+    as a link or a picture, so a string that cannot be parsed is simply not
+    one; rejecting it lets the caller fall back.
+
+    A hostname is required rather than just the scheme: "https:///x.jpg"
+    parses clean with none, and is neither a link nor a picture.
+    """
+    if not isinstance(url, str) or not url:
+        return None
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return None
+    return parsed.hostname if parsed.scheme == "https" else None
+
+
 def _is_ebay_item_url(url: str) -> bool:
     # A prefix test on the raw string accepts https://www.ebay.com.example.test/,
     # so compare the parsed host instead. The URL comes from eBay's own API but
     # is rendered as a link the user clicks.
-    if not url:
-        return False
-    parsed = urlparse(url)
-    return parsed.scheme == "https" and parsed.hostname == "www.ebay.com"
+    return _https_host(url) == "www.ebay.com"
 
 
 def _item_image(item: dict) -> Optional[str]:
@@ -74,7 +93,9 @@ def _item_image(item: dict) -> Optional[str]:
 
     https-only for the same reason `_is_ebay_item_url` parses rather than
     prefix-matches: the value ends up in an <img src> the browser fetches, and
-    it is only the API's word that it is an image at all.
+    it is only the API's word that it is an image at all. A URL that fails
+    that check is skipped rather than returned, so a malformed gallery image
+    still leaves a good thumbnail to fall back to.
     """
     # isinstance rather than `or {}` throughout: a payload whose `image` came
     # back as a bare string would make .get() raise, and a schema drift in a
@@ -84,7 +105,7 @@ def _item_image(item: dict) -> Optional[str]:
     candidates += thumbnails if isinstance(thumbnails, list) else []
     for entry in candidates:
         url = entry.get("imageUrl") if isinstance(entry, dict) else None
-        if isinstance(url, str) and urlparse(url).scheme == "https":
+        if _https_host(url):
             return url
     return None
 

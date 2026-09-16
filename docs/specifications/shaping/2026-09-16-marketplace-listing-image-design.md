@@ -33,9 +33,11 @@ cover, not the listing's."
   already put an item's picture under, so "the picture of this item" has one
   name across both crawler kinds. eBay reports the Browse API item's `image`,
   falling back to a `thumbnailImages` entry, and skips any URL that is not
-  https — the value lands in an `<img src>` the browser fetches and it is
-  only the API's word that it is an image at all, the same reasoning
-  `_is_ebay_item_url` already applies to the link. Amazon reports the search
+  https with a hostname — the value lands in an `<img src>` the browser
+  fetches and it is only the API's word that it is an image at all, the same
+  reasoning `_is_ebay_item_url` already applies to the link. Both now read
+  the host through one `_https_host` helper that answers None instead of
+  raising; see the decision below. Amazon reports the search
   tile's `img.s-image`, captured beside the heading its artist/title check
   matched, because that tile is what was actually accepted; it takes the
   `src` only when it is https, since a tile that has not finished loading
@@ -119,6 +121,20 @@ Out of scope:
   thumbnail rendered at 40-56px. The tile's `img.s-image` is the picture
   beside the heading the match was made on, and capturing both together
   keeps them describing one item.
+- **Parsing a URL must not be able to fail the crawl.** `urlparse` *raises*
+  on a malformed authority — `"https://["` is an unterminated IPv6 literal —
+  so checking the scheme inline meant one bad string in an otherwise fine
+  response aborted the whole search, which on the stock-item path reads to
+  the consecutive-failure breaker as the site being down. It also skipped
+  past the fallback each caller carefully provides: a good `thumbnailImages`
+  entry under a malformed gallery image, and the `legacyItemId` URL under a
+  malformed `itemWebUrl`. `_https_host` parses inside a `try` and answers
+  None, so an unparseable value is merely *not* a URL and the caller falls
+  back. It also requires a hostname, since `"https:///x.jpg"` parses clean
+  without one and is neither a link nor a picture. `_is_ebay_item_url` reads
+  through the same helper: it had the identical inline parse on
+  `itemWebUrl`, predating this change, and one helper removes both rather
+  than leaving the crash one function above the fix.
 - **Best-effort capture, never a failure.** A missing thumbnail leaves
   `matched_image` empty and the target's cover standing. It must not raise:
   on the stock-item path a raise is a site-health signal to the
@@ -141,7 +157,11 @@ Out of scope:
 - `backend/tests/test_ebay_api.py` — `search_ebay` reports the matched Browse
   API item's gallery image, falls back to a thumbnail, skips a non-https URL,
   and returns the listing with no picture rather than raising when the image
-  fields come back the wrong shape.
+  fields come back the wrong shape. Three more cover the parse itself: an
+  unparseable gallery image falls back to the thumbnail rather than aborting,
+  a host-less `https:///…` is rejected, and an unparseable `itemWebUrl` falls
+  back to the `legacyItemId` link — the last being the pre-existing half of
+  the same hazard.
 - `frontend/src/test/stockBrowser.test.tsx` — a comparison row with a
   `listing_image_url` renders that picture with the listing's name as alt
   text while the own row keeps the store's cover; a row with a
