@@ -1470,11 +1470,21 @@ async def test_sync_collection_queues_store_items_matching_the_synced_records(pg
 
 @respx.mock
 async def test_sync_broadcasts_sanitized_error_when_fields_fetch_fails(pg_schema, monkeypatch):
-    # Pins the guard around discogs.fetch_collection_fields to the exception
-    # type the client actually raises. authlib >=1.8 raises
-    # httpx2.HTTPStatusError, so an `except httpx.HTTPStatusError` there stops
-    # matching and the raw exception escapes to the generic sync-failure path
-    # instead of this sanitized broadcast.
+    # What must hold is that a Discogs error status reaches the user as the
+    # app's own sentence rather than the transport's -- the raw
+    # HTTPStatusError string carries the response body and the full request
+    # URL, neither of which is ours to forward.
+    #
+    # This used to pin that to the guard around discogs.fetch_collection_fields
+    # matching the exception type the client actually raises (authlib >=1.8
+    # raises httpx2.HTTPStatusError, so an `except httpx.HTTPStatusError`
+    # there stops matching and the exception escapes). The generic
+    # sync-failure path it would escape to now sanitizes an HTTPStatusError
+    # the same way, so which of the two catches it is no longer what stands
+    # between the user and a raw transport string -- and the wantlist-scope
+    # sync, which never makes this call, gets the same sentence for the same
+    # fault. The status itself is named: it is what tells a user whose token
+    # has been refused what to do about it.
     import config
     monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
     monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "s")
@@ -1496,7 +1506,10 @@ async def test_sync_broadcasts_sanitized_error_when_fields_fetch_fails(pg_schema
     await manager._sync_collection(user["id"], "all")
 
     errors = [e for e in manager.recent_events() if e["status"] == "sync_error"]
-    assert [e["error"] for e in errors] == ["Discogs request failed"]
+    assert len(errors) == 1
+    assert errors[0]["error"].startswith("Discogs rejected this app's authorization (HTTP 403)")
+    assert "You don't have permission" not in errors[0]["error"]
+    assert "api.discogs.com" not in errors[0]["error"]
 
 
 @respx.mock
@@ -1613,6 +1626,270 @@ async def test_sync_collection_mode_new_backfills_date_added_for_skipped_item(pg
             [user["id"]],
         ).fetchone()
     assert str(row["collection_date_added"]) == "2024-03-15 10:00:00"
+
+
+def _oauth_user(username="alice", token="tok", secret="sec"):
+    """A user whose row carries an encrypted Discogs token, as signup leaves it."""
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username=username)
+        conn.execute(
+            "UPDATE users SET discogs_oauth_token_encrypted = %s, discogs_oauth_secret_encrypted = %s WHERE id = %s",
+            [token_encryption.encrypt(token), token_encryption.encrypt(secret), user["id"]],
+        )
+        conn.commit()
+    return user
+
+
+def _discogs_config(monkeypatch):
+    import config
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "s")
+    monkeypatch.setattr(config, "TOKEN_ENCRYPTION_KEY", "kL8mN2pQ7rT5vX9yB3cF6hJ1kM4nP8sU2wZ5aD7eG0i=")
+
+
+def _collection_pages(pages):
+    """Mock the collection walk, serving `pages[page - 1]` per requested page."""
+    respx.get("https://api.discogs.com/users/alice/collection/fields").mock(
+        return_value=httpx.Response(200, json={"fields": []})
+    )
+
+    def _page(request):
+        page = int(request.url.params.get("page", 1))
+        return httpx.Response(200, json={
+            "pagination": {"pages": len(pages)}, "releases": pages[page - 1],
+        })
+
+    respx.get(
+        url__regex=r"https://api\.discogs\.com/users/alice/collection/folders/0/releases"
+    ).mock(side_effect=_page)
+    respx.get(url__regex=r"https://api\.discogs\.com/releases/\d+").mock(
+        return_value=httpx.Response(200, json={"identifiers": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/wants").mock(
+        return_value=httpx.Response(200, json={"pagination": {"pages": 1}, "wants": []})
+    )
+
+
+def _collection_item(release_id, title="Album", artist="Artist"):
+    return {
+        "basic_information": {
+            "id": release_id, "title": title, "year": 2020,
+            "artists": [{"name": artist}], "labels": [], "formats": [],
+            "cover_image": "",
+        },
+        "date_added": "2024-03-15T10:00:00-08:00",
+    }
+
+
+@pytest.mark.parametrize("mode", ["new", "all"])
+@respx.mock
+async def test_sync_collection_picks_up_a_release_added_since_the_last_sync(
+    pg_schema, monkeypatch, mode
+):
+    """The reported symptom, end to end: a record added on Discogs after the
+    last sync is fetched by the next one and comes back out of the library
+    query the Collection tab reads -- under either option the refresh modal
+    offers. Verified by hand when the sync-visibility work went in and left
+    untested, which is why the write path kept being re-suspected every time
+    the button looked inert for some other reason."""
+    _discogs_config(monkeypatch)
+    user = _oauth_user()
+
+    _collection_pages([[_collection_item(111)]])
+    await CrawlManager()._sync_collection(user["id"], "all")
+
+    # The user adds a record on discogs.com, then presses Refresh.
+    respx.mock.reset()
+    _collection_pages([[_collection_item(111), _collection_item(222, title="New Album")]])
+    manager = CrawlManager()
+    await manager._sync_collection(user["id"], mode)
+
+    assert "sync_error" not in [e["status"] for e in manager.recent_events()]
+    with db.user_scope(user["id"]) as conn:
+        listed = db.get_library_releases(conn, user["id"], scope="discogs")
+    assert "r222" in [r["discogs_id"] for r in listed["releases"]]
+
+
+@respx.mock
+async def test_sync_collection_reports_a_refused_discogs_token(pg_schema, monkeypatch, caplog):
+    """A 401 on the sync's first Discogs call named neither the fault nor the
+    fix -- "Discogs request failed" -- and wrote nothing to the log at all, so
+    the whole record of a sync dying on a revoked token was the "started" line
+    with nothing after it. From the Collection tab that is indistinguishable
+    from a sync that found nothing new."""
+    _discogs_config(monkeypatch)
+    user = _oauth_user()
+    respx.get("https://api.discogs.com/users/alice/collection/fields").mock(
+        return_value=httpx.Response(401, json={"message": "You must authenticate to access this resource."})
+    )
+
+    # Claimed the way start_sync claims it, so the run row this ends up
+    # writing is the one a browser served by the other Machine polls -- the
+    # only place that browser can learn a sync failed at all.
+    with db.user_scope(user["id"]) as conn:
+        run_token = db.claim_library_sync_run(conn, user["id"], "new", "all")
+        conn.commit()
+
+    manager = CrawlManager()
+    with caplog.at_level(logging.ERROR, logger="crawl_manager"):
+        await manager._sync_collection(user["id"], "new", run_token=run_token)
+
+    errors = [e for e in manager.recent_events() if e["status"] == "sync_error"]
+    assert len(errors) == 1
+    assert "401" in errors[0]["error"]
+    assert "sign in with discogs again" in errors[0]["error"].lower()
+
+    logged = [r.getMessage() for r in caplog.records if "Collection sync failed" in r.getMessage()]
+    assert len(logged) == 1
+    assert "alice" in logged[0] and "401" in logged[0]
+
+    with db.user_scope(user["id"]) as conn:
+        run = db.get_library_sync_run(conn, user["id"])
+    assert run["status"] == "error"
+    assert "401" in run["error"]
+
+
+@respx.mock
+async def test_sync_collection_reports_a_refused_token_on_a_wantlist_sync(
+    pg_schema, monkeypatch, caplog
+):
+    """A wantlist-scope sync skips the collection-fields call the message above
+    is attached to, so the same refused token surfaces from the page walk
+    instead. It has to read the same, or the one fault answers differently
+    depending on which tab's Refresh was pressed."""
+    _discogs_config(monkeypatch)
+    user = _oauth_user()
+    respx.get("https://api.discogs.com/users/alice/wants").mock(
+        return_value=httpx.Response(401, json={"message": "You must authenticate to access this resource."})
+    )
+
+    manager = CrawlManager()
+    with caplog.at_level(logging.ERROR, logger="crawl_manager"):
+        await manager._sync_collection(user["id"], "all", scope="wishlist")
+
+    errors = [e for e in manager.recent_events() if e["status"] == "sync_error"]
+    assert len(errors) == 1
+    assert "401" in errors[0]["error"]
+    assert "sign in with discogs again" in errors[0]["error"].lower()
+    assert any("Collection sync failed" in r.getMessage() for r in caplog.records)
+
+
+@respx.mock
+async def test_sync_collection_reports_a_non_auth_discogs_failure_with_its_status(
+    pg_schema, monkeypatch, caplog
+):
+    """Discogs being down is not the user's authorization, and must not be
+    reported as though signing in again would fix it."""
+    _discogs_config(monkeypatch)
+    user = _oauth_user()
+    respx.get("https://api.discogs.com/users/alice/collection/fields").mock(
+        return_value=httpx.Response(500, text="upstream error")
+    )
+
+    manager = CrawlManager()
+    with caplog.at_level(logging.ERROR, logger="crawl_manager"):
+        await manager._sync_collection(user["id"], "new")
+
+    errors = [e for e in manager.recent_events() if e["status"] == "sync_error"]
+    assert errors[0]["error"] == "Discogs request failed (HTTP 500)"
+    assert "sign in" not in errors[0]["error"].lower()
+    assert any("Collection sync failed" in r.getMessage() for r in caplog.records)
+
+
+async def test_sync_collection_logs_when_the_account_has_no_stored_token(
+    pg_schema, monkeypatch, caplog
+):
+    """The other failure that ends a sync before it reaches Discogs, and the
+    other one that used to be silent."""
+    _discogs_config(monkeypatch)
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+
+    manager = CrawlManager()
+    with caplog.at_level(logging.ERROR, logger="crawl_manager"):
+        await manager._sync_collection(user["id"], "new")
+
+    errors = [e for e in manager.recent_events() if e["status"] == "sync_error"]
+    assert errors[0]["error"] == "Discogs account not connected"
+    logged = [r.getMessage() for r in caplog.records if "Collection sync failed" in r.getMessage()]
+    assert len(logged) == 1
+    assert "Discogs account not connected" in logged[0]
+
+
+async def test_sync_collection_logs_a_failure_that_predates_the_user_lookup(
+    pg_schema, monkeypatch, caplog
+):
+    """sync_error reads the username through a closure, and reaches this path
+    before anything has assigned one. It has to log the user it does know
+    rather than raise on the way to reporting the failure."""
+    _discogs_config(monkeypatch)
+    manager = CrawlManager()
+    with caplog.at_level(logging.ERROR, logger="crawl_manager"):
+        await manager._sync_collection(999999, "new")
+
+    errors = [e for e in manager.recent_events() if e["status"] == "sync_error"]
+    assert errors[0]["error"] == "User not found"
+    logged = [r.getMessage() for r in caplog.records if "Collection sync failed" in r.getMessage()]
+    assert len(logged) == 1
+    assert "user 999999" in logged[0]
+
+
+async def test_sync_collection_logs_a_sync_that_died_without_choosing_an_outcome(
+    pg_schema, monkeypatch, caplog
+):
+    """The backstop close is the last exit that can still end a sync in
+    silence -- it is reached by a BaseException, which no `except Exception`
+    sees. Its line is gated on the close having actually taken the row,
+    because the same branch runs after every successful sync, where the write
+    is a no-op and a log line would report a completed sync as a death."""
+    import discogs
+    _discogs_config(monkeypatch)
+    user = _oauth_user()
+    monkeypatch.setattr(
+        discogs, "fetch_collection_fields",
+        lambda *a, **k: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+
+    # A claimed run, as start_sync leaves one: the backstop's line is gated on
+    # its close having actually taken the row, so there has to be a row.
+    with db.user_scope(user["id"]) as conn:
+        run_token = db.claim_library_sync_run(conn, user["id"], "new", "all")
+        conn.commit()
+
+    manager = CrawlManager()
+    with caplog.at_level(logging.ERROR, logger="crawl_manager"):
+        with pytest.raises(KeyboardInterrupt):
+            await manager._sync_collection(user["id"], "new", run_token=run_token)
+
+    assert any("ended unexpectedly" in r.getMessage() for r in caplog.records)
+    with db.user_scope(user["id"]) as conn:
+        run = db.get_library_sync_run(conn, user["id"])
+    assert run["status"] == "error"
+
+
+@respx.mock
+async def test_sync_collection_does_not_call_a_completed_sync_unexpected(
+    pg_schema, monkeypatch, caplog
+):
+    """The other half of that gate: a sync that ended properly passes through
+    the same branch and must say nothing."""
+    _discogs_config(monkeypatch)
+    user = _oauth_user()
+    _collection_pages([[_collection_item(111)]])
+
+    with db.user_scope(user["id"]) as conn:
+        run_token = db.claim_library_sync_run(conn, user["id"], "all", "all")
+        conn.commit()
+
+    manager = CrawlManager()
+    with caplog.at_level(logging.ERROR, logger="crawl_manager"):
+        await manager._sync_collection(user["id"], "all", run_token=run_token)
+
+    assert not [r for r in caplog.records if "ended unexpectedly" in r.getMessage()]
+    with db.user_scope(user["id"]) as conn:
+        run = db.get_library_sync_run(conn, user["id"])
+    assert run["status"] == "complete"
 
 
 async def test_sync_collection_wishlist_captures_date_added_and_enqueues(pg_schema, monkeypatch):
