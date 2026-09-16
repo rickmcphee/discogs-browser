@@ -166,6 +166,9 @@ export interface StockItem {
   // reported one; null means the target's own title stands. Display-only:
   // matching, sorting and search all still run on `title`.
   listing_title: string | null
+  // The picture the source showed for that matched item, on the same terms as
+  // listing_title; null means the target's own cover art stands.
+  listing_image_url: string | null
   format: string | null
   price: number | null
   currency: string | null

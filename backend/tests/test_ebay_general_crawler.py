@@ -13,6 +13,7 @@ _ITEM = {
     "price": {"value": "9.99", "currency": "USD"},
     "shippingOptions": [{"shippingCost": {"value": "4.00"}}],
     "condition": "Very Good (VG)",
+    "image": {"imageUrl": "https://i.ebayimg.com/images/g/456/s-l1600.jpg"},
 }
 _RELEASE = {"artist": "Miles Davis", "title": "Kind of Blue", "format": "Vinyl", "barcode": None}
 
@@ -48,6 +49,7 @@ async def test_search_returns_lowest_price_listing(crawler):
         "currency": "USD",
         "condition": "Very Good (VG)",
         "title": "Miles Davis Kind of Blue Vinyl LP",
+        "cover_image_url": "https://i.ebayimg.com/images/g/456/s-l1600.jpg",
     }]
 
 

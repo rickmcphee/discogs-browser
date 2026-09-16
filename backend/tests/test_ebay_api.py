@@ -123,4 +123,90 @@ async def test_search_ebay_reports_the_matched_listings_own_title(monkeypatch):
         "currency": "USD",
         "condition": "New",
         "title": "Miles Davis Kind of Blue Vinyl LP 180g Reissue",
+        "cover_image_url": None,
     }]
+
+
+async def test_search_ebay_reports_the_matched_listings_own_picture(monkeypatch):
+    # Same reasoning as the title above: the gallery image is a photo of the
+    # copy for sale, so it pictures the pressing that was actually matched
+    # rather than the target release's cover art.
+    import ebay_api
+
+    async def fake_token(app_id, cert_id):
+        return "tok"
+
+    payload = {"itemSummaries": [{
+        "title": "Miles Davis Kind of Blue Vinyl LP 180g Reissue",
+        "price": {"value": "19.99", "currency": "USD"},
+        "itemWebUrl": "https://www.ebay.com/itm/123",
+        "condition": "New",
+        "image": {"imageUrl": "https://i.ebayimg.com/images/g/abc/s-l1600.jpg"},
+        "thumbnailImages": [{"imageUrl": "https://i.ebayimg.com/images/g/abc/s-l225.jpg"}],
+    }]}
+    monkeypatch.setattr(ebay_api, "get_token", fake_token)
+    monkeypatch.setattr(ebay_api.httpx, "AsyncClient", lambda *a, **k: _FakeClient(payload))
+
+    result = await ebay_api.search_ebay(
+        {"artist": "Miles Davis", "title": "Kind of Blue", "format": "Vinyl"},
+        "app", "cert", seller=None, limit=5, log_prefix="eBay", fallback_url="https://www.ebay.com/sch",
+    )
+
+    assert result[0]["cover_image_url"] == "https://i.ebayimg.com/images/g/abc/s-l1600.jpg"
+
+
+async def test_search_ebay_falls_back_to_a_thumbnail_and_skips_a_non_https_picture(monkeypatch):
+    # The value lands in an <img src> the browser fetches, and only the API's
+    # word says it is an image at all -- so the same https-only check
+    # _is_ebay_item_url applies to the link applies here.
+    import ebay_api
+
+    async def fake_token(app_id, cert_id):
+        return "tok"
+
+    payload = {"itemSummaries": [{
+        "title": "Miles Davis Kind of Blue Vinyl LP 180g Reissue",
+        "price": {"value": "19.99", "currency": "USD"},
+        "itemWebUrl": "https://www.ebay.com/itm/123",
+        "condition": "New",
+        "image": {"imageUrl": "http://i.ebayimg.com/insecure.jpg"},
+        "thumbnailImages": [{"imageUrl": "https://i.ebayimg.com/images/g/abc/s-l225.jpg"}],
+    }]}
+    monkeypatch.setattr(ebay_api, "get_token", fake_token)
+    monkeypatch.setattr(ebay_api.httpx, "AsyncClient", lambda *a, **k: _FakeClient(payload))
+
+    result = await ebay_api.search_ebay(
+        {"artist": "Miles Davis", "title": "Kind of Blue", "format": "Vinyl"},
+        "app", "cert", seller=None, limit=5, log_prefix="eBay", fallback_url="https://www.ebay.com/sch",
+    )
+
+    assert result[0]["cover_image_url"] == "https://i.ebayimg.com/images/g/abc/s-l225.jpg"
+
+
+async def test_search_ebay_survives_a_malformed_image_field(monkeypatch):
+    # A decorative field drifting shape must not raise: on the stock-item path
+    # a raise is a site-health signal the consecutive-failure breaker counts,
+    # and a missing picture is not evidence that eBay is down.
+    import ebay_api
+
+    async def fake_token(app_id, cert_id):
+        return "tok"
+
+    payload = {"itemSummaries": [{
+        "title": "Miles Davis Kind of Blue Vinyl LP 180g Reissue",
+        "price": {"value": "19.99", "currency": "USD"},
+        "itemWebUrl": "https://www.ebay.com/itm/123",
+        "condition": "New",
+        "image": "https://i.ebayimg.com/bare-string.jpg",
+        "thumbnailImages": "not-a-list",
+    }]}
+    monkeypatch.setattr(ebay_api, "get_token", fake_token)
+    monkeypatch.setattr(ebay_api.httpx, "AsyncClient", lambda *a, **k: _FakeClient(payload))
+
+    result = await ebay_api.search_ebay(
+        {"artist": "Miles Davis", "title": "Kind of Blue", "format": "Vinyl"},
+        "app", "cert", seller=None, limit=5, log_prefix="eBay", fallback_url="https://www.ebay.com/sch",
+    )
+
+    assert result[0]["cover_image_url"] is None
+    assert result[0]["price"] == 19.99
