@@ -675,12 +675,12 @@ CREATE INDEX IF NOT EXISTS stock_items_cheapest_fold_idx
     ON stock_items ({_artist_sort_sql("artist", escape_percent=False)},
                     COALESCE(title_key, title), COALESCE(UPPER(currency), 'USD'));
 
--- backfill_stock_keys runs at the end of every stock sync and is normally a
--- no-op; these make finding out so a lookup on an empty index, not a scan.
-CREATE INDEX IF NOT EXISTS stock_items_title_key_null_idx
-    ON stock_items (id) WHERE title_key IS NULL;
-CREATE INDEX IF NOT EXISTS stock_items_record_key_null_idx
-    ON stock_items (id) WHERE record_key IS NULL;
+-- Dropped with the query that used them. backfill_stock_keys no longer asks
+-- which keys are missing -- a missing key was never the dangerous way a
+-- stored one goes wrong -- so it recomputes every row and reads them all
+-- regardless, while every write still paid to maintain these.
+DROP INDEX IF EXISTS stock_items_title_key_null_idx;
+DROP INDEX IF EXISTS stock_items_record_key_null_idx;
 
 -- The judgment path looks a live stock row's record up among the identities
 -- of everything ever judged. Indexed on this side only: measured at catalog
@@ -1059,35 +1059,41 @@ def _ensure_role(conn, role_name: str, password: str, bypass_rls: bool):
 
 
 def backfill_stock_keys(conn) -> int:
-    """Key every row missing stock_items.title_key or record_key, and give
-    every stock_item_identities row the record_key its live stock row carries;
-    returns how many rows were touched across both.
+    """Make every stored fold key match the row it was folded from, and every
+    stock_item_identities row carry the record_key its live stock row does.
+    Returns how many rows that rewrote. Blocking and CPU-bound; call it off
+    the event loop.
 
     Python-side rather than an UPDATE in TENANT_SCHEMA because both folds live
     in title_key.py, and one copy of them is the point.
 
-    The two columns need it for opposite reasons. A NULL `title_key` does not
-    merely sit the row out of the Cheapest filter: that grouping treats every
-    NULL as one key, so every unkeyed row would compete as a single pressing,
-    and `COALESCE(title_key, title)` in _cheapest_clause is the second guard
-    against it. A NULL `record_key` cannot do that -- every query reading it
-    requires it on both sides, so an unkeyed row is compared against nothing
-    and simply takes no part. What the sweep buys there is participation: the
-    row can be judged, and inherit, on the next run rather than waiting for a
-    live writer to touch it again.
+    **It recomputes, rather than asking which keys are missing.** That is the
+    expensive choice and it is deliberate. A missing key is not the only way a
+    stored one goes wrong, and it is not the dangerous way. The deployment is
+    rolling, so an old binary keeps writing `stock_items` after a new one has
+    added this column, and its INSERT names neither key that it does not know
+    about -- so `ON CONFLICT DO UPDATE` *preserves* whatever is there while
+    `listing_title` and `title` move to a new name. The row ends up holding a
+    key folded from a title it no longer has, with nothing NULL anywhere to
+    mark it, and the identity beside it holding the same stale value, so the
+    identity pass below sees agreement and leaves them. Permanently invisible
+    to any test that asks about NULLs, and a false *merge*: that listing joins
+    a record it is not, and takes that record's verdict.
 
-    Run at boot for the rows that predate the column, and again at the end of
-    every stock sync, because boot alone leaves a hole: the deployment is a
-    rolling one across two machines, so an old binary can still be writing
-    unkeyed rows -- a store snapshot, a marketplace match -- after a new
-    machine's boot sweep has already run, and the boot sweep never revisits
-    them. The sync-end sweep does, on the first sync any new machine runs.
+    The rule it enforces instead has no such gap: the stored pair must equal
+    the fold of the row's own current artist/title/listing_title, which is
+    exactly what both live writers put there. Anything else is stale, however
+    it got that way.
 
-    Idempotent, and normally a no-op. Finding that out costs a lookup on an
-    empty partial index for the stock rows; the identity pass below compares
-    against another table, which no index on it can answer, so that one walks
-    the identities. Measured at 9,000 rows: ~23 ms, against the ~1,840 ms the
-    replace it follows costs.
+    Costs a fold per row, in both tables: measured at 9,000 stock rows and
+    their identities, ~850 ms, against the ~1,840 ms whole-catalog replace it
+    follows at the end of a sync and the Anthropic round trips it precedes at
+    the start of a judgment run. It was ~23 ms while it only looked for NULLs,
+    and that is what the cheap version was buying -- a fast answer to a
+    question that missed the case worth asking about. Both callers hand it to
+    a thread, since this is CPU-bound Python and grows with the catalog. The
+    partial indexes on the NULL keys went with the NULL-only query: a scan
+    reads every row regardless, and every write was still maintaining them.
 
     The same derivation as the two live writers: the name the site gave the
     item when it gave one (a release-crawler row's listing_title, which can
@@ -1097,39 +1103,47 @@ def backfill_stock_keys(conn) -> int:
     # Stock rows first, identities second, because the identity pass below
     # copies its answer from them.
     rows = conn.execute(
-        "SELECT id, artist, title, listing_title FROM stock_items "
-        "WHERE title_key IS NULL OR record_key IS NULL"
+        "SELECT id, artist, title, listing_title, title_key, record_key FROM stock_items"
     ).fetchall()
+    stale = []
+    for row in rows:
+        source = row["listing_title"] or row["title"]
+        wanted_title = title_key(source, row["artist"])
+        wanted_record = record_key(source, row["artist"])
+        if row["title_key"] != wanted_title or row["record_key"] != wanted_record:
+            stale.append((wanted_title, wanted_record, row["id"],
+                          row["artist"], row["title"], row["listing_title"]))
     keyed_rows = 0
-    if rows:
+    if stale:
         with conn.cursor() as cur:
-            # Both columns rewritten whenever either is missing, rather than
-            # one UPDATE per column: the two derive from the same three
-            # fields, so a row needing one is no cheaper to fix than a row
-            # needing both, and the pair can never be left disagreeing about
-            # which title they read.
+            # Both columns rewritten when either is wrong, rather than one
+            # UPDATE per column: the two derive from the same three fields, so
+            # a row needing one is no cheaper to fix than a row needing both,
+            # and the pair can never be left disagreeing about which title
+            # they read.
             #
-            # Still NULL, re-checked at write time, because the fold in
-            # between happens in Python and the crawl worker pool takes no
-            # part in the stock-sync lock. One transaction is not isolation
-            # here: under READ COMMITTED a worker can write this row after the
-            # SELECT above, and an unconditional UPDATE would put the fold of
-            # a title the row no longer has over the worker's own. A worker
-            # writes both keys, so a row it has touched no longer matches this
-            # predicate and its value stands. Nothing is lost by yielding:
-            # what the worker wrote is this sweep's answer, computed from a
-            # newer title.
+            # Conditional on the three source fields still reading as they did
+            # in the SELECT above, because the fold in between happens in
+            # Python and the crawl worker pool takes no part in the stock-sync
+            # lock. One transaction is not isolation here: under READ
+            # COMMITTED a writer can change this row after the SELECT, and an
+            # unconditional UPDATE would put the fold of a title the row no
+            # longer has over a newer one -- which the identity pass would
+            # then copy across, leaving the two equal and both wrong.
+            #
+            # The source fields and not the key columns, because the writer
+            # this function exists for is precisely the one that does not
+            # touch them: an old binary changing `listing_title` leaves
+            # `record_key` exactly as it found it, so a predicate reading the
+            # keys would see nothing and overwrite the new title's row anyway.
+            # Nothing is lost by yielding -- the next sweep folds the newer
+            # title, which is the better answer.
             cur.executemany(
                 "UPDATE stock_items SET title_key = %s, record_key = %s "
-                "WHERE id = %s AND (title_key IS NULL OR record_key IS NULL)",
-                [
-                    (
-                        title_key(row["listing_title"] or row["title"], row["artist"]),
-                        record_key(row["listing_title"] or row["title"], row["artist"]),
-                        row["id"],
-                    )
-                    for row in rows
-                ],
+                "WHERE id = %s AND artist IS NOT DISTINCT FROM %s "
+                "AND title IS NOT DISTINCT FROM %s "
+                "AND listing_title IS NOT DISTINCT FROM %s",
+                stale,
             )
             keyed_rows = cur.rowcount
     # Copied from the item's live stock row where it still has one, not folded
@@ -1139,58 +1153,50 @@ def backfill_stock_keys(conn) -> int:
     # catalog target's name, and the live writers reconcile that by putting
     # one computed value in both. So does this, by taking the stock row's.
     #
-    # Selected on disagreement and not merely on a NULL key, because a NULL is
-    # not the only way the two can come apart, and the other way is permanent.
-    # An item out of stock at boot is keyed here from the identity's own name;
-    # restock it from an old Machine mid-deploy and the stock row arrives
-    # unkeyed, to be folded by the next sweep from a listing_title that may
-    # read differently. A sweep that asked only for a NULL identity key would
-    # find this one already set and leave the two unequal for good --
-    # _judged_record_sql matches identity against stock row, so every sibling
-    # pressing of a judged record would stop finding it and be billed again.
-    # An item with no stock row left has no listing_title to recover and falls
-    # back to its own name.
+    # Compared rather than filled, for the reason the stock pass recomputes:
+    # an identity whose key is merely *wrong* is invisible to a NULL test, and
+    # the way it goes wrong is not rare. An item out of stock at boot is keyed
+    # from the identity's own name; restock it from an old Machine mid-deploy
+    # and the stock row arrives unkeyed, to be folded by the next sweep from a
+    # listing_title that may read differently. _judged_record_sql matches
+    # identity against stock row, so every sibling pressing of a judged record
+    # would stop finding it and be billed again.
+    #
+    # An item with no stock row left has no listing_title to recover, so its
+    # identity is folded from its own name -- and checked against that fold
+    # rather than only filled, since an old binary can move that name too.
     identities = conn.execute(
         """
         SELECT i.item_key, i.artist, i.title, i.record_key,
-               s.record_key AS stock_record_key
+               s.record_key AS stock_record_key, s.item_key AS stock_item_key
         FROM stock_item_identities i
         LEFT JOIN LATERAL (
-            SELECT record_key
+            SELECT record_key, item_key
             FROM stock_items s
             WHERE s.item_key = i.item_key
             ORDER BY s.last_seen DESC, s.id
             LIMIT 1
         ) s ON TRUE
-        WHERE i.record_key IS NULL
-           OR (s.record_key IS NOT NULL AND s.record_key <> i.record_key)
         """
     ).fetchall()
+    wrong = []
+    for row in identities:
+        if row["stock_item_key"] is not None:
+            wanted = row["stock_record_key"]
+        else:
+            wanted = record_key(row["title"], row["artist"])
+        if row["record_key"] != wanted:
+            wrong.append((wanted, row["item_key"], row["record_key"]))
     keyed_identities = 0
-    if identities:
+    if wrong:
         with conn.cursor() as cur:
-            # Compare-and-set on the value the SELECT read, for the same
-            # reason the stock pass re-checks its NULLs: a worker writing this
-            # identity between the two statements has written a key from a
-            # newer title, and overwriting it would leave the pair agreeing on
-            # a value matching neither table's current name -- which the
-            # disagreement test above, by construction, could never notice
-            # again. Here the old value cannot stand in for "untouched", since
-            # replacing a non-NULL one is the point, so the read value is
-            # carried into the predicate instead.
+            # Compare-and-set on the value the SELECT read. Here the old value
+            # cannot stand in for "untouched", since replacing a non-NULL one
+            # is the point, so the read value is carried into the predicate.
             cur.executemany(
                 "UPDATE stock_item_identities SET record_key = %s "
                 "WHERE item_key = %s AND record_key IS NOT DISTINCT FROM %s",
-                [
-                    (
-                        row["stock_record_key"]
-                        if row["stock_record_key"] is not None
-                        else record_key(row["title"], row["artist"]),
-                        row["item_key"],
-                        row["record_key"],
-                    )
-                    for row in identities
-                ],
+                wrong,
             )
             keyed_identities = cur.rowcount
     return keyed_rows + keyed_identities

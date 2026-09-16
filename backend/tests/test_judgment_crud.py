@@ -1042,6 +1042,125 @@ def test_the_sweep_does_not_overwrite_an_identity_a_worker_rekeyed_mid_sweep(pg_
     assert identity["record_key"] == stock["record_key"]
 
 
+def _old_binary_update(conn, item_key, listing_title, artist="Artist A"):
+    """What a machine still running the previous binary writes. Its INSERT
+    names neither fold key it does not know about, so ON CONFLICT DO UPDATE
+    leaves `record_key` exactly as it found it while the name moves on. It
+    does know `title_key`, and writes that."""
+    conn.execute(
+        "UPDATE stock_items SET listing_title = %s, title_key = %s WHERE item_key = %s",
+        [listing_title, title_key(listing_title, artist), item_key],
+    )
+
+
+def test_the_sweep_repairs_a_stale_key_no_column_is_null_to_mark(pg_test_db):
+    """The dangerous way a stored key goes wrong is not by being missing.
+
+    An old binary updating an existing release-crawler row preserves
+    `record_key` while `listing_title` moves, so the row ends up holding a
+    fold of a title it no longer has, with nothing NULL anywhere. The identity
+    beside it keeps the same stale value, so the disagreement pass sees
+    agreement and leaves them too. That is a false *merge*: this listing joins
+    a record it is not, and takes that record's verdict. (Copilot, PR #368,
+    round 13.)
+    """
+    with db.get_admin_pool().connection() as conn:
+        item_key = _seed_release_crawler_item(
+            conn, "Marketplace", "https://m/a", "Album A Remixes"
+        )
+        conn.commit()
+        # Keyed and agreeing, as the live path left them.
+        before = conn.execute(
+            "SELECT record_key FROM stock_items WHERE item_key = %s", [item_key]
+        ).fetchone()["record_key"]
+        assert before == record_key("Album A Remixes", "Artist A")
+
+        _old_binary_update(conn, item_key, "Album A Deluxe")
+        conn.commit()
+
+        # Nothing is NULL, and the two tables still agree -- on a key neither
+        # title now folds to.
+        row = conn.execute(
+            "SELECT title_key, record_key FROM stock_items WHERE item_key = %s", [item_key]
+        ).fetchone()
+        identity = conn.execute(
+            "SELECT record_key FROM stock_item_identities WHERE item_key = %s", [item_key]
+        ).fetchone()
+        assert row["title_key"] is not None and row["record_key"] is not None
+        assert identity["record_key"] == row["record_key"]
+        assert row["record_key"] != record_key("Album A Deluxe", "Artist A")
+
+        db.backfill_stock_keys(conn)
+        conn.commit()
+
+        row = conn.execute(
+            "SELECT title_key, record_key FROM stock_items WHERE item_key = %s", [item_key]
+        ).fetchone()
+        identity = conn.execute(
+            "SELECT record_key FROM stock_item_identities WHERE item_key = %s", [item_key]
+        ).fetchone()
+        assert row["record_key"] == record_key("Album A Deluxe", "Artist A")
+        assert row["title_key"] == title_key("Album A Deluxe", "Artist A")
+        assert identity["record_key"] == row["record_key"]
+        # And having repaired them, it has nothing left to do.
+        assert db.backfill_stock_keys(conn) == 0
+
+
+def test_the_sweep_yields_to_an_old_binary_that_moved_the_title_mid_sweep(pg_test_db):
+    """The same writer, racing the sweep rather than preceding it.
+
+    It changes `listing_title` and `title_key` and leaves `record_key` NULL,
+    so a predicate reading only the key columns still matches and the sweep
+    writes folds of the title it read moments ago -- over a newer one, and
+    over the fresh `title_key` that writer had just computed. The predicate
+    has to compare the fields the fold was taken from. (Copilot, PR #368,
+    round 13.)
+    """
+    import psycopg
+    import config
+
+    with db.get_admin_pool().connection() as conn:
+        item_key = _seed_release_crawler_item(
+            conn, "Marketplace", "https://m/a", "Album A Remixes"
+        )
+        conn.commit()
+        conn.execute("UPDATE stock_items SET record_key = NULL WHERE item_key = %s", [item_key])
+        conn.commit()
+
+    def _old_binary_writes():
+        worker = psycopg.connect(config.DATABASE_URL, autocommit=True)
+        try:
+            _old_binary_update(worker, item_key, "Album A Deluxe")
+        finally:
+            worker.close()
+
+    with db.get_admin_pool().connection() as conn:
+        proxy = _FireAfter(conn, "FROM stock_items", _old_binary_writes)
+        db.backfill_stock_keys(proxy)
+        conn.commit()
+
+    assert proxy.fired, "the stand-in writer never ran; the test proves nothing"
+
+    with db.get_admin_pool().connection() as conn:
+        row = conn.execute(
+            "SELECT listing_title, title_key, record_key FROM stock_items WHERE item_key = %s",
+            [item_key],
+        ).fetchone()
+    assert row["listing_title"] == "Album A Deluxe"
+    # The sweep yielded, so the writer's own title_key survives and record_key
+    # is still unset -- which the next sweep folds from the newer title.
+    assert row["title_key"] == title_key("Album A Deluxe", "Artist A")
+    assert row["record_key"] != record_key("Album A Remixes", "Artist A")
+
+    with db.get_admin_pool().connection() as conn:
+        db.backfill_stock_keys(conn)
+        conn.commit()
+        row = conn.execute(
+            "SELECT record_key FROM stock_items WHERE item_key = %s", [item_key]
+        ).fetchone()
+    assert row["record_key"] == record_key("Album A Deluxe", "Artist A")
+
+
 def test_a_sibling_is_not_rebilled_after_an_identity_is_reconciled(pg_test_db):
     """The consequence of the above, end to end. A second shop's copy of the
     same record finds its verdict by matching its own record_key against the

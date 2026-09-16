@@ -1703,7 +1703,7 @@ class CrawlManager:
         # the life of the process.
         try:
             import httpx
-            from db import get_app_pool, get_enabled_crawlers, replace_stock_items, update_crawler_last_run, enqueue_crawl_queue_for_stock_item, delete_dead_stock_crawl_queue_rows, backfill_stock_keys
+            from db import get_app_pool, get_enabled_crawlers, replace_stock_items, update_crawler_last_run, enqueue_crawl_queue_for_stock_item, delete_dead_stock_crawl_queue_rows
             from crawler import load_enabled_crawlers
             from config import crawl_library_only
 
@@ -1853,10 +1853,13 @@ class CrawlManager:
             library_only = crawl_library_only()
             with get_app_pool().connection() as conn:
                 swept = delete_dead_stock_crawl_queue_rows(conn, library_only)
-                # Normally zero; non-zero only for rows an older binary
-                # wrote during a rolling deploy. See backfill_stock_keys.
-                keyed = backfill_stock_keys(conn)
                 conn.commit()
+            # Off the event loop: the sweep folds every stock row in Python to
+            # find the stale ones, which is CPU-bound and proportional to the
+            # catalog. Normally it rewrites nothing -- a non-zero count means
+            # rows an older binary wrote during a rolling deploy. See
+            # backfill_stock_keys.
+            keyed = await run_in_threadpool(self._sweep_stock_keys)
             if keyed:
                 log.info("Keyed %d stock and identity rows written without a fold key", keyed)
             if swept:
@@ -1915,6 +1918,17 @@ class CrawlManager:
         _events_to_replay in routers/crawl.py is the caller."""
         task = self._judgment_tasks.get(user_id)
         return task is not None and not task.done()
+
+    @staticmethod
+    def _sweep_stock_keys() -> int:
+        """db.backfill_stock_keys on its own connection. Blocking, and both
+        callers hand it to a thread: it folds every stock row and every
+        identity in Python, which is CPU-bound and grows with the catalog."""
+        from db import get_app_pool, backfill_stock_keys
+        with get_app_pool().connection() as conn:
+            keyed = backfill_stock_keys(conn)
+            conn.commit()
+        return keyed
 
     def _stock_sync_running_anywhere(self) -> bool:
         """The local flag plus the cross-Machine one. Blocking; call it off
@@ -2055,7 +2069,7 @@ class CrawlManager:
         from db import (
             get_identity_pool, user_scope, get_unjudged_stock_items, count_unjudged_stock_items,
             get_taste_listing, upsert_stock_judgments, record_stock_judgment_progress,
-            propagate_stock_judgments, get_app_pool, backfill_stock_keys,
+            propagate_stock_judgments,
         )
         import recommendations
         import anthropic
@@ -2165,30 +2179,28 @@ class CrawlManager:
             # turn a real 0 into 300 (0 is falsy), breaking that contract.
             limit = user["recommendation_item_limit"]
 
-            # Keys whatever the last sync left unkeyed, so this run can judge
-            # and inherit for it. Not a correctness guard: the billable set
-            # and propagation both skip a row with no record_key rather than
-            # comparing it against something else, so an unkeyed row is never
-            # mis-billed whether this runs or not. What it buys is that such a
-            # row takes part in *this* run instead of waiting for the next.
+            # Two different things, and only one of them is optional.
             #
-            # That holds only because the sweep never commits a keyed stock
-            # row whose identity holds a different key. *That* pair would be
-            # mis-billed -- the record match runs one against the other -- and
-            # the sweep is the only thing that can produce it. What stops it
-            # is not the shared transaction, which buys atomicity and not
-            # isolation, but that both of its writes are conditional on the
-            # row still holding what it read. See backfill_stock_keys.
+            # For a row with no record_key, this is a convenience: the
+            # billable set and propagation both skip such a row rather than
+            # comparing it against something else, so it is never mis-billed
+            # whether this runs or not. What the sweep buys is that it takes
+            # part in *this* run instead of the next, which is also why it
+            # needs no atomicity with the queries below -- an old Machine can
+            # add another unkeyed row a moment after this commits, and that
+            # row simply sits out this run.
             #
-            # Which is also why it does not need to be atomic with the queries
-            # below. The crawl worker pool writes stock rows continuously and
-            # takes no part in the stock-sync lock, so an old Machine can add
-            # an unkeyed row a moment after this commits; that row simply sits
-            # out this run. Normally a no-op, at a cost measured against the
-            # sync it follows in backfill_stock_keys.
-            with get_app_pool().connection() as conn:
-                swept = backfill_stock_keys(conn)
-                conn.commit()
+            # For a row whose key is *stale*, it is the repair. That row is in
+            # the billable set, matching on a record it is not, and nothing
+            # else in the app will ever notice: see backfill_stock_keys for
+            # how an old binary produces one with no NULL to mark it. Running
+            # here rather than only at sync end is what keeps the window to a
+            # single run.
+            #
+            # Off the event loop because it now folds every row to find them.
+            # Normally it rewrites nothing, at a cost measured in
+            # backfill_stock_keys against the round trips that follow it.
+            swept = await run_in_threadpool(self._sweep_stock_keys)
             if swept:
                 log.info("Keyed %d stock and identity rows before judging for %s", swept, username)
 

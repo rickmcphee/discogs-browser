@@ -246,43 +246,60 @@ row lived — the same silent re-billing, now permanent. The identity pass
 therefore selects on *disagreement*: no key, or a key the live stock row does
 not share.
 
-Third — and this is where the second version of it was still wrong — **both
-of its writes are conditional on the row still holding what it read.** The
-sweep reads, folds in Python, and writes back, and the crawl worker pool takes
-no part in the stock-sync lock, so a worker can commit in between. Running
-both passes in one transaction does not help: that buys atomicity, and what is
-wanted here is isolation, which `READ COMMITTED` does not give. An
-unconditional `UPDATE` puts the fold of a title the row no longer has over the
-worker's own — and because the identity pass then copies that same stale value
-across, the two end up *equal*, which is exactly the state the disagreement
-test above can never notice again. Permanent, and invisible.
+Third — and this is where the two versions before it were still wrong — **it
+recomputes rather than asking which keys are missing, and its writes are
+conditional on the source fields it read.**
 
-So the stock pass re-checks that the key is still NULL, which a worker's write
-(both keys, always together) makes false; and the identity pass, which cannot
-use that test because replacing a non-NULL key is its whole purpose, compares
-against the value its own `SELECT` returned. Either way the sweep yields, and
-yields nothing: what the worker wrote is the same answer computed from a newer
-title.
+Both corrections come from one writer: a machine still running the previous
+binary. Its `INSERT` names neither fold key it does not know about, so
+`ON CONFLICT DO UPDATE` *preserves* them while `listing_title` and `title`
+move to a new name. It does write `title_key`, which it does know.
+
+That breaks a NULL-only sweep in two separate ways. It leaves a row holding a
+fold of a title it no longer has, with **nothing NULL anywhere to mark it** —
+and the identity beside it keeps the same stale value, so the disagreement
+test above sees agreement and leaves the pair alone. Permanently invisible,
+and a false *merge*: the listing joins a record it is not and takes that
+record's verdict, which is the direction this whole design errs away from.
+And when it races the sweep rather than preceding it, it moves `listing_title`
+while leaving `record_key` NULL, so a predicate reading the key columns still
+matches and the sweep writes folds of the title it read moments ago — over the
+newer title, and over the fresh `title_key` that writer had just computed.
+Running both passes in one transaction does not help with either: that buys
+atomicity, and what is wanted is isolation, which `READ COMMITTED` does not
+give.
+
+So the sweep enforces a rule with no gap in it — the stored pair must equal
+the fold of the row's own current artist/title/listing_title, which is exactly
+what both live writers put there — and writes only where those three fields
+still read as its `SELECT` found them. The source fields and not the key
+columns, because the writer this exists for is the one that never touches
+those. Yielding costs nothing: the next sweep folds the newer title, which is
+the better answer. The identity pass, which cannot compare source fields since
+the value it writes comes from the stock row, compares against the key its own
+`SELECT` returned.
 
 With those three, the sweep stays a convenience rather than a correctness
 guard. An unkeyed stock row is skipped by everything; a keyed stock row whose
-identity disagrees is not, and the sweep is the only thing that can produce
-that pair — so it must never commit one.
+key is stale, or whose identity disagrees with it, is not — and the sweep is
+the only thing that can repair either, so it must never commit one and never
+leave one behind.
 
 Populated by `replace_stock_items` and `upsert_stock_item_from_release`, and
 swept by the boot/end-of-sync backfill that today fills `title_key` only. That
 backfill is renamed `backfill_stock_keys` — it no longer fills one key, or one
-table — and fills any of the three columns where NULL, so a rolling deploy
-whose old process is still writing `record_key`-less rows is repaired by the
-next sweep exactly as it already is for `title_key`.
+table — and reconciles all three columns, so a rolling deploy whose old
+process is still writing rows it cannot key is repaired by the next sweep
+exactly as it already is for `title_key`.
 
-Its cost is no longer a pair of index lookups. The stock pass still answers
-from the partial indexes on the NULL keys, but the identity pass compares
-against another table, which no index on the identities can answer, so it
-walks them. Measured at 9,000 rows: about 23 ms in the steady state where it
-finds nothing, against roughly 1,840 ms for the whole-catalog replace it
-follows. The partial index on the identities' NULL keys is dropped with this
-change — it had no reader left, and every upsert was still maintaining it.
+It is not cheap, and that is the trade. Folding every row costs about 850 ms
+on a 9,000-row catalog against roughly 1,840 ms for the whole-catalog replace
+it follows — where the NULL-only version cost about 23 ms. That 23 ms was a
+fast answer to a question that missed the case worth asking about. Both
+callers run it off the event loop, since it is CPU-bound Python growing with
+the catalog. All three partial indexes on the NULL keys are dropped with the
+query that used them: a scan reads every row regardless, and every write was
+still paying to maintain them.
 
 **A missing key is not compared at all.** Every query that reads `record_key`
 also requires it to be present, on both sides, and an unkeyed stock row simply
@@ -567,6 +584,10 @@ user actually reads.
 - Neither pass overwrites what a worker committed between its own read and
   write: one test races the stock pass, one races the identity pass, and each
   asserts the worker's newer key survives in *both* tables.
+- A stale key with nothing NULL to mark it — the state an old binary leaves by
+  moving `listing_title` while preserving `record_key` — is repaired, and the
+  same writer racing the sweep gets its newer title left alone rather than
+  overwritten.
 - A record whose judged listing is no longer stocked at all still answers
   "already judged" — the case a join through `stock_items` would miss.
 - Two simultaneous starts for one user produce one run, and two users'
