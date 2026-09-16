@@ -33,6 +33,9 @@ interface Props {
   viewingAsUser?: boolean
   onToggleViewAsUser?: () => void
   onRefreshRecommendations?: () => void
+  onStopRecommendations?: () => void
+  recommendationRunning?: boolean
+  recommendationStopping?: boolean
   onExportRecommendations?: () => void
   onImportRecommendations?: (file: File) => void
   onClearRecommendations?: () => void
@@ -46,6 +49,9 @@ function Account({
   viewingAsUser = false,
   onToggleViewAsUser = () => {},
   onRefreshRecommendations = () => {},
+  onStopRecommendations = () => {},
+  recommendationRunning = false,
+  recommendationStopping = false,
   onExportRecommendations = () => {},
   onImportRecommendations = () => {},
   onClearRecommendations = () => {},
@@ -365,15 +371,21 @@ function Account({
             <tr className={`border-b border-gray-800/50 ${stackedRowClass}`}>
               <td className="hidden md:table-cell md:py-3 md:pr-4 md:align-top md:w-40"></td>
               <td className={`pb-2 text-left align-top md:py-3 md:pr-4 ${stackedCellClass}`}>
+                {/* One button, three faces. min-w-20 rather than the w-20 its
+                    neighbours carry: it lines up with them at rest and grows
+                    for "Stopping…" instead of clipping it. */}
                 <button
-                  onClick={onRefreshRecommendations}
-                  className={`w-20 text-center px-3 py-1 text-xs disabled:opacity-50 ${secondaryButtonClass()}`}
+                  onClick={recommendationRunning ? onStopRecommendations : onRefreshRecommendations}
+                  disabled={recommendationStopping}
+                  className={`min-w-20 text-center px-3 py-1 text-xs disabled:opacity-50 ${secondaryButtonClass()}`}
                 >
-                  Refresh
+                  {recommendationStopping ? 'Stopping…' : recommendationRunning ? 'Stop' : 'Refresh'}
                 </button>
               </td>
               <td className={`pb-3 text-left text-gray-500 text-xs align-top leading-relaxed md:py-3 ${stackedCellClass}`}>
                 Evaluate unprocessed Store items for recommendation, without a full catalog re-crawl.
+                While a run is under way this stops it instead: the batch already paid for finishes,
+                everything judged so far is kept, and the rest wait for the next run.
               </td>
             </tr>
             <tr className={`border-b border-gray-800/50 ${stackedRowClass}`}>
