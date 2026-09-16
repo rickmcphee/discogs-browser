@@ -3,6 +3,27 @@
 Date: 2026-08-09
 Branch: `recommendations-import`
 
+**Amendment (2026-09-16, branch `claude/lucid-maxwell-69049q`):** the busy
+guard described below no longer reads
+`crawl_manager.judgment_running(user_id)`. A recommendation run is now a
+`stock_judgment_runs` row, and the guard reads that instead — it is racing the
+run's writes to `stock_item_judgments`, and with two Machines behind one
+hostname that run is on whichever one served its start, invisible to this
+process's task map. It also moved: it now runs inside the same transaction as
+the import itself, taking a per-user advisory lock
+(`db.lock_stock_judgment_run`) that a run's claim and its batch checkpoint take
+too, rather than ahead of the upload being read. An advisory lock rather than a
+lock on the run row, because before a user's first run there is no row, and a
+row lock there is silently no lock at all — which is exactly a first Refresh
+racing a first import. Checked before the file was even parsed, it answered a
+question about a moment that had passed by the time the rows landed, and a run
+claimed during the parse wrote concurrently anyway. One visible consequence: a
+malformed file is now rejected on its own merits *before* the busy check rather
+than after it. The `crawl_manager.stock_sync_running` half is unchanged,
+and so is everything the guard does once it fires: still a `200` carrying
+`{"imported": 0, ..., "running": True}`, still writing nothing. See
+[`2026-09-16-stop-recommendation-run-design.md`](2026-09-16-stop-recommendation-run-design.md).
+
 ## Problem
 
 Recommendation judgments cost real money. Every unjudged Store item that
