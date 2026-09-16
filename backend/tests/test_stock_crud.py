@@ -2381,6 +2381,160 @@ def test_get_stock_items_sort_by_price_rows_carry_the_names_their_sources_gave(a
     assert all(r["title"] == "Selected Ambient Works" for r in result["items"])
 
 
+def test_upsert_stock_item_from_release_stores_the_picture_the_source_showed(admin_conn):
+    # The picture goes the same way as the name: a release crawler matches by
+    # artist and title, so the copy it found can be a different pressing, and
+    # the catalog cover would picture that other pressing's artwork next to
+    # the listing's price.
+    crawler_id, catalog_release = _release_crawler_and_catalog_row(admin_conn)
+
+    db.upsert_stock_item_from_release(
+        admin_conn, "r1", crawler_id, catalog_release,
+        {"url": "https://amazon/x", "price": 24.99, "currency": "USD",
+         "cover_image_url": "https://m.media-amazon.com/images/I/black.jpg"},
+    )
+    admin_conn.commit()
+
+    row = admin_conn.execute(
+        "SELECT cover_image_url, listing_image_url FROM stock_items "
+        "WHERE crawler_id = %s AND release_id = 'r1'", [crawler_id]
+    ).fetchone()
+    # The target's own art is untouched -- it is the fallback, not the value
+    # being replaced.
+    assert row["cover_image_url"] == catalog_release["cover_image_url"]
+    assert row["listing_image_url"] == "https://m.media-amazon.com/images/I/black.jpg"
+
+
+def test_upsert_stock_item_from_release_drops_the_picture_when_a_rerun_reports_none(admin_conn):
+    crawler_id, catalog_release = _release_crawler_and_catalog_row(admin_conn)
+
+    db.upsert_stock_item_from_release(
+        admin_conn, "r1", crawler_id, catalog_release,
+        {"url": "https://amazon/x", "price": 24.99, "currency": "USD",
+         "cover_image_url": "https://old/pic.jpg"},
+    )
+    admin_conn.commit()
+    db.upsert_stock_item_from_release(
+        admin_conn, "r1", crawler_id, catalog_release,
+        {"url": "https://amazon/y", "price": 19.99, "currency": "USD", "cover_image_url": ""},
+    )
+    admin_conn.commit()
+
+    row = admin_conn.execute(
+        "SELECT listing_image_url FROM stock_items WHERE crawler_id = %s AND release_id = 'r1'", [crawler_id]
+    ).fetchone()
+    assert row["listing_image_url"] is None
+
+
+def test_upsert_stock_item_listing_stores_the_picture_the_source_showed(admin_conn):
+    db.register_crawler(admin_conn, "Nuclear Blast", "/x.py", crawler_type="catalog")
+    db.register_crawler(admin_conn, "eBay", "/y.py", crawler_type="release")
+    admin_conn.commit()
+    store_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Nuclear Blast'").fetchone()["id"]
+    ebay_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'eBay'").fetchone()["id"]
+    item_key = db.replace_stock_items(admin_conn, store_id, [
+        {"artist": "Artist A", "title": "Album A", "url": "https://x/1", "price": 10.0,
+         "currency": "USD", "cover_image_url": "https://store/cover.jpg"},
+    ])[0]
+
+    db.upsert_stock_item_listing(
+        admin_conn, item_key, ebay_id, "https://ebay/1", 12.5, None, "USD", "New",
+        "ARTIST A Album A LP Sealed", "https://i.ebayimg.com/1.jpg",
+    )
+    admin_conn.commit()
+    row = admin_conn.execute("SELECT listing_image_url FROM listings WHERE item_key = %s", [item_key]).fetchone()
+    assert row["listing_image_url"] == "https://i.ebayimg.com/1.jpg"
+
+    db.upsert_stock_item_listing(admin_conn, item_key, ebay_id, "https://ebay/2", 11.0, None, "USD", "New")
+    admin_conn.commit()
+    row = admin_conn.execute("SELECT listing_image_url FROM listings WHERE item_key = %s", [item_key]).fetchone()
+    assert row["listing_image_url"] is None
+
+    db.upsert_stock_item_listing(
+        admin_conn, item_key, ebay_id, "https://ebay/3", 11.0, None, "USD", "New", "name", "",
+    )
+    admin_conn.commit()
+    row = admin_conn.execute("SELECT listing_image_url FROM listings WHERE item_key = %s", [item_key]).fetchone()
+    assert row["listing_image_url"] is None
+
+
+def test_upsert_listing_stores_the_picture_the_source_showed(admin_conn):
+    crawler_id, _catalog_release = _release_crawler_and_catalog_row(admin_conn)
+
+    db.upsert_listing(
+        admin_conn, "r1", crawler_id, "https://x", 9.99, None, "USD", None, "Some name", "https://pic/1.jpg",
+    )
+    admin_conn.commit()
+    row = admin_conn.execute("SELECT listing_image_url FROM listings WHERE release_id = 'r1'").fetchone()
+    assert row["listing_image_url"] == "https://pic/1.jpg"
+
+    db.upsert_listing(admin_conn, "r1", crawler_id, "https://x", 9.99, None, "USD", None, "Some name", "")
+    admin_conn.commit()
+    row = admin_conn.execute("SELECT listing_image_url FROM listings WHERE release_id = 'r1'").fetchone()
+    assert row["listing_image_url"] is None
+
+
+def test_get_stock_items_rows_carry_the_pictures_their_sources_showed(admin_conn):
+    # Grouped path: a comparison row carries its own listing's picture, and
+    # keeps the own row's cover_image_url as the fallback beneath it.
+    db.register_crawler(admin_conn, "Nuclear Blast", "/x.py", crawler_type="catalog")
+    db.register_crawler(admin_conn, "Amazon", "/y.py", crawler_type="release")
+    admin_conn.commit()
+    store_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Nuclear Blast'").fetchone()["id"]
+    amazon_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+    item_key = db.replace_stock_items(admin_conn, store_id, [
+        {"artist": "Artist A", "title": "Album A", "url": "https://x/1", "price": 10.0,
+         "currency": "USD", "cover_image_url": "https://store/cover.jpg"},
+    ])[0]
+    db.upsert_stock_item_listing(
+        admin_conn, item_key, amazon_id, "https://amazon/1", 12.5, None, "USD", "New",
+        "Album A [Black Vinyl LP]", "https://m.media-amazon.com/black.jpg",
+    )
+    admin_conn.commit()
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_stock_items(conn, alice["id"])
+
+    own, comparison = result["items"]
+    assert own["cover_image_url"] == "https://store/cover.jpg"
+    assert own["listing_image_url"] is None
+    assert comparison["cover_image_url"] == "https://store/cover.jpg"
+    assert comparison["listing_image_url"] == "https://m.media-amazon.com/black.jpg"
+
+
+def test_get_stock_items_sort_by_price_rows_carry_the_pictures_their_sources_showed(admin_conn):
+    # Flat path: a release-crawler own row carries its own reported picture,
+    # and a comparison listing carries the listing's.
+    crawler_id, catalog_release = _release_crawler_and_catalog_row(admin_conn)
+    db.register_crawler(admin_conn, "eBay", "/y.py", crawler_type="release")
+    admin_conn.commit()
+    ebay_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'eBay'").fetchone()["id"]
+    db.upsert_stock_item_from_release(
+        admin_conn, "r1", crawler_id, catalog_release,
+        {"url": "https://amazon/x", "price": 24.99, "currency": "USD",
+         "cover_image_url": "https://m.media-amazon.com/black.jpg"},
+    )
+    item_key = db.compute_item_key("Aphex Twin", "Selected Ambient Works", "https://amazon/x")
+    db.upsert_stock_item_listing(
+        admin_conn, item_key, ebay_id, "https://ebay/1", 30.0, None, "USD", "Used",
+        None, "https://i.ebayimg.com/1.jpg",
+    )
+    admin_conn.commit()
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_stock_items(conn, alice["id"], sort="price", order="asc")
+
+    by_source = {r["source"]: r for r in result["items"]}
+    assert by_source["Amazon"]["listing_image_url"] == "https://m.media-amazon.com/black.jpg"
+    assert by_source["eBay"]["listing_image_url"] == "https://i.ebayimg.com/1.jpg"
+    # Both still carry the target's own art underneath as the fallback.
+    assert all(r["cover_image_url"] == catalog_release["cover_image_url"] for r in result["items"])
+
+
 def test_get_distinct_stock_artists_folds_punctuation_variants(admin_conn):
     # Two stores spelling one band differently is the ordinary case for this
     # fold -- neither spelling is wrong, and before it each got its own

@@ -265,6 +265,16 @@ call appears here verbatim. See
 
 `upsert_stock_item_listing` (new, same shape as `upsert_listing`):
 
+**Amendment (2026-09-16, branch `claude/eager-hawking-xevk84`):** the block
+below is the signature as introduced, and both it and `upsert_listing` have
+since grown two trailing optional arguments — `listing_title`
+([`2026-09-05-marketplace-listing-title-design.md`](2026-09-05-marketplace-listing-title-design.md))
+and `listing_image_url`
+([`2026-09-16-marketplace-listing-image-design.md`](2026-09-16-marketplace-listing-image-design.md)),
+the name and picture the source gave the item it matched, written to
+`listings` columns of the same names. "Same shape as `upsert_listing`" still
+holds; the shape is just wider now. Nothing else here depends on it.
+
 ```python
 def upsert_stock_item_listing(
     conn, item_key: str, crawler_id: int, url: str,

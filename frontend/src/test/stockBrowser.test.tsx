@@ -1216,6 +1216,38 @@ describe('StockBrowser', () => {
     expect(screen.getAllByText('The Great Satan — Ghostly Black Vinyl').length).toBe(1)
   })
 
+  it('shows the picture the source showed for a match in place of the target cover', async () => {
+    getStock.mockResolvedValue({
+      total: 1, row_total: 1, page: 1, per_page: 250,
+      items: [
+        items[0],
+        { id: 'k1:Amazon', item_key: 'k1', is_own: false, artist: 'Rob Zombie', title: 'The Great Satan — Ghostly Black Vinyl', listing_title: 'Rob Zombie - The Great Satan [Standard Black LP]', listing_image_url: 'https://m.media-amazon.com/black.jpg', format: 'Vinyl', price: 29.99, currency: 'USD', url: 'https://amazon/x', cover_image_url: 'https://cdn.shopify.com/rz-black.png', source: 'Amazon', last_seen: '2026-07-05T00:00:00Z', reason: null },
+      ],
+    })
+    render(<StockBrowser />)
+    // Alt text follows the picture: the comparison row shows Amazon's photo,
+    // so it is named for what Amazon found, not for the target.
+    const listingThumb = await screen.findByAltText('Rob Zombie - The Great Satan [Standard Black LP]') as HTMLImageElement
+    expect(listingThumb.getAttribute('src')).toBe('https://m.media-amazon.com/black.jpg')
+    // The own row keeps the store's own cover.
+    const ownThumb = screen.getByAltText('The Great Satan — Ghostly Black Vinyl') as HTMLImageElement
+    expect(ownThumb.getAttribute('src')).toBe('https://cdn.shopify.com/rz-black.png')
+  })
+
+  it('falls back to the target cover, and its alt text, when a source reported a name but no picture', async () => {
+    getStock.mockResolvedValue({
+      total: 1, row_total: 1, page: 1, per_page: 250,
+      items: [
+        { id: 'k1:Amazon', item_key: 'k1', is_own: false, artist: 'Rob Zombie', title: 'The Great Satan — Ghostly Black Vinyl', listing_title: 'Rob Zombie - The Great Satan [Standard Black LP]', listing_image_url: null, format: 'Vinyl', price: 29.99, currency: 'USD', url: 'https://amazon/x', cover_image_url: 'https://cdn.shopify.com/rz-black.png', source: 'Amazon', last_seen: '2026-07-05T00:00:00Z', reason: null },
+      ],
+    })
+    render(<StockBrowser />)
+    const thumbnail = await screen.findByAltText('The Great Satan — Ghostly Black Vinyl') as HTMLImageElement
+    expect(thumbnail.getAttribute('src')).toBe('https://cdn.shopify.com/rz-black.png')
+    // The row is still *named* for what Amazon found; only the picture fell back.
+    expect(screen.getByText('Rob Zombie - The Great Satan [Standard Black LP]')).toBeTruthy()
+  })
+
   it('shows only the own row per item in tile view, even when comparison rows are present', async () => {
     getStock.mockResolvedValue({
       total: 1, row_total: 1, page: 1, per_page: 250,
