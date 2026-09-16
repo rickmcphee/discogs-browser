@@ -183,12 +183,31 @@ after an initial gap left this endpoint's failures as a raw 500.
 3. Call `GET /oauth/identity` with that pair to get `discogs_user_id`/
    `discogs_username`.
 4. `get_user_by_discogs_id` (via `app_identity`):
-   - **Found** → create a session, set the cookie, redirect to the frontend
-     root.
+   - **Found** → write the freshly exchanged token pair (and the username
+     Discogs just reported) onto the user row, create a session, set the
+     cookie, redirect to the frontend root.
    - **Not found** → encrypt the token pair, insert a `pending_signups` row,
      redirect to the frontend root with `?signup_pending=<token>` in the URL
      (the same opaque `token` as the row's PK — a single-use bearer
      reference, not something requiring its own cookie/CSRF handling).
+
+**Amendment (2026-09-16, branch `claude/sleepy-dijkstra-dlsrbx`):** step 4's
+**Found** branch writes the token pair; it used to discard it. Every sign-in
+after the first exchanged a working `oauth_token`/`oauth_token_secret` pair
+with Discogs and then dropped it on the floor, leaving the row holding
+whatever redeem-invite had stored at signup — which was the only write to
+those columns anywhere in the app. Nothing revokes a Discogs OAuth 1.0a token
+by expiry, but a user can revoke one from their Discogs account settings, and
+a consumer-key rotation orphans every token minted under the old key. Either
+leaves the stored pair permanently dead: `_sync_collection_blocking` signs
+with it, so every collection sync ends on the credential it holds, and
+re-authorising — the one remedy the app offers, and the one its error message
+now names — changed nothing at all. `discogs_username` rides along for a
+related reason: it is not a display name but the key in every Discogs URL the
+sync builds (`/users/{username}/collection/...`), so a rename on Discogs
+leaves the row addressing a name the API no longer resolves. The account is
+matched on `discogs_user_id`, which a rename does not change, so following the
+rename is safe.
 
 **`POST /api/auth/redeem-invite`** `{signup_token, invite_code}` — completes
 signup. One transaction: look up `pending_signups` by `signup_token`, failing
