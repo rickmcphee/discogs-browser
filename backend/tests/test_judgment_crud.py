@@ -1408,6 +1408,91 @@ def test_an_out_of_stock_identity_keeps_its_listing_derived_key(pg_test_db):
         )
 
 
+class _FireAfterCommit:
+    """Like _FireAfter, but hooked on the commit rather than on a statement.
+
+    backfill_stock_keys commits between its two passes, so this is the only
+    seam that puts a writer exactly between them -- after the stock pass has
+    keyed its rows and released them, before the identity pass reads."""
+
+    def __init__(self, conn, then):
+        self._conn = conn
+        self._then = then
+        self.fired = False
+
+    def commit(self):
+        self._conn.commit()
+        if not self.fired:
+            self.fired = True
+            self._then()
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
+def test_the_sweep_does_not_copy_a_stock_rows_missing_key_onto_its_identity(pg_test_db):
+    """A live stock row can hold no key at all, and copying that is worse than
+    copying nothing.
+
+    The trigger clears a stock row's key when an old Machine moves its title,
+    and that can land after the stock pass has committed -- so the identity
+    pass sees a live row with a NULL key. Copying it erases a key the identity
+    still holds correctly, and if that stock row then goes out of stock the
+    orphan branch re-derives it from the catalog title it no longer matches:
+    the re-listing charge, by a second route. (Copilot, PR #368, round 19.)
+    """
+    import psycopg
+    import config
+
+    listing_title = "Album A Remixes"
+    with db.get_admin_pool().connection() as conn:
+        item_key = _seed_release_crawler_item(
+            conn, "Marketplace", "https://m/a", listing_title
+        )
+        conn.commit()
+
+    def _old_machine_moves_the_title():
+        # The write, and the trigger's response to it: the key goes.
+        worker = psycopg.connect(config.DATABASE_URL, autocommit=True)
+        try:
+            _old_binary_update(worker, item_key, "Album A Deluxe")
+        finally:
+            worker.close()
+
+    with db.get_admin_pool().connection() as conn:
+        proxy = _FireAfterCommit(conn, _old_machine_moves_the_title)
+        db.backfill_stock_keys(proxy)
+        conn.commit()
+
+    assert proxy.fired, "the stand-in writer never ran; the test proves nothing"
+
+    with db.get_admin_pool().connection() as conn:
+        stock = conn.execute(
+            "SELECT record_key FROM stock_items WHERE item_key = %s", [item_key]
+        ).fetchone()
+        identity = conn.execute(
+            "SELECT record_key FROM stock_item_identities WHERE item_key = %s", [item_key]
+        ).fetchone()
+
+    assert stock["record_key"] is None, "the trigger should have cleared it"
+    assert identity["record_key"] == record_key(listing_title, "Artist A"), (
+        "a NULL on the stock row is nothing to copy, not an answer"
+    )
+
+    # And the next sweep keys the stock row and reconciles the identity to it.
+    with db.get_admin_pool().connection() as conn:
+        db.backfill_stock_keys(conn)
+        conn.commit()
+        stock = conn.execute(
+            "SELECT record_key FROM stock_items WHERE item_key = %s", [item_key]
+        ).fetchone()
+        identity = conn.execute(
+            "SELECT record_key FROM stock_item_identities WHERE item_key = %s", [item_key]
+        ).fetchone()
+    assert stock["record_key"] == record_key("Album A Deluxe", "Artist A")
+    assert identity["record_key"] == stock["record_key"]
+
+
 def test_a_sibling_is_not_rebilled_after_an_identity_is_reconciled(pg_test_db):
     """The consequence of the above, end to end. A second shop's copy of the
     same record finds its verdict by matching its own record_key against the

@@ -125,16 +125,22 @@ Rain" and "The Black Parade" are untouched, having no fence. Stores write a
 variant as an aside overwhelmingly often, so the restraint costs almost none
 of the saving.
 
-A comma is **not** one of those separators, and the exception earns itself.
-Ordinary titles use commas far more often than storefronts use them as
-metadata boundaries, and the words that follow one are frequently exactly the
-colour and edition vocabulary the fence rule strips — so "Red, White & Blue"
-folded onto "Red", and "Ready, Set" onto "Ready". Real records, merged, with a
-verdict and a reason belonging to a different album. Dropping the comma costs
-the "Kid A, Indie Exclusive Blue" spelling, which now keys as its own record:
-one extra judgment, the cheap mistake. The same reasoning removed a bare
-`set` from the variant vocabulary in favour of the phrase "box set" — `set` is
-an ordinary title word, "box set" is not.
+A comma is **not** one of those separators, and neither is a slash or a pipe.
+All three failed the same test, in the same way. Ordinary titles use them far
+more often than storefronts use them as metadata boundaries, and the words
+that follow one are frequently exactly the colour and edition vocabulary the
+fence rule strips — so "Red, White & Blue" folded onto "Red", "Ready, Set"
+onto "Ready", "Black / Gold" onto "Black" and "Red | Blue" onto "Red". Real
+records, merged, with a verdict and a reason belonging to a different album.
+The slash is the worst of them, because a two-sided or double-album title is
+exactly where one shows up. Dropping all three costs the "Kid A, Indie
+Exclusive Blue" and "Kid A | Red Vinyl" spellings, which now key as their own
+records: one extra judgment each, the cheap mistake. The same reasoning
+removed a bare `set` from the variant vocabulary in favour of the phrase "box
+set" — `set` is an ordinary title word, "box set" is not.
+
+The typographic dashes stay beside the bare " - ". They read as the aside that
+mark makes, and no title uses one the way a title uses a slash.
 
 That phrase lives in a list `record_key` alone consults, not in the one
 `title_key` shares. The distinction is the point of having two keys: a box set
@@ -146,8 +152,8 @@ phrase in the shared list did exactly the former, silently.
 That leaves a residual, stated rather than hidden: a trailing dash segment is
 still taken as a fence, so a title like "Black - Gold" merges onto "Black".
 The dash is the dominant real spelling of a variant and removing it would gut
-the feature, where the comma was the weakest signal of the three and the most
-common in ordinary titles.
+the feature — where the comma, the slash and the pipe were all weak signals of
+a variant and common in ordinary titles, so each one cost little to give up.
 
 `record_key` delegates its folding to `title_key` rather than post-filtering
 its output, because the punctuation that marks a fence is exactly what a
@@ -639,6 +645,12 @@ not worth folding into this one.
 - A bare number does not carry a fenced segment on its own — `Greatest Hits
   (2)` and `Now - 4` stay separate records — while a digit beside a variant
   word (`Numbered 123`, `2024 Reissue`, `2LP`) still folds away.
+- A comma, a slash and a pipe are not fences: `Red, White & Blue`, `Ready,
+  Set`, `Black / Gold` and `Red | Blue` stay separate from their first
+  segment, while the dashes and brackets still fold
+- A live stock row with no key yet is nothing for the identity pass to copy —
+  it leaves the identity alone rather than erasing a key it still holds
+  correctly
 - A comma is not a fence: `Red, White & Blue` and `Ready, Set` stay separate
   from `Red` and `Ready`, and `Box Set` still folds while a bare `Set` does
   not.

@@ -176,17 +176,22 @@ _VARIANT_WORDS = frozenset("""
 
 # A bracketed aside, and the separators a store puts a variant behind when it
 # does not bracket it. The bare hyphen needs whitespace on both sides or
-# "Non-Stop" would split into two segments; the typographic dashes, pipe and
-# slash do not.
+# "Non-Stop" would split into two segments; the typographic dashes do not.
 _BRACKETED = re.compile(r"[(\[{][^)\]}]*[)\]}]")
-# No comma. A comma is ordinary title punctuation far more often than it is a
-# metadata boundary -- "Red, White & Blue", "Ready, Set" -- and since the words
-# after one are frequently colours or edition words, treating it as a boundary
-# merged those titles onto "Red" and "Ready". That is the false-merge
-# direction, where the cost is a verdict and a reason belonging to a different
-# album. Losing it costs the "Kid A, Indie Exclusive Blue" spelling, which now
-# keys as its own record: one extra judgment, the cheap mistake.
-_SEGMENT_SPLIT = re.compile(r"\s+-\s+|\s*[–—|/]\s*")
+# No comma, no slash, no pipe. All three are ordinary title punctuation far
+# more often than they are metadata boundaries, and the words after one are
+# frequently colours or edition words, so treating them as boundaries merged
+# real titles onto their first segment: "Red, White & Blue" onto "Red",
+# "Black / Gold" onto "Black", "Red | Blue" onto "Red". That is the
+# false-merge direction, where the cost is a verdict and a reason belonging to
+# a different album -- and a two-sided or double-album title is exactly where
+# a slash shows up. Losing them costs the "Kid A, Indie Exclusive Blue" and
+# "Kid A | Red Vinyl" spellings, which now key as their own records: one extra
+# judgment each, the cheap mistake.
+#
+# The typographic dashes stay. Those read as the same aside the bare " - "
+# marks, and no title uses one the way a title uses a slash.
+_SEGMENT_SPLIT = re.compile(r"\s+-\s+|\s*[–—]\s*")
 
 
 def _artist_bare_key(text: str) -> str:

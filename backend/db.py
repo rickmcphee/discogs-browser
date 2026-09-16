@@ -1279,6 +1279,17 @@ def backfill_stock_keys(conn) -> int:
     for row in identities:
         if row["stock_item_key"] is not None:
             wanted = row["stock_record_key"]
+            if wanted is None:
+                # The stock row is there but has no key yet -- the trigger
+                # cleared it when an old Machine moved its title after the
+                # pass above committed. There is nothing to copy, and copying
+                # the NULL would erase a key this identity still holds
+                # correctly; worse, if that stock row then goes out of stock
+                # the branch below would re-derive the identity from the
+                # catalog title it no longer matches, which is the re-listing
+                # charge again. Leave it until the stock row is keyed, which
+                # is the next sweep.
+                continue
         elif row["record_key"] is not None:
             # Nothing to reconcile against, and nothing better to say. A
             # release-crawler identity holds the fold of the marketplace's

@@ -303,3 +303,28 @@ def test_box_set_still_folds_but_a_bare_set_does_not():
     # "box set" is unambiguous as a phrase; "set" alone is a title word.
     assert record_key("Kid A (Box Set)", "Radiohead") == record_key("Kid A", "Radiohead")
     assert record_key("Ready - Set") != record_key("Ready")
+
+
+@pytest.mark.parametrize("compound,shorter", [
+    ("Black / Gold", "Black"),
+    ("Red | Blue", "Red"),
+])
+def test_a_slash_or_pipe_does_not_fence_off_a_variant(compound, shorter):
+    """Same reasoning that took the comma out. Both are ordinary title
+    punctuation far more often than they are metadata boundaries -- a slash is
+    exactly where a two-sided or double-album title puts one -- and the words
+    after them are frequently colours, so treating them as fences merged real
+    records onto their first segment. (Copilot, PR #368, round 19.)
+    """
+    assert record_key(compound) != record_key(shorter)
+
+
+@pytest.mark.parametrize("written", [
+    "Kid A - Red Vinyl",
+    "Kid A – Red Vinyl",
+    "Kid A — Red Vinyl",
+    "Kid A (Red Vinyl)",
+])
+def test_the_fences_that_remain_still_fold(written):
+    """What dropping the slash and the pipe must not cost."""
+    assert record_key(written) == record_key("Kid A")
