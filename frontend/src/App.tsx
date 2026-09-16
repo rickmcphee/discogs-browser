@@ -1126,11 +1126,20 @@ export default function App() {
   )
 
   const handleRefreshRecommendations = useCallback(async () => {
+    // The start path now makes blocking cross-Machine database checks, so
+    // this response can land well after an SSE event that already repainted
+    // the banner -- and a rejection means a run *is* going somewhere, so its
+    // progress events are the ones arriving. Writing unconditionally would
+    // talk over live progress with a stale "already refreshing". Same guard
+    // the other start handlers use, keyed on the write counter because an SSE
+    // repaint bumps that without claiming ownership.
+    const writesAtRequest = statusWrites.current
+    const ownsStatus = () => statusWrites.current === writesAtRequest
     try {
       const result = await postJudgmentStart()
       // Same lesson as reportStockSyncRejection above: a started=false nobody
       // renders is a click that looks like it did nothing.
-      if (!result.started) {
+      if (!result.started && ownsStatus()) {
         setSyncStatus(
           result.stock_sync_running
             ? 'In-stock sync running — try Refresh again once it finishes.'
@@ -1138,7 +1147,7 @@ export default function App() {
         )
       }
     } catch (e: any) {
-      setSyncStatus(`Refresh recommendations failed to start: ${e.message}`)
+      if (ownsStatus()) setSyncStatus(`Refresh recommendations failed to start: ${e.message}`)
     }
   }, [setSyncStatus])
 

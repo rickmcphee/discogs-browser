@@ -248,3 +248,26 @@ def test_the_punctuation_fold_does_not_swallow_a_title_that_merely_starts_alike(
     # "Oates" alone is not the artist, so nothing is stripped and the title
     # keeps its own words.
     assert record_key("Oates - Solo", "Hall & Oates") != record_key("Solo", "Hall & Oates")
+
+
+# _artist_sort_sql punctuation-folds *then* strips the article, so it groups
+# "The-Beatles" with "Beatles". Expanding article forms before folding left
+# "The-Beatles" with no " the " to find -- its article is hyphen-joined until
+# the punctuation fold turns it into a space. (Copilot, PR #368.)
+@pytest.mark.parametrize("artist,written,bare", [
+    ("The-Beatles", "Beatles - Abbey Road (Red)", "Abbey Road"),
+    ("Beatles", "The-Beatles - Abbey Road", "Abbey Road"),
+    ("Beatles, The", "The Beatles - Abbey Road", "Abbey Road"),
+    ("The Beatles", "Beatles, The - Abbey Road", "Abbey Road"),
+    ("Beatles, The", "The-Beatles - Abbey Road [Deluxe]", "Abbey Road"),
+])
+def test_an_article_on_either_side_still_keys_as_one_record(artist, written, bare):
+    assert record_key(written, artist) == record_key(bare, artist)
+
+
+def test_an_article_in_a_title_is_not_an_artist_prefix():
+    # "The" here belongs to the album, not to a leading artist name, so it
+    # stays -- the bare-key comparison only ever applies to what precedes a
+    # separator.
+    assert record_key("The Wall", "Pink Floyd") == "the wall"
+    assert record_key("The Wall", "Pink Floyd") != record_key("Wall", "Pink Floyd")

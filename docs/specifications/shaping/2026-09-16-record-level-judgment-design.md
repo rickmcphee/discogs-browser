@@ -148,14 +148,22 @@ raw offsets. There the title goes on unsplit for `title_key` to strip, costing
 one variant not folded away — a record billed twice at worst, which is the
 direction this module errs in on purpose.
 
-Its prefix test has to fold punctuation the way `_artist_punct_fold_sql`
-does — "&" to "and", "-" to a space — because that fold is the record group's
-own artist half. Postgres already counts "Hall & Oates" and "Hall and Oates",
-or "Blink-182" and "Blink 182", as one artist; a prefix test that did not
-would fail to see the artist in a title spelling it the other way, leave it
-in the key, and file that listing away from its own record. Two paid
-judgments for one album — the exact failure this design exists to remove,
-reappearing in the machinery meant to remove it.
+Its prefix test compares *bare artist keys* — what `_artist_sort_sql`
+computes: punctuation folded ("&" to "and", "-" to a space), then a leading
+"the " or trailing ", the" dropped. That fold, in that order, because it is
+the record group's own artist half. Postgres already counts "Hall & Oates"
+and "Hall and Oates", or "The-Beatles" and "Beatles", as one artist; a prefix
+test that did not would fail to see the artist in a title spelling it the
+other way, leave it in the key, and file that listing away from its own
+record. Two paid judgments for one album — the exact failure this design
+exists to remove, reappearing in the machinery meant to remove it.
+
+The order matters on its own: folding *after* expanding the article forms
+leaves "The-Beatles" with no " the " to find at all, since its article is
+hyphen-joined until the punctuation fold turns that hyphen into a space. And
+one key on each side rather than a set of accepted spellings, because the
+article can sit on either side — a store's "The-Beatles - Abbey Road" or a
+stored "Beatles, The" — and only normalising both catches both.
 
 That is also why every separator in the title is a candidate boundary, tested
 by folding what precedes it, rather than the artist's own length being used to
@@ -468,7 +476,12 @@ user actually reads.
 - A judged record's sibling left unkeyed by an old binary — the mixed state,
   not the all-NULL one — is in the billable set before a sweep and out of it
   after, and the judgment run sweeps before it counts.
-- The lock acquisition closes its connection when the lock query raises.
+- The lock acquisition closes its connection when the lock query raises, and
+  a run cancelled at its opening broadcast still releases its lock — that
+  broadcast awaits, so it is a cancellation point, and it has to sit inside
+  the `try` whose `finally` does the releasing.
+- A rejected Refresh does not overwrite a banner something newer has already
+  written.
 - `start_judgment_only` returns `started: false` while a stock sync runs, and
   starts normally once it finishes.
 - It also refuses while another Machine holds `STOCK_SYNC_LOCK_KEY` with no
@@ -477,7 +490,9 @@ user actually reads.
   the same whether or not the store wrote it into the title.
 - So does an artist spelled with the punctuation `_artist_punct_fold_sql`
   folds: "Hall & Oates" against "Hall and Oates", "Blink-182" against
-  "Blink 182", in either direction.
+  "Blink 182", in either direction — and with the article on either side,
+  "The-Beatles" against "Beatles" and "Beatles, The" against "The Beatles".
+  An article that belongs to the *title* ("The Wall") is left alone.
 - The backfill gives an identity and its stock row the same `record_key` on
   the release-crawler path, and a judgment made before it still reads as
   judged afterwards.

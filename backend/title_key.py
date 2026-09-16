@@ -168,19 +168,25 @@ _BRACKETED = re.compile(r"[(\[{][^)\]}]*[)\]}]")
 _SEGMENT_SPLIT = re.compile(r"\s+-\s+|\s*[–—|/]\s*|\s*,\s*")
 
 
-def _artist_raw_forms(artist: str) -> list:
-    """`_artist_forms`' spellings, unfolded — needed because record_key has to
-    cut the artist off the *raw* title, where the folded string's offsets do
-    not apply."""
-    base = artist.strip()
-    low = base.casefold()
-    forms = {base}
-    if low.startswith("the "):
-        forms.add(base[4:])
-    if low.endswith(", the"):
-        bare = base[:-5]
-        forms.update({bare, "The " + bare})
-    return sorted((f for f in forms if f), key=len, reverse=True)
+def _artist_bare_key(text: str) -> str:
+    """What `_artist_sort_sql` computes for an artist: punctuation folded,
+    then a leading "the " or trailing ", the" dropped.
+
+    That order, and one key rather than a set of accepted spellings, because
+    that is what SQL produces — the record group's artist half is exactly this
+    expression. Comparing bare key against bare key makes the test symmetric,
+    which matters: the article can sit on either side, in a store's
+    "The-Beatles - Abbey Road" or in a stored artist "Beatles, The", and only
+    normalising both catches both. Folding after expanding would leave
+    "The-Beatles" with no " the " to find at all, since its article is joined
+    by a hyphen until the punctuation fold turns it into a space.
+    """
+    base = _punct_fold(text)
+    if base.startswith("the ") and base[4:]:
+        return base[4:]
+    if base.endswith(", the") and base[:-5]:
+        return base[:-5]
+    return base
 
 
 _LEADING_SEP = re.compile(_ARTIST_SEP_RE)
@@ -225,13 +231,14 @@ def _split_leading_artist(title: str, artist: Optional[str]):
     """
     if not artist:
         return None, title
-    wanted = {_punct_fold(f) for f in _artist_raw_forms(artist)}
-    wanted.discard("")
+    wanted = _artist_bare_key(artist)
+    if not wanted:
+        return None, title
     for sep in _LEADING_SEP.finditer(title):
         head = title[:sep.start()]
         if not head.strip() or not title[sep.end():].strip():
             continue
-        if _punct_fold(head) in wanted:
+        if _artist_bare_key(head) == wanted:
             return title[:sep.end()], title[sep.end():]
     # The raw spellings disagree (an accent, an apostrophe) but the folded
     # ones may not. Folding can change length, so the boundary is not

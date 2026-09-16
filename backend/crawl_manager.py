@@ -2048,24 +2048,33 @@ class CrawlManager:
             return {"started": True, "running": True, "stock_sync_running": False}
 
     async def _run_judgment_phase(self, user_id: int, lock_conn=None):
-        from db import (
-            get_identity_pool, user_scope, get_unjudged_stock_items, count_unjudged_stock_items,
-            get_taste_listing, upsert_stock_judgments, propagate_stock_judgments,
-            get_app_pool, backfill_stock_keys,
-        )
-        import recommendations
-        import anthropic
-
         # Placeholder until the query below confirms the user still exists --
         # keeps the except block's own log line safe even if that query itself
-        # (or anything after it) is what raises.
+        # (or anything after it) is what raises. Defined out here, with
+        # broadcast, precisely so the handlers can never meet an unbound name:
+        # neither line can raise, and everything that can is inside the try.
         username = f"user {user_id}"
 
         async def broadcast(event: dict):
             await self._broadcast({**event, "user_id": user_id})
 
-        await broadcast({"status": "stock_judgment_started"})
+        # The imports and the opening broadcast are inside the try because the
+        # finally at the end is what releases this user's advisory lock. That
+        # broadcast awaits, so a cancellation landing on it -- a shutdown, most
+        # plausibly -- used to leave the lock held by a session nothing would
+        # close while the task itself completed, refusing this user every later
+        # Refresh until the process died. Same shape as _sync_stock's own lock
+        # handling.
         try:
+            from db import (
+                get_identity_pool, user_scope, get_unjudged_stock_items, count_unjudged_stock_items,
+                get_taste_listing, upsert_stock_judgments, propagate_stock_judgments,
+                get_app_pool, backfill_stock_keys,
+            )
+            import recommendations
+            import anthropic
+
+            await broadcast({"status": "stock_judgment_started"})
             with get_identity_pool().connection() as conn:
                 user = conn.execute(
                     "SELECT discogs_username, anthropic_api_key, recommendation_item_limit FROM users WHERE id = %s",

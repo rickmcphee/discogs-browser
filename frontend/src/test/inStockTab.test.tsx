@@ -828,6 +828,36 @@ describe('In Stock tab', () => {
     await waitFor(() => expect(screen.getByText(message)).toBeInTheDocument())
   })
 
+  // The start path makes blocking cross-Machine database checks now, so its
+  // response can land after an SSE event has already repainted the banner --
+  // and a rejection means a run *is* going, so its progress events are the
+  // ones arriving. (Copilot, PR #368.)
+  it('does not let a slow rejection talk over newer judgment progress', async () => {
+    getUserSettings.mockResolvedValue({ ...defaultUserSettings, anthropic_api_key: 'sk-ant-test' })
+    let resolveStart: (v: { started: boolean; running: boolean; stock_sync_running: boolean }) => void = () => {}
+    postJudgmentStart.mockImplementationOnce(() => new Promise((resolve) => { resolveStart = resolve }))
+
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: /profile/i }))
+    const description = await screen.findByText('Evaluate unprocessed Store items for recommendation, without a full catalog re-crawl.')
+    const row = description.closest('tr') as HTMLElement
+    fireEvent.click(within(row).getByText('Refresh'))
+
+    // The run already in flight elsewhere reports progress while the start
+    // request is still blocked on those checks.
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
+    getLastCrawlSource().emit({ status: 'stock_judgment_progress', judged: 40, total: 120, id: 1 })
+    await waitFor(() => expect(
+      screen.getByText(/Finding recommendations for Store items… 40\/120/),
+    ).toBeInTheDocument())
+
+    resolveStart({ started: false, running: true, stock_sync_running: false })
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(screen.queryByText('Recommendations are already refreshing.')).not.toBeInTheDocument()
+    expect(screen.getByText(/Finding recommendations for Store items… 40\/120/)).toBeInTheDocument()
+  })
+
   it('disables Export until a judgment has completed', async () => {
     render(<App />)
     fireEvent.click(await screen.findByRole('button', { name: /profile/i }))

@@ -7420,3 +7420,40 @@ async def test_a_failed_lock_query_does_not_leak_its_connection(pg_schema, manag
     assert closed == [True]
     await asyncio.sleep(0.01)
     assert config.DIRECT_APP_DATABASE_URL  # the patched connect never ran for real
+
+
+async def test_a_cancelled_run_releases_its_lock_even_at_the_first_broadcast(pg_schema, manager):
+    """The opening stock_judgment_started broadcast awaits, so it is a
+    cancellation point -- and it used to sit outside the try whose finally
+    releases the lock. A shutdown landing there left the lock held by a
+    session nothing would close, refusing this user every later Refresh until
+    the process died. (Copilot, PR #368.)
+    """
+    import psycopg
+    import config
+    from crawl_manager import JUDGMENT_LOCK_NAMESPACE
+
+    at_broadcast = asyncio.Event()
+
+    async def _hang_on_first_broadcast(event):
+        at_broadcast.set()
+        await asyncio.Event().wait()  # never completes; the task is cancelled here
+
+    manager._broadcast = _hang_on_first_broadcast  # type: ignore
+
+    assert (await manager.start_judgment_only(1))["started"] is True
+    await asyncio.wait_for(at_broadcast.wait(), timeout=2)
+
+    task = manager._judgment_tasks[1]
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    probe = psycopg.connect(config.DIRECT_APP_DATABASE_URL, autocommit=True)
+    try:
+        assert probe.execute(
+            "SELECT pg_try_advisory_lock(%s, %s)", [JUDGMENT_LOCK_NAMESPACE, 1]
+        ).fetchone()[0] is True, "a run cancelled at its first await must not strand the lock"
+        probe.execute("SELECT pg_advisory_unlock(%s, %s)", [JUDGMENT_LOCK_NAMESPACE, 1])
+    finally:
+        probe.close()
