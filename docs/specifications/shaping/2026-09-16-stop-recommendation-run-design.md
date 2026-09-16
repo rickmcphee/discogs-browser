@@ -3,6 +3,23 @@
 Date: 2026-09-16
 Branch: `claude/lucid-maxwell-69049q`
 
+**Amendment (2026-09-16, branch `claude/confident-goldberg-e0hrew`):** nothing
+covered the lock itself. Deleting the `db.lock_stock_judgment_run` call out of
+`_judgment_running` left the whole backend suite green, because every test
+reaching those guards was satisfied by the row read alone — the half of the
+mechanism that answers *is a run under way*, never the half that keeps the
+answer true until the write commits. The cross-Machine half was real and
+covered — a clear on a Machine running no judgment does refuse against a
+claimed row — but the race the lock is there for, a claim landing in the
+window between that read and the commit, went unasserted.
+The Testing section below gains the cases that fail without the lock: it is
+held across the write itself — the `DELETE`, and the import's upsert — it is
+keyed per user, so one user's live run neither refuses another user's clear nor
+is taken by it, and it is released on each of the three ways out of the
+handler, committed, refused from inside the transaction, and unwound by an
+exception. Behaviour is unchanged; this is the guarantee above being pinned
+down rather than assumed.
+
 ## Problem
 
 Reported as: *"In the profile page, when a user has set off a recommendation
@@ -421,7 +438,19 @@ progress line for the poll to have to clear.
   file to catch a read placed after a commit, since every other test bypasses
   RLS;
 - the start response and the status endpoint carry the run;
-- clear and import refuse against a live row.
+- clear and import refuse against a live row;
+- clear and import are still *holding* the per-user lock when their own write
+  runs — the `DELETE` and the upsert — probed from a second pooled connection
+  from inside each write, since an advisory lock is re-entrant within the
+  session holding it and the handler's own connection would answer "free"
+  however tightly it were held;
+- the lock is keyed per user: one user's claimed run neither refuses another
+  user's clear nor is held by the handler serving it, which is what separates
+  the two-argument form from a one-argument `pg_advisory_xact_lock(key)` that
+  would pass a response-only check while putting every user behind one lock;
+- clear releases the lock on all three ways out — committed, refused from
+  inside the transaction, and unwound by an exception — and is probed holding
+  it on each, so "released" cannot be satisfied by never having taken it.
 
 `frontend/src/test/recommendationRunStop.test.tsx`
 - the button reads Refresh, Stop and Stopping… in the three states, driven by
