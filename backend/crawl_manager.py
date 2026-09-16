@@ -113,6 +113,13 @@ class CrawlManager:
         # other and so have to share one. Lazily created for the same reason.
         self._sync_start_locks: dict[int, asyncio.Lock] = {}
         self._judgment_tasks: dict[int, asyncio.Task] = {}
+        # Judgment tasks whose claim was taken over and which are deliberately
+        # left running to finish the batch they have already paid for (see
+        # start_judgment_only). They are no longer in _judgment_tasks, and
+        # asyncio keeps only weak references to tasks, so without somewhere to
+        # hold them the very task that change exists to preserve is collectable
+        # before it reaches the checkpoint that would commit its work.
+        self._superseded_judgment_tasks: set = set()
         self._plex_match_tasks: dict[int, asyncio.Task] = {}
         self._worker_tasks: list[asyncio.Task] = []
         self._pool_running = False
@@ -1898,20 +1905,104 @@ class CrawlManager:
                 lock_conn.close()
 
     def judgment_running(self, user_id: int) -> bool:
+        """Whether *this process* is running a judgment task for the user.
+
+        Deliberately still per-process, and no longer what any user-facing
+        decision reads: stock_judgment_runs answers "is a run under way" across
+        both Machines (see db.get_stock_judgment_run). What is left for this to
+        answer is whether this Machine's own replay buffer holds anything worth
+        sending, which is a question about this process and nothing else --
+        _events_to_replay in routers/crawl.py is the caller."""
         task = self._judgment_tasks.get(user_id)
         return task is not None and not task.done()
 
+    @staticmethod
+    def _claim_judgment_run(user_id: int) -> Optional[str]:
+        from db import user_scope, claim_stock_judgment_run
+        with user_scope(user_id) as conn:
+            run_token = claim_stock_judgment_run(conn, user_id)
+            conn.commit()
+        return run_token
+
+    @staticmethod
+    def _finish_judgment_run(user_id: int, run_token: Optional[str], status: str, **fields):
+        """Close a run, and say whether this call is what closed it.
+
+        Same three-valued answer as _finish_sync_run: True that the run was
+        this caller's and is now closed, False that it demonstrably was not
+        (taken over, or expired), None that the question could not be asked --
+        which a caller must not read as a takeover. Best effort on that last
+        point deliberately: failing to record how a run ended must never be
+        what ends one."""
+        from db import user_scope, finish_stock_judgment_run
+        try:
+            with user_scope(user_id) as conn:
+                closed = finish_stock_judgment_run(conn, user_id, run_token, status, **fields)
+                conn.commit()
+            return closed
+        except Exception as e:
+            log.warning("Could not record the end of user %d's recommendation run: %s", user_id, e)
+            return None
+
     async def start_judgment_only(self, user_id: int) -> bool:
-        if self.judgment_running(user_id):
-            log.warning("Judgment already running for %s, ignoring start request", self._username_for_log(user_id))
+        # The row decides, not judgment_running(). _judgment_tasks is this
+        # process's memory, and the deployment runs more than one Machine
+        # behind one hostname, so it covers only the half of the requests that
+        # land here -- and a duplicate run is not cosmetic here, it judges the
+        # same items again on the user's own Anthropic key. It also answers "is
+        # a task object still pending", which a worker wedged in a blocking
+        # call says for ever, so refusing on it alone made this Machine the one
+        # place a run it had abandoned could never be restarted.
+        #
+        # No _start_lock: unlike the collection sync, a judgment run excludes
+        # nothing but another judgment run for the same user, and the claim is
+        # a single atomic upsert -- two concurrent starts cannot both win it.
+        # Blocking psycopg calls, so off the event loop, same as start_sync's.
+        run_token = await run_in_threadpool(self._claim_judgment_run, user_id)
+        if run_token is None:
+            log.warning(
+                "Recommendation run already under way for %s, ignoring start request",
+                self._username_for_log(user_id),
+            )
             return False
-        self._judgment_tasks[user_id] = asyncio.create_task(self._run_judgment_phase(user_id))
+        # The claim was granted, so whatever this Machine still has running for
+        # this user is working a run that is no longer its own -- and is left
+        # alone to find that out at its next checkpoint, deliberately unlike
+        # start_sync, which cancels its predecessor outright.
+        #
+        # The difference is what the two workers do next. A dispossessed sync
+        # worker goes on to destructive wantlist cleanup driven by a stale
+        # snapshot, so stopping it late is not good enough. A dispossessed
+        # judgment worker's only write is an idempotent upsert of judgments
+        # already paid for. Cancelling it cannot stop the Anthropic call it is
+        # inside -- asyncio.to_thread runs that on a worker thread a cancelled
+        # await does not touch -- so the money is spent either way; all the
+        # cancellation would achieve is discarding the answer before it can be
+        # committed, leaving those items unjudged for the replacement to buy a
+        # second time. Letting it finish the batch and stop at the checkpoint
+        # keeps what the user has already paid for.
+        previous = self._judgment_tasks.get(user_id)
+        if previous is not None and not previous.done():
+            log.warning(
+                "Taking over %s's recommendation run from this instance's own stalled worker; "
+                "it will stop at its next checkpoint",
+                self._username_for_log(user_id),
+            )
+            # Held deliberately. The line below drops this task's only strong
+            # reference, and a task nothing references can be garbage collected
+            # mid-flight -- which would throw away the in-flight batch that not
+            # cancelling it was entirely about. Discarded again when it ends.
+            self._superseded_judgment_tasks.add(previous)
+            previous.add_done_callback(self._superseded_judgment_tasks.discard)
+        self._judgment_tasks[user_id] = asyncio.create_task(
+            self._run_judgment_phase(user_id, run_token)
+        )
         return True
 
-    async def _run_judgment_phase(self, user_id: int):
+    async def _run_judgment_phase(self, user_id: int, run_token: Optional[str] = None):
         from db import (
             get_identity_pool, user_scope, get_unjudged_stock_items, count_unjudged_stock_items,
-            get_taste_listing, upsert_stock_judgments,
+            get_taste_listing, upsert_stock_judgments, record_stock_judgment_progress,
         )
         import recommendations
         import anthropic
@@ -1924,6 +2015,50 @@ class CrawlManager:
         async def broadcast(event: dict):
             await self._broadcast({**event, "user_id": user_id})
 
+        async def close(event: dict, status: str, judged=None, error=None):
+            """Record the run's outcome, then announce it -- in that order.
+
+            A dispossessed worker can reach any of these endings, and the close
+            is what reveals it: announcing first tells every browser on this
+            Machine that the run finished (or failed) when the run is the
+            replacement's now and may be going perfectly well, and a terminal
+            judgment event also clears the client's "a run is under way" state,
+            flipping Stop back to Refresh over a run that is still spending.
+
+            Only a definite False silences it. None means the close could not be
+            attempted, which is no evidence of a takeover, and a run with no
+            token never entered the claim protocol at all."""
+            closed = self._finish_judgment_run(user_id, run_token, status, judged=judged, error=error)
+            if not (run_token is not None and closed is False):
+                await broadcast(event)
+
+        def taken_over(progress) -> bool:
+            """Whether the checkpoint found this run is no longer ours.
+
+            Kept separate from the stop check below because the two endings
+            differ in what they may say. A taken-over run stops *silently*: the
+            row and the narration both belong to the replacement now, so this
+            worker must not broadcast over it -- not its progress, and not an
+            ending the replacement has not reached."""
+            if run_token is not None and progress is None:
+                log.warning(
+                    "%s's recommendation run was taken over by another instance; stopping", username
+                )
+                return True
+            return False
+
+        async def stop_requested(progress, judged: int, total: int) -> bool:
+            """Whether the user has asked this run to stop. Announced, unlike a
+            takeover: this ending is the one they asked for."""
+            if progress is not None and progress["stop_requested"]:
+                await close(
+                    {"status": "stock_judgment_stopped", "judged": judged, "total": total},
+                    "stopped", judged=judged,
+                )
+                log.info("Recommendation run stopped for %s after %d items", username, judged)
+                return True
+            return False
+
         await broadcast({"status": "stock_judgment_started"})
         try:
             with get_identity_pool().connection() as conn:
@@ -1933,13 +2068,19 @@ class CrawlManager:
                 ).fetchone()
             if user is None:
                 log.info("Judgment run started for %s", username)
-                await broadcast({"status": "stock_judgment_error", "error": "User not found"})
+                await close(
+                    {"status": "stock_judgment_error", "error": "User not found"},
+                    "error", error="User not found",
+                )
                 return
             username = user["discogs_username"]
             log.info("Judgment run started for %s", username)
             api_key = user["anthropic_api_key"]
             if not api_key:
-                await broadcast({"status": "stock_judgment_error", "error": "Anthropic API key not configured"})
+                await close(
+                    {"status": "stock_judgment_error", "error": "Anthropic API key not configured"},
+                    "error", error="Anthropic API key not configured",
+                )
                 return
             # recommendation_item_limit is NOT NULL DEFAULT 300, and 0 is a
             # deliberate "unlimited" sentinel consumed by get_unjudged_stock_items's
@@ -1953,10 +2094,23 @@ class CrawlManager:
                 taste_listing = get_taste_listing(conn, user_id)
 
             if not unjudged:
-                await broadcast({"status": "stock_judgment_complete", "judged": 0})
+                await close({"status": "stock_judgment_complete", "judged": 0}, "complete", judged=0)
                 log.info("Found 0/0 items to judge for %s, nothing to do", username)
                 return
             log.info("Found %d/%d items to judge for %s", len(unjudged), total_unjudged, username)
+
+            # Records the run's size and reads the stop flag in one statement,
+            # before any Anthropic call. The flag can only have been set
+            # between the claim and here, which is a narrow window -- but it is
+            # the window a user who clicks Stop the instant they realise they
+            # clicked Refresh is in, and honouring it costs them nothing.
+            with user_scope(user_id) as conn:
+                progress = record_stock_judgment_progress(
+                    conn, user_id, run_token, total=len(unjudged)
+                )
+                conn.commit()
+            if taken_over(progress) or await stop_requested(progress, 0, len(unjudged)):
+                return
 
             client = anthropic.Anthropic(api_key=api_key)
             judged = 0
@@ -1966,23 +2120,80 @@ class CrawlManager:
                     recommendations.judge_batch, client, taste_listing, batch, username
                 )
                 recommended_in_batch = 0
-                if results:
-                    with user_scope(user_id) as conn:
+                # The checkpoint rides the batch's own transaction and goes
+                # first within it, taking the per-user run lock before anything
+                # is written, so a clear or an import -- which take the same
+                # lock through _judgment_running -- cannot land between this
+                # run's claim check and its write. It is also written when the
+                # batch produced nothing, because the heartbeat is what keeps
+                # the claim alive and the stop flag is what the next batch is
+                # waiting on.
+                #
+                # The write is conditional on that claim still holding, and
+                # this is the one place the design pays real money to be
+                # correct. Holding the lock orders this batch against a clear
+                # but cannot order it against one that already finished: a
+                # clear runs to completion while this worker sits inside
+                # judge_batch, long before this transaction opens. Writing
+                # anyway would then quietly repopulate rows the user asked to
+                # clear, or overwrite verdicts they just imported -- and those
+                # two guards would be promising an exclusion they do not
+                # deliver. So a batch whose claim is gone is dropped.
+                #
+                # What that costs is bounded and mostly notional. A run that
+                # was taken over has a replacement which already selected these
+                # same still-unjudged items, so it is paying for them either
+                # way and nothing extra is lost. Only a run that went stale
+                # with no replacement loses anything real, and only then one
+                # batch -- which requires a single Anthropic call to have
+                # outlasted JUDGMENT_RUN_STALE_MINUTES.
+                with user_scope(user_id) as conn:
+                    progress = record_stock_judgment_progress(
+                        conn, user_id, run_token, judged=judged + len(results)
+                    )
+                    still_ours = progress is not None or run_token is None
+                    if results and still_ours:
                         upsert_stock_judgments(conn, user_id, results)
-                        conn.commit()
-                    judged += len(results)
-                    recommended_in_batch = sum(1 for r in results if r["recommended"])
+                        judged += len(results)
+                        recommended_in_batch = sum(1 for r in results if r["recommended"])
+                    conn.commit()
                 log.info("Judged batch %d/%d for %s: %d recommended", judged, len(unjudged), username, recommended_in_batch)
+                # Before the broadcast: a run that has lost its claim must not
+                # narrate over the one that replaced it, and a progress line is
+                # narration like any other.
+                if taken_over(progress):
+                    return
                 await broadcast({"status": "stock_judgment_progress", "judged": judged, "total": len(unjudged)})
+                # After the write, never before it: a stop must not throw away
+                # a batch the user has already paid Anthropic for. Cancelling
+                # the task could not have done this at all -- asyncio.to_thread
+                # above runs the API call on a worker thread that a cancelled
+                # await does not interrupt -- which is why the stop is a flag
+                # read here rather than a task.cancel().
+                if await stop_requested(progress, judged, len(unjudged)):
+                    return
 
-            await broadcast({"status": "stock_judgment_complete", "judged": judged})
+            await close({"status": "stock_judgment_complete", "judged": judged}, "complete", judged=judged)
             log.info("Stock judgment complete for %s: %d items judged", username, judged)
         except asyncio.CancelledError:
             log.info("Judgment run cancelled")
             raise
         except Exception as e:
             log.error("Judgment phase failed for %s: %s", username, e, exc_info=True)
-            await broadcast({"status": "stock_judgment_error", "error": str(e)})
+            await close(
+                {"status": "stock_judgment_error", "error": str(e)}, "error", error=str(e)
+            )
+        finally:
+            # Backstop for an exit no branch above covered -- a cancellation,
+            # or a failure in the close itself. Harmless after a real ending:
+            # finish_stock_judgment_run only matches a row still saying
+            # 'running' under this run's own token, so an outcome already
+            # recorded stands, and a row a takeover has re-claimed is not
+            # touched. Without it a cancelled run leaves its row 'running' and
+            # every later Refresh is refused until the heartbeat goes stale.
+            self._finish_judgment_run(
+                user_id, run_token, "error", error="Recommendation run ended unexpectedly"
+            )
 
     async def _run_plex_match(
         self, user_id: int, base_url: str, token: str, threshold: int,

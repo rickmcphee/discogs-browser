@@ -823,6 +823,40 @@ CREATE TABLE IF NOT EXISTS stock_item_judgments (
     PRIMARY KEY (user_id, item_key)
 );
 
+-- The current (or most recent) recommendation run for one user, as a row
+-- rather than as process memory. CrawlManager._judgment_tasks and the
+-- stock_judgment_* events that narrate a run are both in-process, and nothing
+-- bridges them between Machines, so a browser whose SSE stream is served by
+-- the other Machine cannot tell a run is under way -- and a request to stop
+-- one would cancel a task on whichever Machine happened to serve it, which is
+-- about half the time not the Machine doing the work.
+--
+-- One row per user, rewritten by each run rather than appended: nothing here
+-- is history, and the claim has to be a single conflicting key.
+--
+-- stop_requested is the whole point of the row: a judgment run spends the
+-- user's own Anthropic key one batch at a time, and this is the flag it reads
+-- at every batch boundary to decide whether to spend the next one. Reset by
+-- the claim, or a flag the last run honoured would stop the next one before it
+-- judged anything.
+--
+-- run_token identifies *which* claim owns the row, so a writer can prove the
+-- run it is describing is still the run that is there. Without it every write
+-- is addressed to "whatever is currently running for this user", which after a
+-- takeover or a re-claim is somebody else's run.
+CREATE TABLE IF NOT EXISTS stock_judgment_runs (
+    user_id INTEGER PRIMARY KEY REFERENCES users(id),
+    status TEXT NOT NULL,
+    judged INTEGER NOT NULL DEFAULT 0,
+    total INTEGER,
+    error TEXT,
+    stop_requested BOOLEAN NOT NULL DEFAULT FALSE,
+    started_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    heartbeat_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    finished_at TIMESTAMP,
+    run_token TEXT
+);
+
 CREATE TABLE IF NOT EXISTS user_hidden_crawlers (
     user_id INTEGER NOT NULL REFERENCES users(id),
     crawler_id INTEGER NOT NULL REFERENCES crawlers(id),
@@ -886,6 +920,8 @@ ALTER TABLE library_sync_runs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE library_sync_runs FORCE ROW LEVEL SECURITY;
 ALTER TABLE stock_item_judgments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE stock_item_judgments FORCE ROW LEVEL SECURITY;
+ALTER TABLE stock_judgment_runs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE stock_judgment_runs FORCE ROW LEVEL SECURITY;
 ALTER TABLE user_hidden_crawlers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE user_hidden_crawlers FORCE ROW LEVEL SECURITY;
 ALTER TABLE stock_item_saves ENABLE ROW LEVEL SECURITY;
@@ -933,6 +969,11 @@ CREATE POLICY library_sync_runs_isolation ON library_sync_runs
 
 DROP POLICY IF EXISTS stock_item_judgments_isolation ON stock_item_judgments;
 CREATE POLICY stock_item_judgments_isolation ON stock_item_judgments
+    USING (user_id = current_setting('app.user_id', true)::int)
+    WITH CHECK (user_id = current_setting('app.user_id', true)::int);
+
+DROP POLICY IF EXISTS stock_judgment_runs_isolation ON stock_judgment_runs;
+CREATE POLICY stock_judgment_runs_isolation ON stock_judgment_runs
     USING (user_id = current_setting('app.user_id', true)::int)
     WITH CHECK (user_id = current_setting('app.user_id', true)::int);
 
@@ -1072,6 +1113,9 @@ def init_tenant_schema():
         # the next run overwrites it. Nothing ever removes one.
         conn.execute("GRANT SELECT, INSERT, UPDATE ON library_sync_runs TO app_user")
         conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON stock_item_judgments TO app_user")
+        # No DELETE, for the same reason library_sync_runs has none: a run row is
+        # claimed, updated and finished in place, and the next run overwrites it.
+        conn.execute("GRANT SELECT, INSERT, UPDATE ON stock_judgment_runs TO app_user")
         conn.execute("GRANT SELECT, INSERT, DELETE ON user_hidden_crawlers TO app_user")
         conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON stock_item_saves TO app_user")
         # SELECT on the view, and nothing new on its base tables: the grants on
@@ -3918,6 +3962,210 @@ def has_any_stock_judgment(conn, user_id: int) -> bool:
 def clear_stock_judgments(conn, user_id: int) -> int:
     cursor = conn.execute("DELETE FROM stock_item_judgments WHERE user_id = %s", [user_id])
     return cursor.rowcount
+
+
+# Same window as the collection sync's, and for the same reason: far outside
+# what a live run can go quiet for, far inside "a human clicked the button
+# again". A judgment run checkpoints after every batch, and a batch is one
+# claude-haiku-4-5 call capped at recommendations.MAX_TOKENS of output, so
+# fifteen minutes of silence means the worker is gone, not slow. The two
+# windows share a number and nothing else -- different rows, different claims.
+JUDGMENT_RUN_STALE_MINUTES = 15
+
+_JUDGMENT_RUN_STALE_SQL = (
+    "stock_judgment_runs.heartbeat_at < clock_timestamp() "
+    f"- INTERVAL '{JUDGMENT_RUN_STALE_MINUTES} minutes'"
+)
+
+
+# Date-coded, following the pg_advisory_xact_lock(2026080901) convention in
+# this file and crawl_manager's STOCK_SYNC_LOCK_KEY.
+JUDGMENT_RUN_LOCK_KEY = 2026091601
+
+
+def lock_stock_judgment_run(conn, user_id: int):
+    """Serialize everything that decides whether this user's judgments may be
+    written: claiming a run, a run's own batch checkpoint, and the clear and
+    import guards. Held for the rest of the caller's transaction.
+
+    An advisory lock rather than SELECT ... FOR UPDATE on the run row, because
+    the row is the one thing that need not exist. Before a user's first
+    recommendation run there is nothing to lock, so a row lock silently
+    degrades to no lock at all in exactly the case a first Refresh races a
+    first import. It is also what lets a *stale* worker be serialized: its
+    checkpoint matches no row and so takes no row lock, but it takes this one,
+    which is what stops its last batch landing just after a clear.
+
+    Every holder takes this before touching the row, so the lock order is the
+    same everywhere and there is nothing to deadlock against."""
+    conn.execute(
+        "SELECT pg_advisory_xact_lock(%s, %s)", [JUDGMENT_RUN_LOCK_KEY, user_id]
+    )
+
+
+def claim_stock_judgment_run(conn, user_id: int) -> Optional[str]:
+    """Claim the right to run a recommendation pass for this user, across every
+    Machine rather than just this process. Returns the claim's run token, or
+    None when a live run already holds it.
+
+    CrawlManager._judgment_tasks answers the same question for one process
+    only, which is not the question: with two Machines behind one hostname the
+    refusal has to hold for a run the *other* one is working, and the browser
+    that asked has no say in which Machine it reached. A duplicate run here is
+    not a cosmetic bug -- it judges the same items again on the user's own
+    Anthropic key.
+
+    stop_requested is reset by the claim. Without that, a flag the previous run
+    honoured would still be sitting on the row, and this run would stop at its
+    first checkpoint having judged nothing."""
+    lock_stock_judgment_run(conn, user_id)
+    run_token = uuid.uuid4().hex
+    row = conn.execute(
+        f"""
+        INSERT INTO stock_judgment_runs (user_id, status, run_token)
+        VALUES (%(user_id)s, 'running', %(run_token)s)
+        ON CONFLICT (user_id) DO UPDATE SET
+            status = 'running', run_token = EXCLUDED.run_token,
+            judged = 0, total = NULL, error = NULL, stop_requested = FALSE,
+            started_at = CURRENT_TIMESTAMP,
+            heartbeat_at = clock_timestamp(), finished_at = NULL
+        WHERE stock_judgment_runs.status <> 'running' OR {_JUDGMENT_RUN_STALE_SQL}
+        RETURNING run_token
+        """,
+        {"user_id": user_id, "run_token": run_token},
+    ).fetchone()
+    return row["run_token"] if row else None
+
+
+def record_stock_judgment_progress(
+    conn,
+    user_id: int,
+    run_token: Optional[str],
+    judged: Optional[int] = None,
+    total: Optional[int] = None,
+) -> Optional[dict]:
+    """Advance the run's counters and its heartbeat, and read back whether a
+    stop has been asked for. COALESCE so a caller can move one field without
+    restating the other -- the pre-flight checkpoint has a total and no count
+    yet.
+
+    Returns None when the run is no longer this caller's, and otherwise the
+    row's stop_requested. Both are asked in one statement because the run asks
+    them at the same instant, at every batch boundary, and both answers mean
+    the same thing to it: stop before spending anything more.
+
+    Fenced on run_token, so a worker whose claim was taken over while it was
+    still alive cannot go on advancing (or heartbeating, which would hold the
+    claim open) a run that is no longer its own -- and, more to the point here,
+    cannot go on billing the user alongside the run that replaced it. Fenced on
+    staleness too, which is what makes expiry irreversible: a run whose
+    heartbeat has lapsed past the window is out of the protocol whether or not
+    anyone has taken it over yet, so a worker that went quiet that long cannot
+    come back and revive a row the client has already been told is finished."""
+    # Taken here rather than by the caller because this is the statement every
+    # batch runs, and holding it from here until that batch commits is what
+    # serializes the judgment write against a clear or an import.
+    lock_stock_judgment_run(conn, user_id)
+    row = conn.execute(
+        """
+        UPDATE stock_judgment_runs SET
+            judged = COALESCE(%(judged)s, judged),
+            total = COALESCE(%(total)s, total),
+            heartbeat_at = clock_timestamp()
+        WHERE user_id = %(user_id)s AND status = 'running'
+              AND run_token = %(run_token)s
+              AND NOT ({stale})
+        RETURNING stop_requested
+        """.format(stale=_JUDGMENT_RUN_STALE_SQL),
+        {"user_id": user_id, "run_token": run_token, "judged": judged, "total": total},
+    ).fetchone()
+    return {"stop_requested": row["stop_requested"]} if row else None
+
+
+def finish_stock_judgment_run(
+    conn,
+    user_id: int,
+    run_token: Optional[str],
+    status: str,
+    judged: Optional[int] = None,
+    error: Optional[str] = None,
+) -> bool:
+    """Close the run. Returns whether this call is the one that closed it.
+
+    `status = 'running'` in the WHERE is what makes the backstop in
+    _run_judgment_phase's `finally` safe to call on every exit: it will not
+    overwrite the real outcome a path already recorded. `run_token` is what
+    makes it safe *in time*: a fresh claim can land between a run's own
+    completion and its backstop, and without the token that backstop would
+    match the new run and mark a pass that is only just starting as failed. A
+    run already past the staleness window cannot be closed either, for the same
+    reason it cannot be advanced -- see record_stock_judgment_progress."""
+    cursor = conn.execute(
+        """
+        UPDATE stock_judgment_runs SET
+            status = %(status)s,
+            judged = COALESCE(%(judged)s, judged),
+            error = %(error)s,
+            heartbeat_at = clock_timestamp(),
+            finished_at = CURRENT_TIMESTAMP
+        WHERE user_id = %(user_id)s AND status = 'running'
+              AND run_token = %(run_token)s
+              AND NOT ({stale})
+        """.format(stale=_JUDGMENT_RUN_STALE_SQL),
+        {
+            "user_id": user_id, "run_token": run_token, "status": status,
+            "judged": judged, "error": error,
+        },
+    )
+    return cursor.rowcount > 0
+
+
+def request_stock_judgment_stop(conn, user_id: int) -> bool:
+    """Ask the run to stop at its next batch boundary. Returns whether there
+    was a live run to ask.
+
+    Unfenced on run_token by design: the caller is a browser, which has no
+    token and no business having one -- "stop whatever is running for me" is
+    exactly the request. A takeover between the click and the flag would leave
+    the flag on the new run, which is the same run from the user's side and
+    the one they can see.
+
+    Not fenced on this process's task map either, because the run is almost
+    certainly not in it: the whole reason this is a row is that the POST and
+    the worker need not have landed on the same Machine."""
+    cursor = conn.execute(
+        """
+        UPDATE stock_judgment_runs SET stop_requested = TRUE
+        WHERE user_id = %(user_id)s AND status = 'running'
+              AND NOT ({stale})
+        """.format(stale=_JUDGMENT_RUN_STALE_SQL),
+        {"user_id": user_id},
+    )
+    return cursor.rowcount > 0
+
+
+def get_stock_judgment_run(conn, user_id: int) -> Optional[dict]:
+    """The user's current or most recent recommendation run, or None if they
+    have never started one.
+
+    `running` is computed rather than read off `status`: an abandoned run keeps
+    saying 'running' for ever, and a client that believed it would sit on a
+    Stop button for a run nothing is doing -- and flag a row no worker will
+    ever read. `stale` is carried separately so the UI can say what happened
+    instead of silently going idle.
+
+    A caller that is about to *act* on the answer wants lock_stock_judgment_run
+    first -- this read on its own is a glance, and a glance is out of date the
+    moment it returns."""
+    return conn.execute(
+        f"""
+        SELECT *,
+               (status = 'running' AND NOT ({_JUDGMENT_RUN_STALE_SQL})) AS running,
+               (status = 'running' AND {_JUDGMENT_RUN_STALE_SQL}) AS stale
+        FROM stock_judgment_runs WHERE user_id = %s
+        """,
+        [user_id],
+    ).fetchone()
 
 
 def get_hidden_crawler_ids(conn, user_id: int) -> list[int]:

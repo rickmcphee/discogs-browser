@@ -45,6 +45,32 @@ def test_library_items_table_has_rls_enabled(admin_conn):
     assert row["relforcerowsecurity"] is True
 
 
+def test_stock_judgment_runs_table_has_rls_enabled(admin_conn):
+    # Per-user data like library_items, and the one table a browser can write
+    # to without naming a run (POST /stock/judge/stop says "stop mine"), so the
+    # policy is what decides whose run "mine" is.
+    row = admin_conn.execute(
+        "SELECT relrowsecurity, relforcerowsecurity FROM pg_class WHERE relname = 'stock_judgment_runs'"
+    ).fetchone()
+    assert row["relrowsecurity"] is True
+    assert row["relforcerowsecurity"] is True
+
+
+def test_app_user_cannot_delete_stock_judgment_runs(admin_conn):
+    # A run row is claimed, updated and finished in place, and the next run
+    # overwrites it -- nothing ever removes one.
+    privileges = admin_conn.execute(
+        """
+        SELECT has_table_privilege('app_user', 'stock_judgment_runs', 'SELECT') AS can_select,
+               has_table_privilege('app_user', 'stock_judgment_runs', 'INSERT') AS can_insert,
+               has_table_privilege('app_user', 'stock_judgment_runs', 'UPDATE') AS can_update,
+               has_table_privilege('app_user', 'stock_judgment_runs', 'DELETE') AS can_delete
+        """
+    ).fetchone()
+    assert (privileges["can_select"], privileges["can_insert"], privileges["can_update"]) == (True, True, True)
+    assert privileges["can_delete"] is False
+
+
 def test_app_identity_role_has_bypassrls(admin_conn):
     row = admin_conn.execute(
         "SELECT rolbypassrls FROM pg_roles WHERE rolname = 'app_identity'"
@@ -257,6 +283,88 @@ def test_stock_item_judgments_insert_with_mismatched_user_id_is_rejected(pg_test
     finally:
         with db.get_admin_pool().connection() as conn:
             conn.execute("DELETE FROM stock_item_judgments WHERE user_id IN (%s, %s)", [alice["id"], bob["id"]])
+            conn.execute("DELETE FROM users WHERE id IN (%s, %s)", [alice["id"], bob["id"]])
+            conn.commit()
+
+
+def test_stock_judgment_runs_is_rls_isolated_per_user(pg_test_db, monkeypatch):
+    """The structural check above proves the policy is enabled; this proves it
+    isolates. Both would pass against a permissive USING clause, and the
+    router's own cross-user test passes because request_stock_judgment_stop
+    filters by user_id rather than because the policy does anything. Same shape
+    as test_stock_item_judgments_is_rls_isolated_per_user."""
+    db.init_global_schema()
+    db.init_tenant_schema()
+    monkeypatch.setattr(
+        config,
+        "APP_DATABASE_URL",
+        config._with_userinfo(
+            os.environ["TEST_DATABASE_URL"], "app_user", os.environ["APP_DB_PASSWORD"]
+        ),
+    )
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=942, discogs_username="rlsruntestalice")
+        bob = db.create_user(conn, discogs_user_id=943, discogs_username="rlsruntestbob")
+        conn.execute(
+            "INSERT INTO stock_judgment_runs (user_id, status, run_token) VALUES (%s, %s, %s)",
+            [alice["id"], "running", "alice-token"],
+        )
+        conn.commit()
+
+    try:
+        with db.user_scope(bob["id"]) as conn:
+            assert conn.execute("SELECT * FROM stock_judgment_runs").fetchall() == []
+            # Not merely invisible: unreachable by a write that names it, which
+            # is what POST /stock/judge/stop issues -- "stop whatever is running
+            # for me" carries no run token, so the policy is the whole of what
+            # keeps "me" honest.
+            cursor = conn.execute(
+                "UPDATE stock_judgment_runs SET stop_requested = TRUE WHERE user_id = %s",
+                [alice["id"]],
+            )
+            assert cursor.rowcount == 0
+            conn.commit()
+
+        with db.user_scope(alice["id"]) as conn:
+            rows = conn.execute("SELECT * FROM stock_judgment_runs").fetchall()
+        assert len(rows) == 1
+        assert rows[0]["run_token"] == "alice-token"
+        assert rows[0]["stop_requested"] is False
+    finally:
+        with db.get_admin_pool().connection() as conn:
+            conn.execute("DELETE FROM stock_judgment_runs WHERE user_id IN (%s, %s)", [alice["id"], bob["id"]])
+            conn.execute("DELETE FROM users WHERE id IN (%s, %s)", [alice["id"], bob["id"]])
+            conn.commit()
+
+
+def test_stock_judgment_runs_insert_with_mismatched_user_id_is_rejected(pg_test_db, monkeypatch):
+    """WITH CHECK on stock_judgment_runs_isolation must reject a run claimed
+    for somebody else -- the write-side counterpart to the test above."""
+    db.init_global_schema()
+    db.init_tenant_schema()
+    monkeypatch.setattr(
+        config,
+        "APP_DATABASE_URL",
+        config._with_userinfo(
+            os.environ["TEST_DATABASE_URL"], "app_user", os.environ["APP_DB_PASSWORD"]
+        ),
+    )
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=944, discogs_username="rlsrunwritealice")
+        bob = db.create_user(conn, discogs_user_id=945, discogs_username="rlsrunwritebob")
+        conn.commit()
+
+    try:
+        with db.user_scope(alice["id"]) as conn:
+            with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                conn.execute(
+                    "INSERT INTO stock_judgment_runs (user_id, status, run_token) "
+                    "VALUES (%s, %s, %s)",
+                    [bob["id"], "running", "stolen"],
+                )
+    finally:
+        with db.get_admin_pool().connection() as conn:
+            conn.execute("DELETE FROM stock_judgment_runs WHERE user_id IN (%s, %s)", [alice["id"], bob["id"]])
             conn.execute("DELETE FROM users WHERE id IN (%s, %s)", [alice["id"], bob["id"]])
             conn.commit()
 
