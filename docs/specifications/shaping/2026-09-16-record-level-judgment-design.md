@@ -125,6 +125,23 @@ Rain" and "The Black Parade" are untouched, having no fence. Stores write a
 variant as an aside overwhelmingly often, so the restraint costs almost none
 of the saving.
 
+A comma is **not** one of those separators, and the exception earns itself.
+Ordinary titles use commas far more often than storefronts use them as
+metadata boundaries, and the words that follow one are frequently exactly the
+colour and edition vocabulary the fence rule strips — so "Red, White & Blue"
+folded onto "Red", and "Ready, Set" onto "Ready". Real records, merged, with a
+verdict and a reason belonging to a different album. Dropping the comma costs
+the "Kid A, Indie Exclusive Blue" spelling, which now keys as its own record:
+one extra judgment, the cheap mistake. The same reasoning removed a bare
+`set` from the variant vocabulary in favour of the phrase "box set" — `set` is
+an ordinary title word, "box set" is not.
+
+That leaves a residual, stated rather than hidden: a trailing dash segment is
+still taken as a fence, so a title like "Black - Gold" merges onto "Black".
+The dash is the dominant real spelling of a variant and removing it would gut
+the feature, where the comma was the weakest signal of the three and the most
+common in ordinary titles.
+
 `record_key` delegates its folding to `title_key` rather than post-filtering
 its output, because the punctuation that marks a fence is exactly what a
 token set has already discarded. It inherits the never-empty guarantee by
@@ -216,26 +233,32 @@ table — and fills any of the three columns where NULL, so a rolling deploy
 whose old process is still writing `record_key`-less rows is repaired by the
 next sweep exactly as it already is for `title_key`.
 
-Grouping reads `COALESCE(record_key, title)` — belt beside the sweep's
-braces, so a NULL that outruns it keys as itself instead of folding every
-unkeyed row into one group and handing them all whatever verdict that group
-already has.
+**A missing key is not compared at all.** Every query that reads `record_key`
+also requires it to be present, on both sides, and an unkeyed stock row simply
+sits out that run.
 
-Note what that fallback deliberately *omits*. `_cheapest_clause` uses
-`COALESCE(title_key, title)`, and copying that rung here would be a bug:
-`stock_item_identities` has no `title_key`, so the two sides of the match
-would fall back to different things. A rolling deploy's old process writes
-`record_key` NULL while still populating `title_key`, and the comparison
-would then put the identity's raw title ("Album A") against the stock row's
-folded key ("a") and match nothing — re-billing items whose judgments are
-sitting right there. Both sides bottom out at the raw title, which the two
-tables agree on.
+This replaced a fallback, and the history is the argument. The first version
+read `COALESCE(record_key, title_key, title)` on stock rows against
+`COALESCE(record_key, title)` on identities — the two sides bottoming out at
+*different* things, so a folded key met a raw title and matched nothing,
+re-billing records whose judgments were sitting right there. Making both fall
+back to the raw title fixed the case where both keys were missing and left the
+case where one was: a keyed identity beside an unkeyed row, which a rolling
+deploy produces routinely. Sweeping before the queries narrowed that window
+without closing it, because the crawl worker pool writes stock rows
+continuously and takes no part in the stock-sync lock, so an old Machine can
+insert an unkeyed row after the sweep commits.
 
-Underneath that, `_judged_record_sql` matches on `i.item_key = s.item_key`
-as well as on the record. That is not redundant, it is the floor: this exact
-listing having been judged reads as judged whatever the folds do, so no
-disagreement between them can put an item already paid for back in front of
-the model.
+Three findings, one root cause: a key that is absent was being made to stand
+for something, and whatever it stood for disagreed with the other side.
+Requiring both keys ends the class. A row the sweep has not reached is
+skipped, which costs it one run's delay and never costs a charge, and the
+sweep's job becomes letting it inherit rather than preventing a charge.
+
+`_judged_record_sql` still matches on `i.item_key = s.item_key` as well as on
+the record, and that branch needs no key at all. It is the floor: this exact
+listing having been judged reads as judged regardless, so nothing about the
+keys can put an item already paid for back in front of the model.
 
 ### Propagation
 
@@ -333,9 +356,9 @@ schedule — worth it, but worth stating as a trade rather than a freebie.
 ### The billable set
 
 `get_unjudged_stock_items` groups by `(_artist_sort_sql(artist),
-COALESCE(record_key, title))` — the same pair the match uses, `title_key`
-deliberately absent for the reason given under Storage — and returns one row
-per group.
+record_key)` — the same pair the match uses, with no fallback for the reason
+given under Storage — and returns one row per group, unkeyed rows having been
+excluded by the `WHERE`.
 `DISTINCT ON` picks the representative deterministically: lowest `item_key`
 within the group, so a run judging the same catalog twice batches it
 identically. `count_unjudged_stock_items` counts the same groups.
@@ -450,6 +473,11 @@ user actually reads.
 - A bare number does not carry a fenced segment on its own — `Greatest Hits
   (2)` and `Now - 4` stay separate records — while a digit beside a variant
   word (`Numbered 123`, `2024 Reissue`, `2LP`) still folds away.
+- A comma is not a fence: `Red, White & Blue` and `Ready, Set` stay separate
+  from `Red` and `Ready`, and `Box Set` still folds while a bare `Set` does
+  not.
+- An unkeyed stock row is skipped by the billable set and by propagation
+  rather than compared, and inherits once the sweep has keyed it.
 - A title made entirely of variant words keeps a non-empty key.
 - Two shops stocking one record yield one entry in the billable set, and
   judging it writes a row for both listings.

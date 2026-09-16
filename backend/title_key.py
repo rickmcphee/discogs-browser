@@ -30,6 +30,9 @@ _PHRASE_NOISE = [
     re.compile(r"\b(?:7|10|12)\s*-?\s*(?:\"|''|”|inch|in\.?)(?=\s|$|\W)"),
     re.compile(r"\b\d{2,3}\s*-?\s*(?:g|gm|gr|gram|grams)\b"),
     re.compile(r"\b\d\s*-?\s*x?\s*-?\s*(?:lp|ep)s?\b"),
+    # "box set" as a phrase, because "set" on its own is an ordinary title
+    # word ("Ready, Set") and listing it as a variant merged real records.
+    re.compile(r"\bbox\s*-?\s*set\b"),
 ]
 
 # Hyphenated spellings the tokenizer would otherwise split into a bare "re"
@@ -156,7 +159,7 @@ _VARIANT_WORDS = frozenset("""
     milky picture shaped etched
     deluxe expanded remaster remastered remasters anniversary indie
     exclusive exclusives signed autographed numbered special collectors
-    collector super mono stereo digipak digipack box boxset set slipcase
+    collector super mono stereo digipak digipack box boxset slipcase
     half speed halfspeed audiophile
 """.split())
 
@@ -165,7 +168,14 @@ _VARIANT_WORDS = frozenset("""
 # "Non-Stop" would split into two segments; the typographic dashes, pipe,
 # slash and comma do not.
 _BRACKETED = re.compile(r"[(\[{][^)\]}]*[)\]}]")
-_SEGMENT_SPLIT = re.compile(r"\s+-\s+|\s*[–—|/]\s*|\s*,\s*")
+# No comma. A comma is ordinary title punctuation far more often than it is a
+# metadata boundary -- "Red, White & Blue", "Ready, Set" -- and since the words
+# after one are frequently colours or edition words, treating it as a boundary
+# merged those titles onto "Red" and "Ready". That is the false-merge
+# direction, where the cost is a verdict and a reason belonging to a different
+# album. Losing it costs the "Kid A, Indie Exclusive Blue" spelling, which now
+# keys as its own record: one extra judgment, the cheap mistake.
+_SEGMENT_SPLIT = re.compile(r"\s+-\s+|\s*[–—|/]\s*")
 
 
 def _artist_bare_key(text: str) -> str:

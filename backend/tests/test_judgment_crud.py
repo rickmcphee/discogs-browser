@@ -926,8 +926,8 @@ def test_a_sibling_left_unkeyed_by_an_old_binary_is_swept_before_it_is_rebilled(
         conn.commit()
 
     with db.user_scope(alice["id"]) as conn:
-        assert db.count_unjudged_stock_items(conn, alice["id"]) == 1, (
-            "the mixed state this sweep exists to prevent"
+        assert db.count_unjudged_stock_items(conn, alice["id"]) == 0, (
+            "an unkeyed row is skipped, never compared against a raw title"
         )
 
     with db.get_admin_pool().connection() as conn:
@@ -936,3 +936,54 @@ def test_a_sibling_left_unkeyed_by_an_old_binary_is_swept_before_it_is_rebilled(
 
     with db.user_scope(alice["id"]) as conn:
         assert db.count_unjudged_stock_items(conn, alice["id"]) == 0
+        assert db.propagate_stock_judgments(conn, alice["id"]) == 1, (
+            "and once keyed it inherits, which is what the sweep is for"
+        )
+
+
+def test_a_row_written_unkeyed_after_the_sweep_is_left_alone_not_rebilled(pg_test_db):
+    """The sweep cannot be atomic with what follows it: the crawl worker pool
+    writes stock rows continuously and takes no part in the stock-sync lock,
+    so during a rolling deploy an old Machine can insert a record_key-less row
+    between the sweep and these queries. Comparing it against a raw title is
+    what re-billed a judged record's sibling; skipping it costs one run's
+    delay and never costs a charge. (Copilot, PR #368.)
+    """
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        one, two = _seed_two_crawlers(conn)
+        db.replace_stock_items(conn, one, [
+            {"artist": "Artist A", "title": "Album A", "url": "https://one/a"},
+        ])
+        db.replace_stock_items(conn, two, [
+            {"artist": "Artist A", "title": "Album A", "url": "https://two/a"},
+        ])
+        conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        db.upsert_stock_judgments(conn, alice["id"], [
+            {"item_key": db.compute_item_key("Artist A", "Album A", "https://one/a"),
+             "recommended": True, "reason": "fits"},
+        ])
+        conn.commit()
+
+    with db.get_admin_pool().connection() as conn:
+        # Lands after the sweep would have run: keyed identity, unkeyed row.
+        conn.execute("UPDATE stock_items SET record_key = NULL WHERE url = %s", ["https://two/a"])
+        conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        assert db.count_unjudged_stock_items(conn, alice["id"]) == 0
+        assert db.get_unjudged_stock_items(conn, alice["id"], limit=0) == []
+        # And it is not propagated to either, since it cannot be matched yet.
+        assert db.propagate_stock_judgments(conn, alice["id"]) == 0
+        conn.commit()
+
+    # Once the sweep reaches it, it inherits rather than being billed.
+    with db.get_admin_pool().connection() as conn:
+        db.backfill_stock_keys(conn)
+        conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        assert db.count_unjudged_stock_items(conn, alice["id"]) == 0
+        assert db.propagate_stock_judgments(conn, alice["id"]) == 1

@@ -129,7 +129,6 @@ def test_an_artist_that_is_also_a_title_word_is_left_alone():
     "Kid A [Deluxe Reissue]",
     "Kid A - LP Black",
     "Kid A - 180g Half-Speed",
-    "Kid A, Indie Exclusive Blue",
     "Kid A (Remastered) (Picture Disc)",
 ])
 def test_every_pressing_of_one_record_keys_the_same(title):
@@ -271,3 +270,21 @@ def test_an_article_in_a_title_is_not_an_artist_prefix():
     # separator.
     assert record_key("The Wall", "Pink Floyd") == "the wall"
     assert record_key("The Wall", "Pink Floyd") != record_key("Wall", "Pink Floyd")
+
+
+# A comma is ordinary title punctuation more often than it is a metadata
+# boundary, and the words after one are often colours or edition words, so
+# treating it as a boundary merged real records. (Copilot, PR #368.)
+@pytest.mark.parametrize("longer,shorter", [
+    ("Red, White & Blue", "Red"),
+    ("Ready, Set", "Ready"),
+    ("Kid A, Indie Exclusive Blue", "Kid A"),
+])
+def test_a_comma_is_not_a_variant_boundary(longer, shorter):
+    assert record_key(longer) != record_key(shorter)
+
+
+def test_box_set_still_folds_but_a_bare_set_does_not():
+    # "box set" is unambiguous as a phrase; "set" alone is a title word.
+    assert record_key("Kid A (Box Set)", "Radiohead") == record_key("Kid A", "Radiohead")
+    assert record_key("Ready - Set") != record_key("Ready")

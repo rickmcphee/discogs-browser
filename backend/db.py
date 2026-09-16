@@ -3784,33 +3784,17 @@ def _record_group_sql(alias: str = "s") -> str:
     One step coarser than the pair `_cheapest_clause` groups by, which uses
     `title_key` — that one asks "is this the same pressing", and a red and a
     black copy of an album are two pressings but one record, so one answer to
-    the question the model is being asked. COALESCE to the raw title for the
-    same reason a fallback appears there: `backfill_stock_keys` normally
-    leaves nothing NULL, but a row that outruns the sweep must key as itself
-    rather than joining every other unkeyed row in one group and inheriting
-    whatever verdict that group already has.
+    the question the model is being asked.
+
+    `record_key` bare, with no COALESCE behind it, because every query that
+    reads it also requires it to be non-NULL. Three separate re-billing bugs
+    came out of falling back to something else when it was missing: the two
+    sides fell back to *different* things, and a folded key compared against a
+    raw title matches nothing, so a judged record's sibling looked new. An
+    unkeyed row is now simply not comparable, and the queries leave it alone
+    until `backfill_stock_keys` has keyed it.
     """
-    return f"{_artist_sort_sql(f'{alias}.artist')}, {_record_fold_sql(alias)}"
-
-
-def _record_fold_sql(alias: str) -> str:
-    """The title half of the record key, for either table.
-
-    Deliberately *not* `COALESCE(record_key, title_key, title)` on the stock
-    side: `stock_item_identities` carries no `title_key`, so the extra rung
-    would make the two sides fall back to different things. During a rolling
-    deploy an old process writes `record_key` NULL while still populating
-    `title_key`, and the comparison would then put the identity's raw title
-    ("Album A") against the stock row's folded key ("a") and match nothing --
-    re-billing items whose judgments are sitting right there. Both sides
-    bottom out at the raw title, which the two tables agree on. Non-NULL
-    either way, since title is NOT NULL, so plain equality is safe.
-    """
-    return f"COALESCE({alias}.record_key, {alias}.title)"
-
-
-_IDENTITY_RECORD_SQL = _record_fold_sql("i")
-_STOCK_RECORD_SQL = _record_fold_sql("s")
+    return f"{_artist_sort_sql(f'{alias}.artist')}, {alias}.record_key"
 
 
 def _judged_record_sql(user_id_param: str) -> str:
@@ -3827,16 +3811,23 @@ def _judged_record_sql(user_id_param: str) -> str:
 
     The `item_key` equality is not redundant beside the record match. It is
     the floor: this exact listing having been judged must read as judged no
-    matter what the two folds do, so that no disagreement between them -- a
-    key not yet swept, a title the two tables spell differently -- can ever
-    put an item the user has already paid for back in front of the model.
+    matter what the keys do, so that nothing -- a key not yet swept, a title
+    the two tables spell differently -- can put an item the user has already
+    paid for back in front of the model. It is also the branch that still
+    works when either side is unkeyed.
+
+    The record branch requires both keys to be present rather than falling
+    back to a raw title. A row the sweep has not reached yet is not
+    comparable, and pretending otherwise is what produced the re-billing this
+    whole path exists to prevent.
     """
     return f"""EXISTS (
             SELECT 1 FROM stock_item_identities i
             JOIN stock_item_judgments j ON j.item_key = i.item_key AND j.user_id = {user_id_param}
             WHERE i.item_key = s.item_key
-               OR ({_artist_sort_sql('i.artist')} = {_artist_sort_sql('s.artist')}
-                   AND {_IDENTITY_RECORD_SQL} = {_STOCK_RECORD_SQL})
+               OR (i.record_key IS NOT NULL AND s.record_key IS NOT NULL
+                   AND {_artist_sort_sql('i.artist')} = {_artist_sort_sql('s.artist')}
+                   AND i.record_key = s.record_key)
         )"""
 
 
@@ -3849,8 +3840,17 @@ def _unjudged_record_where(user_id_param: str) -> str:
     `j.item_key IS NULL` on a LEFT JOIN instead would be right only while
     propagation had just run, which is a call-order assumption these two
     readers cannot enforce on their callers.
+
+    An unkeyed row is excluded outright rather than compared on a fallback.
+    `backfill_stock_keys` runs at the top of a judgment run, but it cannot be
+    atomic with what follows: the crawl worker pool writes stock rows
+    continuously and takes no part in the stock-sync lock, so during a rolling
+    deploy an old Machine can insert a `record_key`-less row between the sweep
+    and these queries. Skipping it costs that row one run's delay and never
+    costs a duplicate charge; comparing it against a raw title is what did.
     """
-    return f"""NOT {_judged_record_sql(user_id_param)}
+    return f"""s.record_key IS NOT NULL
+        AND NOT {_judged_record_sql(user_id_param)}
         AND {_not_owned_clause(user_id_param)}"""
 
 
@@ -3938,12 +3938,14 @@ def propagate_stock_judgments(conn, user_id: int) -> int:
             SELECT j.recommended, j.reason, j.judged_at
             FROM stock_item_identities i
             JOIN stock_item_judgments j ON j.item_key = i.item_key AND j.user_id = %(user_id)s
-            WHERE {_artist_sort_sql('i.artist')} = {_artist_sort_sql('s.artist')}
-              AND {_IDENTITY_RECORD_SQL} = {_STOCK_RECORD_SQL}
+            WHERE i.record_key IS NOT NULL
+              AND {_artist_sort_sql('i.artist')} = {_artist_sort_sql('s.artist')}
+              AND i.record_key = s.record_key
             ORDER BY j.judged_at DESC, j.item_key
             LIMIT 1
         ) v ON TRUE
-        WHERE NOT EXISTS (
+        WHERE s.record_key IS NOT NULL
+          AND NOT EXISTS (
             SELECT 1 FROM stock_item_judgments j2
             WHERE j2.user_id = %(user_id)s AND j2.item_key = s.item_key
         )
