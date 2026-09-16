@@ -2,6 +2,7 @@ import type {
   ReleasesResponse, Crawler, Settings, UserSettings, SortField, SortOrder, CrawlStatus, CollectionStatus, ScreenshotSession,
   AuthStatus, RecordScope, StockResponse, StockStats, StockSortField, LibraryScope, RecommendationImportResult, Invite,
   QueueSummary, QueueNextItem, NotificationsResponse, NotificationsUnread,
+  JudgmentStatus, StockJudgmentRun,
 } from './types'
 
 const BASE = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/+$/, '')
@@ -315,13 +316,22 @@ export async function postPlexMatchStart(): Promise<{ started: boolean; running:
   return r.json()
 }
 
-export async function postJudgmentStart(): Promise<{ started: boolean; running: boolean }> {
+export async function postJudgmentStart(): Promise<{ started: boolean; running: boolean; run: StockJudgmentRun | null }> {
   const r = await apiFetch('/stock/judge/start', { method: 'POST' })
   if (!r.ok) throw new Error(await r.text())
   return r.json()
 }
 
-export async function getJudgmentStatus(): Promise<{ any_judged: boolean }> {
+// Asks the run to stop at its next batch boundary; `stopping` is false when
+// there was no live run to ask, which is a state to report rather than a
+// failure. The run keeps everything it has already judged.
+export async function postJudgmentStop(): Promise<{ stopping: boolean; run: StockJudgmentRun | null }> {
+  const r = await apiFetch('/stock/judge/stop', { method: 'POST' })
+  if (!r.ok) throw new Error(await r.text())
+  return r.json()
+}
+
+export async function getJudgmentStatus(): Promise<JudgmentStatus> {
   const r = await apiFetch('/stock/judge/status')
   if (!r.ok) throw new Error(await r.text())
   return r.json()
