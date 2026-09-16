@@ -30,8 +30,19 @@ _PHRASE_NOISE = [
     re.compile(r"\b(?:7|10|12)\s*-?\s*(?:\"|''|”|inch|in\.?)(?=\s|$|\W)"),
     re.compile(r"\b\d{2,3}\s*-?\s*(?:g|gm|gr|gram|grams)\b"),
     re.compile(r"\b\d\s*-?\s*x?\s*-?\s*(?:lp|ep)s?\b"),
-    # "box set" as a phrase, because "set" on its own is an ordinary title
-    # word ("Ready, Set") and listing it as a variant merged real records.
+]
+
+# Phrases record_key treats as variant wording and title_key must not. This
+# list is deliberately separate from _PHRASE_NOISE above, which title_key
+# consumes: folding "box set" there would let the Cheapest filter collapse a
+# box set onto an ordinary pressing and hide a listing, which is the false
+# merge this module's opening note forbids. A box set and a single LP are two
+# pressings and one record -- different answers for the two keys, which is
+# the whole reason record_key exists.
+#
+# A phrase rather than a word for the same reason the comma stopped being a
+# boundary: "set" alone is ordinary title vocabulary ("Ready, Set").
+_RECORD_PHRASE_NOISE = [
     re.compile(r"\bbox\s*-?\s*set\b"),
 ]
 
@@ -267,7 +278,7 @@ def _is_variant_segment(text: str) -> bool:
     which record it is."""
     folded = _fold(text)
     had_words = bool(_words(folded))
-    for pattern in _PHRASE_NOISE:
+    for pattern in _PHRASE_NOISE + _RECORD_PHRASE_NOISE:
         folded = pattern.sub(" ", folded)
     words = _words(folded)
     if not words:

@@ -136,6 +136,13 @@ one extra judgment, the cheap mistake. The same reasoning removed a bare
 `set` from the variant vocabulary in favour of the phrase "box set" — `set` is
 an ordinary title word, "box set" is not.
 
+That phrase lives in a list `record_key` alone consults, not in the one
+`title_key` shares. The distinction is the point of having two keys: a box set
+and a single LP are two *pressings* and one *record*, so `title_key` must keep
+them apart or the Cheapest filter collapses them and hides a listing, while
+`record_key` must fold them or the same album is judged twice. Putting the
+phrase in the shared list did exactly the former, silently.
+
 That leaves a residual, stated rather than hidden: a trailing dash segment is
 still taken as a fence, so a title like "Black - Gold" merges onto "Black".
 The dash is the dominant real spelling of a variant and removing it would gut
@@ -283,13 +290,16 @@ that disagrees with itself), the newest `judged_at` wins, ties broken on
 
 It is called from `_run_judgment_phase`:
 
-- **Ahead of everything**, `backfill_stock_keys` sweeps any missing fold. The
-  shared raw-title fallback only covers the case where *both* sides are NULL,
-  and a rolling deploy makes the other one: the new process keys an identity,
-  an old process then writes a stock row with no key, and the judged
-  listing's folded identity key never compares equal to its sibling's raw
-  title — so the sibling is billed again. Normally a no-op, and the partial
-  indexes on the NULL keys make finding that out a lookup.
+- **Ahead of everything**, `backfill_stock_keys` keys whatever the last sync
+  left unkeyed, so this run can judge and inherit for those rows. It is not a
+  correctness guard — the billable set and propagation both skip an unkeyed
+  row rather than comparing it, so such a row is never mis-billed whether the
+  sweep ran or not. What it buys is participation in *this* run rather than
+  the next. That is also why it needs no atomicity with the queries after it:
+  the crawl worker pool writes stock rows continuously and takes no part in
+  the stock-sync lock, so an old Machine can add an unkeyed row a moment after
+  the sweep commits, and that row simply sits out this run. Normally a no-op,
+  and the partial indexes on the NULL keys make finding that out a lookup.
 - **Before** selecting the unjudged set, so verdicts from earlier runs reach
   listings that appeared since — the new-URL and second-shop cases — and those
   listings drop out of the billable set before a batch is built.
@@ -343,15 +353,22 @@ opposite one. Postgres *does* choose it, for propagation's correlated
 
 | on a 9,000-row catalog | with the index | without |
 | --- | --- | --- |
-| `propagate_stock_judgments` | 180 ms | 4,900 ms |
-| whole-catalog `replace_stock_items` | ~1,990 ms | ~1,750 ms |
+| `propagate_stock_judgments` | 77 ms | 2,168 ms |
+| whole-catalog `replace_stock_items` | ~1,840 ms | ~1,700 ms |
 
 It is not free, though, and an earlier draft of this document said it was on
 the grounds that the table is append-only. That is wrong: rows are never
 deleted, but both writers upsert every identity they see, so a sync rewrites
 the lot and the index is maintained along with them. The trade is a read path
-27× faster for about 13% on a write path that already runs in seconds, on a
+28× faster for about 8% on a write path that already runs in seconds, on a
 schedule — worth it, but worth stating as a trade rather than a freebie.
+
+The index keys `record_key` bare, matching what the query compares. An
+earlier version indexed `COALESCE(record_key, title)` and kept that
+definition after the query dropped its fallback, which left the index
+unusable for the equality and put propagation back to scanning every identity
+for the artist — a benchmark measuring the old query no longer validating the
+new one.
 
 ### The billable set
 

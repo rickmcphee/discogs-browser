@@ -823,10 +823,12 @@ def test_a_judgment_survives_the_backfill_for_a_release_crawler_row(pg_test_db):
 
 def test_an_unswept_record_key_does_not_rebill_an_already_judged_listing(pg_test_db):
     """A rolling deploy's old process writes record_key NULL while still
-    populating title_key. The two sides' fallbacks have to agree, and the
-    listing's own item_key has to count on its own regardless -- otherwise an
-    item whose judgment is sitting right there goes back in front of the
-    model. (Copilot, PR #368.)
+    populating title_key, so the identity and its own stock row disagree about
+    whether a key exists at all. The record branch cannot fire; the listing's
+    own item_key has to carry it, or an item whose judgment is sitting right
+    there goes back in front of the model. This is the test that pins that
+    branch, so it must arrange a state the branch is the *only* way out of.
+    (Copilot, PR #368, rounds 5 and 9.)
     """
     with db.get_admin_pool().connection() as conn:
         alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
@@ -840,9 +842,10 @@ def test_an_unswept_record_key_does_not_rebill_an_already_judged_listing(pg_test
         conn.commit()
 
     with db.get_admin_pool().connection() as conn:
-        # Exactly what an older binary leaves behind: no record_key anywhere,
-        # title_key still written on the stock row.
-        conn.execute("UPDATE stock_items SET record_key = NULL")
+        # Only the *identity* loses its key. Clearing the stock row's too
+        # would let the billable set's own `record_key IS NOT NULL` discard
+        # the row before the match ran, and the assertion below would pass
+        # with the item_key branch deleted -- testing nothing.
         conn.execute("UPDATE stock_item_identities SET record_key = NULL")
         conn.commit()
 

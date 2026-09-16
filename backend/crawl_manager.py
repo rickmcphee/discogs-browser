@@ -2096,16 +2096,19 @@ class CrawlManager:
             # turn a real 0 into 300 (0 is falsy), breaking that contract.
             limit = user["recommendation_item_limit"]
 
-            # Ahead of everything that reads a fold, because a *mixed* state
-            # defeats the shared raw-title fallback those queries rely on.
-            # Both sides bottoming out at the raw title only saves the case
-            # where both are NULL; a rolling deploy makes the other one, where
-            # the new process has keyed an identity and an old process then
-            # writes a stock row with no key at all. The judged listing's
-            # identity holds a folded key, its sibling's stock row holds a raw
-            # title, they never compare equal, and the sibling is billed
-            # again. Normally a no-op, and the partial indexes on the NULL
-            # keys make finding that out a lookup rather than a scan.
+            # Keys whatever the last sync left unkeyed, so this run can judge
+            # and inherit for it. Not a correctness guard: the billable set
+            # and propagation both skip a row with no record_key rather than
+            # comparing it against something else, so an unkeyed row is never
+            # mis-billed whether this runs or not. What it buys is that such a
+            # row takes part in *this* run instead of waiting for the next.
+            #
+            # Which is also why it does not need to be atomic with the queries
+            # below. The crawl worker pool writes stock rows continuously and
+            # takes no part in the stock-sync lock, so an old Machine can add
+            # an unkeyed row a moment after this commits; that row simply sits
+            # out this run. Normally a no-op, and the partial indexes on the
+            # NULL keys make finding that out a lookup rather than a scan.
             with get_app_pool().connection() as conn:
                 swept = backfill_stock_keys(conn)
                 conn.commit()

@@ -680,15 +680,19 @@ CREATE INDEX IF NOT EXISTS stock_items_record_key_null_idx
 -- does not choose.
 --
 -- This one it does choose, and the difference is not marginal: it is the
--- inner side of propagate_stock_judgments' correlated LATERAL, which on a
--- 9,000-row catalog runs in 180 ms with this index and 4,900 ms without.
--- Not free, though -- this table is upserted, not appended to, so every sync
--- rewrites every identity row it sees and the same catalog replace costs
--- ~1,990 ms with the index against ~1,750 ms without. A read path 27x faster
--- for ~13% on a write path that already runs in seconds, on a schedule.
+-- inner side of propagate_stock_judgments' correlated LATERAL. Keyed on
+-- `record_key` bare, matching what that query actually compares -- an earlier
+-- version indexed COALESCE(record_key, title) and kept it after the query
+-- dropped the fallback, which left the index unusable and propagation back to
+-- scanning every identity for the artist.
+--
+-- Not free: this table is upserted, not appended to, so every sync rewrites
+-- every identity row it sees and maintains this index along with them. On a
+-- 9,000-row catalog, propagation runs in 77 ms with it and 2,168 ms without,
+-- while a whole-catalog replace costs ~1,840 ms against ~1,700 ms.
 CREATE INDEX IF NOT EXISTS stock_item_identities_record_fold_idx
     ON stock_item_identities ({_artist_sort_sql("artist", escape_percent=False)},
-                              COALESCE(record_key, title));
+                              record_key);
 CREATE INDEX IF NOT EXISTS stock_item_identities_record_key_null_idx
     ON stock_item_identities (item_key) WHERE record_key IS NULL;
 """
