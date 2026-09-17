@@ -31,7 +31,7 @@ Touches:
   stores' rows share when they sell the same pressing.
 - `backend/db.py` — `stock_items.title_key` column and the index behind the
   filter; `replace_stock_items` and `upsert_stock_item_from_release` write
-  the key; `_backfill_title_keys` runs
+  the key; `backfill_title_keys` runs
   from `init_tenant_schema` for rows that predate the column
   (renamed `backfill_stock_keys` on 2026-09-16, when it took on a second
   key — see

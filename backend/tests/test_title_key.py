@@ -435,3 +435,29 @@ def test_a_slash_or_pipe_does_not_fence_off_a_variant(compound, shorter):
 def test_the_fences_that_remain_still_fold(written):
     """What dropping the slash and the pipe must not cost."""
     assert record_key(written) == record_key("Kid A")
+
+
+def test_a_repeated_artist_is_not_stripped_twice():
+    """`_split_leading_artist` takes one copy off the front, and title_key
+    would take a second if it were handed the artist afterwards -- keying
+    "Genesis - Genesis - Foxtrot" as "Genesis - Foxtrot" does. That is only
+    right if the repeat is a duplicated prefix rather than part of the record's
+    name, and nothing in the title says which. Splitting costs one judgment;
+    merging hands a record a verdict written about another. (Copilot, PR #368,
+    round 42.)
+    """
+    assert record_key("Genesis - Genesis - Foxtrot", "Genesis") != record_key(
+        "Genesis - Foxtrot", "Genesis"
+    )
+
+
+def test_an_artist_uncovered_by_dropping_an_aside_is_still_stripped():
+    """What passing the artist on is for, and why the fix above is conditional
+    rather than a deletion: an aside in front of the name hides it from
+    `_split_leading_artist`, which anchors at the start of the title, so
+    nothing comes off the front. Dropping the aside exposes the name, and only
+    title_key is left to strip it.
+    """
+    assert record_key("(Limited Edition) Genesis - Foxtrot", "Genesis") == record_key(
+        "Foxtrot", "Genesis"
+    )

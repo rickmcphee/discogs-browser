@@ -416,6 +416,17 @@ def record_key(title: str, artist: Optional[str] = None) -> str:
     rebuilt = " - ".join(p for p in parts if p.strip()).strip()
     if not rebuilt:
         return title_key(title, artist, for_record=True)
-    # The artist is already off the front when prefix is truthy, so title_key
-    # finds nothing to strip and keys the remainder as the bare title it is.
-    return title_key(rebuilt, artist, for_record=True)
+    # Hand the artist on only when nothing came off the front. title_key
+    # strips one leading segment, so passing it after a prefix was already
+    # removed strips a second: "Genesis - Genesis - Foxtrot" would key as
+    # "Genesis - Foxtrot" does. That merge is right only if the repeat is a
+    # duplicated prefix rather than part of the name, which is a guess, and a
+    # false merge is the error this module refuses to risk for a saving. The
+    # unlocated-prefix branch above already strips exactly once; stripping
+    # once here too is the same answer for the same title. (Copilot, round 42.)
+    #
+    # Still needed when nothing came off: a bracketed aside in front of the
+    # name hides it from _split_leading_artist, and dropping the aside exposes
+    # it -- "(Limited Edition) Genesis - Foxtrot" has to reach the plain
+    # title's key.
+    return title_key(rebuilt, artist if prefix is None else None, for_record=True)

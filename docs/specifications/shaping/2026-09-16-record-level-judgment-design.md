@@ -232,6 +232,21 @@ raw offsets. There the title goes on unsplit for `title_key` to strip, costing
 one variant not folded away — a record billed twice at worst, which is the
 direction this module errs in on purpose.
 
+**It comes off once, and only once.** `title_key` strips a leading artist
+segment too, so handing it the artist after `_split_leading_artist` has
+already taken one copy off strips a second: `"Genesis - Genesis - Foxtrot"`
+came out keyed as `"Genesis - Foxtrot"` is. Reading that repeat as a
+duplicated prefix is a guess — nothing in the title distinguishes it from a
+name whose first segment happens to be the artist's — and the guess is wrong
+in the expensive direction, since a merge hands one record a verdict written
+about another. So the artist is passed on only when nothing came off the
+front, which also makes the two branches agree: the unlocated-prefix branch
+above already strips exactly once. Deleting the argument outright was the
+obvious fix and is wrong — an aside in front of the name (`"(Limited Edition)
+Genesis - Foxtrot"`) hides it from `_split_leading_artist`, which anchors at
+the start of the title, and once the aside is dropped only `title_key` is
+left to strip what it uncovered. (Copilot, round 42.)
+
 Its prefix test applies **both** folds — accents and apostrophes off, then the
 punctuation fold — before comparing. They lived on separate paths at first,
 this one punctuation-only with an accent-only fallback behind it, so a name
