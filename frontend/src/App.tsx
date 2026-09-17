@@ -1053,11 +1053,21 @@ export default function App() {
       }
       if (event.status === 'stock_judgment_complete' || event.status === 'stock_judgment_stopped') {
         const stopped = event.status === 'stock_judgment_stopped'
-        releaseJudgmentPresentation()
         const judged = event.judged ?? 0
         const inherited = event.inherited ?? 0
-        const startInFlight = judgmentStartPending.current !== 0
-        if (!startInFlight) {
+        // Everything this handler says about the run defers to a start in
+        // flight, not only the flags. Round 28 gave a newer Refresh ownership
+        // of those and the presentation went on tearing itself down anyway: a
+        // replayed ending gave up the spinner share and wrote "Finished..."
+        // over a run the click had just started -- and the one thing that
+        // would have repaired it, the read below, is skipped in exactly this
+        // case, so the stale ending stood for the length of the request. The
+        // start owns the presentation instead, and writes it on every path it
+        // can take: its reply, its refusal, or its failure recovery's read.
+        // (Copilot, PR #368, round 55.)
+        const reconcile = judgmentStartPending.current === 0
+        if (reconcile) {
+          releaseJudgmentPresentation()
           latestJudgmentRunSeq.current++
           setRecommendationRunning(false)
           setRecommendationStopping(false)
@@ -1095,7 +1105,7 @@ export default function App() {
         // (Copilot, PR #368, round 24.)
         setStockSyncGeneration(g => g + 1)
         setStockJudgmentGeneration(g => g + 1)
-        setSyncStatus(
+        if (reconcile) setSyncStatus(
           judgmentEndingMessage(
             stopped ? 'stopped' : 'complete', judged, event.total ?? 0, inherited, null,
           ),
@@ -1108,14 +1118,15 @@ export default function App() {
         // was issued. Writing first is what puts *this* ending's message
         // inside that baseline, so the read may overrule it while a newer
         // event still cannot be overruled. (Copilot, PR #368, round 38.)
-        if (!startInFlight) discoverJudgmentRun()
+        if (reconcile) discoverJudgmentRun()
         return
       }
       if (event.status === 'stock_judgment_error') {
-        releaseJudgmentPresentation()
-        // Defers to a start in flight, as the two endings above do.
+        // Defers to a start in flight as the two endings above do, and on the
+        // same terms: the presentation and the message go with the flags.
         const reconcile = judgmentStartPending.current === 0
         if (reconcile) {
+          releaseJudgmentPresentation()
           latestJudgmentRunSeq.current++
           setRecommendationRunning(false)
           setRecommendationStopping(false)
@@ -1127,8 +1138,8 @@ export default function App() {
           // failure a *previous* run's, and leaving "Finding recommendations
           // failed" up with the spinner off then describes the wrong run for
           // the length of the right one. (Copilot, PR #368, round 35.)
+          setSyncStatus(judgmentEndingMessage('error', 0, 0, 0, event.error ?? null), event.id ?? null)
         }
-        setSyncStatus(judgmentEndingMessage('error', 0, 0, 0, event.error ?? null), event.id ?? null)
         // After the message, for the reason the two endings above give.
         if (reconcile) discoverJudgmentRun()
         return

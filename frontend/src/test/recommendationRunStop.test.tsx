@@ -780,6 +780,12 @@ describe('stopping a recommendation run from the profile page', () => {
   // over a run the reply was about to confirm as live. On the Machine not
   // running the job nothing else arrives, so that reads as finished for the
   // whole run. (Copilot, PR #368, round 34.)
+  //
+  // Round 55 closed the window rather than leaving the reply to mop up after
+  // it: the ending now writes nothing at all while a start is in flight, so
+  // the assertion below is the negation of the one this test used to make.
+  // What it still pins is the reply's own half -- that it writes the live
+  // presentation and does not leave the page blank.
   it('shows the run as live when the start reply contradicts a replayed ending', async () => {
     getJudgmentStatus.mockResolvedValue({ any_judged: true, run: null })
     const row = await openProfile()
@@ -794,7 +800,7 @@ describe('stopping a recommendation run from the profile page', () => {
         status: 'stock_judgment_complete', judged: 12, total: 300, id: 9,
       })
     })
-    expect(screen.getByText(/Finished finding recommendations — 12 items checked/)).toBeInTheDocument()
+    expect(screen.queryByText(/Finished finding recommendations/)).not.toBeInTheDocument()
 
     getJudgmentStatus.mockResolvedValue({ any_judged: true, run: run() })
     await act(async () => {
@@ -1346,6 +1352,36 @@ describe('stopping a recommendation run from the profile page', () => {
     })
 
     expect(screen.getAllByText('⟳').length).toBeGreaterThan(0)
+  })
+
+  // A terminal event replayed while a Refresh POST is in flight already defers
+  // the run flags to that start. The presentation deferred nothing: it gave up
+  // the spinner share and wrote the old run's ending, and the read that would
+  // have repaired it is skipped in exactly this case -- so the stale ending
+  // stood for the length of the request. (Copilot, PR #368, round 55.)
+  it.each([
+    ['a completion', { status: 'stock_judgment_complete', judged: 40, total: 40, id: 70 },
+      /Finished finding recommendations/],
+    ['an error', { status: 'stock_judgment_error', error: 'the key expired', id: 71 },
+      /Finding recommendations failed/],
+  ])('does not let %s replayed during a start in flight write its ending', async (_what, event, ending) => {
+    getJudgmentStatus.mockResolvedValue({ any_judged: true, run: null })
+    let releaseStart: (v: unknown) => void = () => {}
+    postJudgmentStart.mockReturnValue(new Promise((resolve) => {
+      releaseStart = () => resolve({ started: true, running: true, run: run({ judged: 0 }) })
+    }))
+
+    const row = await openProfile()
+    fireEvent.click(within(row).getByRole('button'))
+    await waitFor(() => expect(postJudgmentStart).toHaveBeenCalled())
+
+    await act(async () => { SilentEventSource.instances[0].emit(event) })
+    expect(screen.queryByText(ending)).not.toBeInTheDocument()
+
+    await act(async () => { releaseStart(undefined) })
+    await waitFor(() =>
+      expect(screen.getByText(/Finding recommendations for Store items\u2026/)).toBeInTheDocument(),
+    )
   })
 
   it('does not poll the run once nothing is running', async () => {

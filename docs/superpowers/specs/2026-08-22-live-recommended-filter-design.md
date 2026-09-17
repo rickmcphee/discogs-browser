@@ -279,6 +279,19 @@ Four changes, all in `frontend/src/App.tsx`, no new endpoints.
    authoritative about its own run's ending and writes it regardless, which is
    what puts it inside the baseline the read that follows measures against.
 
+   With one exception, and it is the one case where the event is known in
+   advance not to be authoritative: **a Refresh POST in flight owns the
+   presentation as it already owned the flags**, so a terminal handler that
+   defers the flags to a newer start defers the release and the message with
+   them. That ownership was granted to the flags alone, and the presentation
+   went on tearing itself down beside them — a replayed ending gave up the
+   spinner share and wrote its ending over a run the click had just started,
+   and the read that would have repaired it is skipped in exactly that case,
+   so the stale ending stood for the length of the request. Nothing is left
+   unwritten by deferring: the start writes the presentation on its reply, on
+   its refusal and on its failure recovery's read, and a start superseded
+   before any of those has a newer action behind it that writes its own.
+
    The Stop reply was the ender this list reached last, and the reason it is
    easy to miss is the reason it matters: it turns the run poll off in the
    same breath, so it is the *last* reader there will be. On the cross-Machine
