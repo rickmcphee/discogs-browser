@@ -646,6 +646,23 @@ about *other* work, not about this user's run, and there is no row to read.
 It runs **before** the claim, so a refused start leaves no row behind for the
 user's next Refresh to be turned away by.
 
+On its own that is check-then-act: a sync can take the lock after the read
+returns false and before the claim commits, and `start_stock_sync` has no
+mirror guard by design, so both would then run. The claim therefore reads the
+lock a *second* time, with its row written and not yet committed, and rolls
+back when a sync is found holding it. That makes the commit the linearization
+point — the run exists only if no sync held the lock after its row was
+written — and a rollback rather than a claim-and-close keeps the no-row
+property above. A sync starting after that read is the overlap the missing
+mirror guard permits on purpose.
+
+Read rather than taken, for the reason `advisory_lock_held` gives: a probe
+would hold the lock for a moment, and a genuine sync's own
+`pg_try_advisory_lock` would fail against it. And read inside a savepoint, so
+the second read can fail open like the first — an error on that connection
+would otherwise abort the claim's transaction and leave nothing to commit,
+which is the dead Refresh button the fail-open rule below exists to avoid.
+
 That guard fails open, where `start_stock_sync`'s lock does not, and the
 asymmetry is deliberate. A stock sync that cannot take its lock *must not
 run* — concurrent `replace_stock_items` calls corrupt the shared catalog. A

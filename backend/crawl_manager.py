@@ -1968,12 +1968,53 @@ class CrawlManager:
             return False
 
     @staticmethod
-    def _claim_judgment_run(user_id: int) -> Optional[str]:
-        from db import user_scope, claim_stock_judgment_run
+    def _claim_judgment_run(user_id: int):
+        """`(run_token, sync_won)`. `sync_won` says a stock sync took the lock
+        while this was claiming, which is a different refusal from a run
+        already being under way and reads differently to the user.
+
+        The guard in start_judgment_only is check-then-act on its own: the
+        lock can be taken after that read returns false and before this claim
+        commits, and `start_stock_sync` has no mirror guard by design, so both
+        would then run and the judgment would spend the user's credit on a
+        catalog being replaced under it. So the lock is read again here, with
+        the claim written and *not yet committed*, and a sync found holding it
+        rolls the claim back. That makes the commit the linearization point:
+        the run exists only if no sync held the lock after its row was
+        written. A sync starting after that is the case the missing mirror
+        guard allows on purpose.
+
+        Rolled back rather than claimed-and-closed, because a refusal leaving
+        no row is a property the router and the button both depend on.
+        Reading the lock rather than taking it, for the reason
+        `db.advisory_lock_held` gives: a probe would hold it for a moment, and
+        a genuine sync's own `pg_try_advisory_lock` would fail against that.
+        (Copilot, PR #368, round 32.)
+        """
+        from db import user_scope, claim_stock_judgment_run, advisory_lock_held
         with user_scope(user_id) as conn:
             run_token = claim_stock_judgment_run(conn, user_id)
+            if run_token is None:
+                return None, False
+            # Fails open like the guard above, and inside a savepoint so that
+            # failing open is actually available: an error raised on this
+            # connection would otherwise abort the claim's own transaction and
+            # leave nothing to commit, turning a database hiccup into the dead
+            # Refresh button that guard exists to avoid.
+            try:
+                with conn.transaction():
+                    sync_running = advisory_lock_held(conn, STOCK_SYNC_LOCK_KEY)
+            except Exception:
+                log.warning(
+                    "Could not re-read the stock sync lock; allowing the claim",
+                    exc_info=True,
+                )
+                sync_running = False
+            if sync_running:
+                conn.rollback()
+                return None, True
             conn.commit()
-        return run_token
+        return run_token, False
 
     @staticmethod
     def _finish_judgment_run(user_id: int, run_token: Optional[str], status: str, **fields):
@@ -2031,7 +2072,13 @@ class CrawlManager:
         # nothing but another judgment run for the same user, and the claim is
         # a single atomic upsert -- two concurrent starts cannot both win it.
         # Blocking psycopg calls, so off the event loop, same as start_sync's.
-        run_token = await run_in_threadpool(self._claim_judgment_run, user_id)
+        run_token, sync_won = await run_in_threadpool(self._claim_judgment_run, user_id)
+        if sync_won:
+            log.warning(
+                "Stock sync took the lock mid-claim, refusing judgment start for %s",
+                self._username_for_log(user_id),
+            )
+            return {"started": False, "stock_sync_running": True}
         if run_token is None:
             log.warning(
                 "Recommendation run already under way for %s, ignoring start request",

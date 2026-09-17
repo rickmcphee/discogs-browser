@@ -7816,6 +7816,45 @@ async def test_start_judgment_only_is_refused_while_another_machine_holds_the_sy
     await asyncio.sleep(0.01)
 
 
+async def test_a_sync_taken_after_the_guard_still_stops_the_claim(
+    manager, judging_user, monkeypatch
+):
+    """The guard is check-then-act. A stock sync can take STOCK_SYNC_LOCK_KEY
+    after that read returns false and before the claim commits, and
+    `start_stock_sync` has no mirror guard by design — so both jobs run, and
+    the run spends the user's credit on a catalog being replaced under it.
+
+    The claim re-reads the lock with its row written but uncommitted, so a
+    sync that won the race rolls the claim back rather than racing it. Forcing
+    the guard to answer as it would have a moment earlier is that interleaving.
+    (Copilot, PR #368, round 32.)
+    """
+    import psycopg
+    import config
+    from crawl_manager import STOCK_SYNC_LOCK_KEY
+
+    async def _fake_judgment_phase(user_id, run_token=None):
+        pass
+
+    manager._run_judgment_phase = _fake_judgment_phase  # type: ignore
+
+    holder = psycopg.connect(config.APP_DATABASE_URL, autocommit=True)
+    try:
+        assert holder.execute(
+            "SELECT pg_try_advisory_lock(%s)", [STOCK_SYNC_LOCK_KEY]
+        ).fetchone()[0] is True
+        monkeypatch.setattr(manager, "_stock_sync_running_anywhere", lambda: False)
+
+        refused = await manager.start_judgment_only(judging_user)
+        assert refused == {"started": False, "stock_sync_running": True}
+        # Rolled back, not closed: a refusal still leaves no row behind.
+        with db.user_scope(judging_user) as conn:
+            assert db.get_stock_judgment_run(conn, judging_user) is None
+    finally:
+        holder.execute("SELECT pg_advisory_unlock(%s)", [STOCK_SYNC_LOCK_KEY])
+        holder.close()
+
+
 async def test_judgment_starts_when_the_lock_state_cannot_be_read(manager, judging_user, monkeypatch):
     """Fails open. A cost guard that turns a database hiccup into a dead
     Refresh button is worse than one that occasionally lets a run through."""
