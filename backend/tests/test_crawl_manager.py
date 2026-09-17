@@ -1628,13 +1628,24 @@ async def test_sync_collection_mode_new_backfills_date_added_for_skipped_item(pg
     assert str(row["collection_date_added"]) == "2024-03-15 10:00:00"
 
 
-def _oauth_user(username="alice", token="tok", secret="sec"):
-    """A user whose row carries an encrypted Discogs token, as signup leaves it."""
+def _oauth_user():
+    """A user whose row carries an encrypted Discogs token, as signup leaves it.
+
+    Written from literals rather than through parameters, which every call site
+    defaulted anyway, and which is what the rest of this file already does.
+    Not just tidier: CodeQL classifies sensitive data by *name*, so a `token=`
+    / `secret=` parameter here is a taint source, and it reaches `user["id"]`
+    through this one `conn.execute` parameter list. The tests below pass that
+    id into `_sync_collection`, whose pre-existing log calls on `user_id` --
+    and on `_username_for_log`'s result in the Plex phase -- then report as
+    clear-text logging of a credential. Nine alerts, from a fixture's fake
+    "tok", against production code that logs nothing but an id and a label.
+    """
     with db.get_admin_pool().connection() as conn:
-        user = db.create_user(conn, discogs_user_id=1, discogs_username=username)
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
         conn.execute(
             "UPDATE users SET discogs_oauth_token_encrypted = %s, discogs_oauth_secret_encrypted = %s WHERE id = %s",
-            [token_encryption.encrypt(token), token_encryption.encrypt(secret), user["id"]],
+            [token_encryption.encrypt("tok"), token_encryption.encrypt("sec"), user["id"]],
         )
         conn.commit()
     return user
