@@ -31,8 +31,11 @@ Touches:
   stores' rows share when they sell the same pressing.
 - `backend/db.py` — `stock_items.title_key` column and the index behind the
   filter; `replace_stock_items` and `upsert_stock_item_from_release` write
-  the key; `_backfill_title_keys` runs
-  from `init_tenant_schema` for rows that predate the column;
+  the key; `backfill_title_keys` runs
+  from `init_tenant_schema` for rows that predate the column
+  (renamed `backfill_stock_keys` on 2026-09-16, when it took on a second
+  key — see
+  [`2026-09-16-record-level-judgment-design.md`](2026-09-16-record-level-judgment-design.md));
   `_stock_filter_sql` gains `cheapest` and the `_cheapest_clause` it appends;
   `get_stock_items` and `get_stock_source_counts` pass it through.
 - `backend/routers/stock.py` — `GET /stock` and `GET /stock/stats` gain a
@@ -138,11 +141,17 @@ Out of scope:
   backfill has run, an old binary can still be writing unkeyed rows — a
   store snapshot from a sync it was mid-way through, a marketplace match
   from its worker pool — and a boot-only backfill would never revisit them.
-  `backfill_title_keys` therefore also runs at the end of every stock sync,
+  `backfill_title_keys` (`backfill_stock_keys` since 2026-09-16, when
+  `record_key` joined it) therefore also runs at the end of every stock sync,
   beside the dead-queue-row sweep that already lives there, so the first
   sync any new machine completes keys whatever the old one left. It is
-  normally a no-op, and a partial index on `title_key IS NULL` makes finding
-  that out a lookup rather than a scan. `COALESCE(title_key, title)` in the
+  normally a no-op. It used to find that out from a partial index on
+  `title_key IS NULL`; that index was dropped on 2026-09-16, when the sweep
+  stopped asking which keys were missing and began re-folding every row to
+  catch one that is merely *stale* — which an old binary produces with no NULL
+  to mark it. It is a scan now, at a cost recorded in the
+  [record-level judgment design](2026-09-16-record-level-judgment-design.md).
+  `COALESCE(title_key, title)` in the
   clause covers the window in between: an unkeyed row groups on its raw
   title, which can only split, never merge. (Raised by Copilot on PR #294.) The backfill
   matters more than it looks: the grouping treats every NULL as *one* key,

@@ -159,7 +159,7 @@ def test_stock_item_identities_table_exists_with_expected_columns(admin_conn):
             "SELECT column_name FROM information_schema.columns WHERE table_name = 'stock_item_identities'"
         ).fetchall()
     }
-    assert cols == {"item_key", "artist", "title", "format", "last_seen"}
+    assert cols == {"item_key", "artist", "title", "format", "record_key", "last_seen"}
 
 
 def test_listings_accepts_item_key_based_row_with_null_release_id(admin_conn):

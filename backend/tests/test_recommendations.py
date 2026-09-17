@@ -42,7 +42,10 @@ def _client_raising(exc):
 
 
 def _items(*keys):
-    return [{"item_key": k, "artist": f"Artist {k}", "title": f"Title {k}"} for k in keys]
+    # record_key rides along so the assertions below can pin that judge_batch
+    # returns the record the batch entry named rather than deriving one.
+    return [{"item_key": k, "record_key": f"record {k}",
+             "artist": f"Artist {k}", "title": f"Title {k}"} for k in keys]
 
 
 def _item_lines(block):
@@ -121,7 +124,8 @@ def test_judge_batch_parses_wellformed_response():
     from recommendations import judge_batch, MODEL
     client = _client_returning(json.dumps([{"n": 1, "recommended": True, "reason": "similar genre"}]))
     results = judge_batch(client, ["Foo - Bar"], _items("k1"))
-    assert results == [{"item_key": "k1", "recommended": True, "reason": "similar genre"}]
+    assert results == [{"item_key": "k1", "record_key": "record k1",
+                        "recommended": True, "reason": "similar genre"}]
     assert client.messages.create.call_args.kwargs["model"] == MODEL
 
 
@@ -135,8 +139,8 @@ def test_judge_batch_maps_ordinals_back_to_item_keys_out_of_order():
     ]))
     results = judge_batch(client, [], _items("k1", "k2", "k3"))
     assert results == [
-        {"item_key": "k3", "recommended": True, "reason": "third"},
-        {"item_key": "k1", "recommended": False, "reason": None},
+        {"item_key": "k3", "record_key": "record k3", "recommended": True, "reason": "third"},
+        {"item_key": "k1", "record_key": "record k1", "recommended": False, "reason": None},
     ]
 
 
@@ -145,7 +149,7 @@ def test_judge_batch_strips_markdown_fences():
     body = "```json\n" + json.dumps([{"n": 1, "recommended": False, "reason": None}]) + "\n```"
     client = _client_returning(body)
     results = judge_batch(client, [], _items("k1"))
-    assert results == [{"item_key": "k1", "recommended": False, "reason": None}]
+    assert results == [{"item_key": "k1", "record_key": "record k1", "recommended": False, "reason": None}]
 
 
 def test_judge_batch_returns_empty_on_malformed_json():
@@ -168,7 +172,7 @@ def test_judge_batch_skips_entries_missing_required_fields():
         {"n": 2, "recommended": True, "reason": "ok"},
     ]))
     results = judge_batch(client, [], _items("k1", "k2"))
-    assert results == [{"item_key": "k2", "recommended": True, "reason": "ok"}]
+    assert results == [{"item_key": "k2", "record_key": "record k2", "recommended": True, "reason": "ok"}]
 
 
 def test_judge_batch_drops_out_of_range_ordinals():
@@ -182,7 +186,7 @@ def test_judge_batch_drops_out_of_range_ordinals():
         {"n": 2, "recommended": True, "reason": "ok"},
     ]))
     results = judge_batch(client, [], _items("k1", "k2"))
-    assert results == [{"item_key": "k2", "recommended": True, "reason": "ok"}]
+    assert results == [{"item_key": "k2", "record_key": "record k2", "recommended": True, "reason": "ok"}]
 
 
 def test_judge_batch_drops_non_integer_ordinals():
@@ -209,7 +213,7 @@ def test_judge_batch_drops_duplicate_ordinals_keeping_the_first():
         {"n": 1, "recommended": False, "reason": None},
     ]))
     results = judge_batch(client, [], _items("k1", "k2"))
-    assert results == [{"item_key": "k1", "recommended": True, "reason": "first"}]
+    assert results == [{"item_key": "k1", "record_key": "record k1", "recommended": True, "reason": "first"}]
 
 
 def test_judge_batch_logs_usage(caplog):
@@ -237,7 +241,7 @@ def test_judge_batch_tolerates_a_response_without_usage(caplog):
     with caplog.at_level(logging.INFO, logger="recommendations"):
         results = judge_batch(client, [], _items("k1"))
 
-    assert results == [{"item_key": "k1", "recommended": False, "reason": None}]
+    assert results == [{"item_key": "k1", "record_key": "record k1", "recommended": False, "reason": None}]
     assert any("input=None" in rec.getMessage() for rec in caplog.records)
 
 
