@@ -81,6 +81,27 @@ def _is_playwright_timeout(exc: BaseException) -> bool:
     return isinstance(exc, PlaywrightTimeoutError)
 
 
+def _discogs_request_error(exc) -> str:
+    """What to tell the user about a Discogs request that answered an error
+    status.
+
+    The status carries the whole meaning here. A 401 or 403 is the stored OAuth
+    token being refused rather than anything about the collection, and it has a
+    remedy the user can act on -- signing in with Discogs again replaces that
+    token (routers/session.py's callback) -- so the message says so. What it
+    replaces, "Discogs request failed", named neither the fault nor the fix,
+    and a sync that ends on it looks from the outside exactly like one that
+    fetched a collection with nothing new in it.
+    """
+    status = exc.response.status_code
+    if status in (401, 403):
+        return (
+            f"Discogs rejected this app's authorization (HTTP {status}). "
+            "Sign out and sign in with Discogs again to reconnect your account."
+        )
+    return f"Discogs request failed (HTTP {status})"
+
+
 class _ClaimLost(Exception):
     """Raised when the run a worker is writing is no longer the run in the row.
 
@@ -1083,6 +1104,12 @@ class CrawlManager:
         # because its own close hit a transient database failure.
         intended_outcome = {}
 
+        # Read by sync_error, which can run before the user row has been read.
+        # A closure over a name nothing has assigned yet raises rather than
+        # reading empty, and an error path that raises on its way to reporting
+        # a failure is how one goes unreported.
+        username = None
+
         def finish_run(status, synced=None, wishlist_synced=None, error=None):
             intended_outcome.update(
                 status=status, synced=synced,
@@ -1108,10 +1135,22 @@ class CrawlManager:
                 intended_outcome.clear()
             return closed
 
-        def sync_error(message):
+        def sync_error(message, exc_info=False):
             """Report a failure, and hand back what the close did -- callers
             that go on to do follow-on work have to know whether this run was
             still theirs.
+
+            Logged here rather than at the call sites, because the call sites
+            are where it was forgotten. Three of the early returns below
+            reported a failure to the run row and the event stream and wrote
+            nothing to the log at all -- and the two that end a sync before it
+            reaches Discogs are precisely the ones a user cannot diagnose from
+            the outside, since the tab they are watching shows a collection
+            that simply never gains anything. "Collection sync started for X"
+            with no line after it was the whole record of a sync failing on a
+            refused token, every time it was clicked. Logging it in the one
+            place every failure passes through is what makes that structural
+            rather than remembered.
 
             Closed before announced, deliberately. A dispossessed worker can
             reach an ordinary exception, and the close is what reveals it:
@@ -1124,9 +1163,22 @@ class CrawlManager:
             Only a definite False silences it. A None means the close could not
             be attempted, which is no evidence of a takeover, and a run with no
             token never entered the claim protocol at all -- both still speak,
-            because staying quiet about a real failure is the worse error."""
+            because staying quiet about a real failure is the worse error.
+
+            The log line sits under that same guard, and for the same reason:
+            a definite False means this worker was dispossessed, so the failure
+            is not the run's to report -- the replacement owns it and may be
+            running perfectly well. "Collection sync failed for alice" in the
+            Logs tab would be that false report in the one place a reader goes
+            to check, and the Logs tab is shared rather than per-run. What
+            happened to *this* worker is still recorded: the caller's own
+            "this sync's run was taken over" warning says it."""
             closed = finish_run("error", error=message)
             if not (run_token is not None and closed is False):
+                log.error(
+                    "Collection sync failed for %s: %s",
+                    username or f"user {user_id}", message, exc_info=exc_info,
+                )
                 broadcast({"status": "sync_error", "error": message})
             return closed
 
@@ -1236,8 +1288,17 @@ class CrawlManager:
             if scope != "wishlist":
                 try:
                     fields = discogs.fetch_collection_fields(oauth_token, oauth_secret, username)
-                except discogs.HTTPStatusError:
-                    sync_error("Discogs request failed")
+                except discogs.HTTPStatusError as e:
+                    # No exc_info: the traceback would carry the very things
+                    # the message leaves out. logging_config's queue handler
+                    # appends a formatted traceback to the stored message, and
+                    # an HTTPStatusError's last line is the status, the full
+                    # request URL and the response detail -- so attaching one
+                    # would sanitize the sentence and then write the original
+                    # underneath it. The status is already in the message, and
+                    # for a failure this path has classified there is nothing
+                    # else in the traceback worth the leak.
+                    sync_error(_discogs_request_error(e))
                     return
                 price_field_id = next((fid for fid, name in fields.items() if name.lower() == "price"), None)
 
@@ -1463,8 +1524,19 @@ class CrawlManager:
             })
             return None
         except Exception as e:
-            log.error("Collection sync failed: %s", e, exc_info=True)
-            closed = sync_error(str(e))
+            # Routed through the same wording as the first call's own handler:
+            # a wantlist-scope sync skips that call entirely, so a refused
+            # token surfaces here instead, and the same fault answering with
+            # a raw transport string on one tab and an actionable sentence on
+            # the other sends the reader looking in two different places.
+            sanitized = isinstance(e, discogs.HTTPStatusError)
+            message = _discogs_request_error(e) if sanitized else str(e)
+            # The traceback rides along for an exception nothing has
+            # classified, where it is the only account of what happened, and
+            # is withheld for one this path has just sanitized -- there it
+            # would restore the URL and response detail underneath the
+            # sentence written to omit them. See the fields-fetch handler.
+            closed = sync_error(message, exc_info=not sanitized)
             # Fenced like the successful close and the Plex release. Failing is
             # not the same as still owning the run: an expired or dispossessed
             # worker can reach an ordinary exception, and restoring rows from
@@ -1505,8 +1577,19 @@ class CrawlManager:
             # while the same-Machine stream has already announced success.
             if intended_outcome:
                 finish_run(**intended_outcome)
-            else:
-                finish_run("error", error="Sync ended unexpectedly")
+            elif finish_run("error", error="Sync ended unexpectedly") is True:
+                # Only when that close actually took the row. This branch is
+                # reached after every sync, successful ones included -- the
+                # write is a no-op against a run some path already closed --
+                # so logging it unconditionally would report each completed
+                # sync as an unexplained death. A True says the row really was
+                # still open, which is the case nothing else has spoken for
+                # and the one worth a line: it is the last exit from this
+                # function that can still end a sync in silence.
+                log.error(
+                    "Collection sync for %s ended unexpectedly",
+                    username or f"user {user_id}",
+                )
 
     async def sweep_enqueue(self, mode: str = "missing"):
         from db import get_identity_pool, enqueue_crawl_queue, get_missing_releases, user_scope
