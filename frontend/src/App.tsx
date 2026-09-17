@@ -1756,6 +1756,13 @@ export default function App() {
         // claiming one would put a spinner over a run that has stopped.
         showJudgmentRunning('Stopping the recommendation run — finishing the batch already paid for…')
       } else {
+        // The fourth ender, and the one round 46's sweep did not reach: this
+        // reply is terminal and the line above turns the poll off with it, so
+        // on the cross-Machine path nothing is left that could release the
+        // share -- no terminal event arrives, and no further read runs. The
+        // judgment would hold its owner for the life of the page and the
+        // spinner would turn over a run that has finished.
+        releaseJudgmentPresentation()
         setSyncStatus(r.run?.stale
           ? STALE_JUDGMENT_RUN_MESSAGE
           : 'No recommendation run to stop — it had already finished.')
@@ -1770,7 +1777,7 @@ export default function App() {
       // race must not re-open the window its successor is still inside.
       if (action === latestJudgmentActionSeq.current) judgmentStopPending.current = false
     }
-  }, [setSyncStatus, showJudgmentRunning])
+  }, [setSyncStatus, showJudgmentRunning, releaseJudgmentPresentation])
 
   const handleExportRecommendations = useCallback(async () => {
     try {

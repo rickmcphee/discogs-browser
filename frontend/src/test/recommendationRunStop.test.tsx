@@ -575,6 +575,7 @@ describe('stopping a recommendation run from the profile page', () => {
     })
     const row = await openProfile()
     await waitFor(() => expect(within(row).getByRole('button')).toHaveTextContent('Stop'))
+    await waitFor(() => expect(screen.getAllByText('⟳').length).toBeGreaterThan(0))
 
     getJudgmentStatus.mockResolvedValue({
       any_judged: true, run: run({ status: 'complete', running: false, judged: 300 }),
@@ -583,6 +584,12 @@ describe('stopping a recommendation run from the profile page', () => {
 
     await screen.findByText(/No recommendation run to stop/)
     await waitFor(() => expect(within(row).getByRole('button')).toHaveTextContent('Refresh'))
+    // This reply is terminal and turns the poll off with it, so it is the last
+    // thing that can give the share back: on the cross-Machine path no
+    // terminal event follows and no further read runs, and the judgment would
+    // hold the spinner for the life of the page.
+    // (Copilot, PR #368, round 52.)
+    expect(screen.queryAllByText('⟳')).toHaveLength(0)
   })
 
   it('refetches the Store when a new run ends identically to the last one', async () => {
@@ -633,6 +640,7 @@ describe('stopping a recommendation run from the profile page', () => {
     })
     const row = await openProfile()
     await waitFor(() => expect(within(row).getByRole('button')).toHaveTextContent('Stop'))
+    await waitFor(() => expect(screen.getAllByText('⟳').length).toBeGreaterThan(0))
 
     getJudgmentStatus.mockResolvedValue({
       any_judged: true, run: run({ running: false, stale: true }),
@@ -641,6 +649,9 @@ describe('stopping a recommendation run from the profile page', () => {
 
     await screen.findByText(/stopped responding/)
     await waitFor(() => expect(within(row).getByRole('button')).toHaveTextContent('Refresh'))
+    // Same ending, and the one with no event coming even on this Machine: the
+    // run's Machine is gone. (Copilot, PR #368, round 52.)
+    expect(screen.queryAllByText('⟳')).toHaveLength(0)
   })
 
   it('keeps looking for a run when the mount-time read fails once', async () => {

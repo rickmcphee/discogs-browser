@@ -250,8 +250,10 @@ Four changes, all in `frontend/src/App.tsx`, no new endpoints.
    measuring writes rather than simply flagging ownership.
 
    **Ending a run gives up its share rather than clearing the state**, and
-   `releaseJudgmentPresentation()` is the one way to do it: the HTTP take-down
-   and both terminal SSE handlers call it, and it removes the judgment owner —
+   `releaseJudgmentPresentation()` is the one way to do it: the HTTP take-down,
+   both terminal SSE handlers and the Stop reply's own two endings — the run
+   had already finished, or its Machine is gone — call it, and it removes the
+   judgment owner —
    which lowers the spinner only if no other owner remains, whenever that owner
    was added. The events used to lower it outright, so a stock sync that had
    the spinner up when a judgment run ended lost its busy indicator on the
@@ -276,6 +278,12 @@ Four changes, all in `frontend/src/App.tsx`, no new endpoints.
    The *message* is not released the same way: a terminal event is
    authoritative about its own run's ending and writes it regardless, which is
    what puts it inside the baseline the read that follows measures against.
+
+   The Stop reply was the ender this list reached last, and the reason it is
+   easy to miss is the reason it matters: it turns the run poll off in the
+   same breath, so it is the *last* reader there will be. On the cross-Machine
+   path no terminal event follows it either, and the share it left behind
+   would have been held for the life of the page.
    Only the spinner is arbitrated, because "something is busy" is a claim about
    the whole page and lowering it on someone else's behalf is never right.
 

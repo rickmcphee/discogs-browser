@@ -1,5 +1,5 @@
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -1103,7 +1103,11 @@ def test_an_import_does_not_keep_the_record_the_verdict_it_replaced_was_about(pg
         applied = db.import_stock_judgments(conn, alice["id"], [{
             "item_key": collision, "recommended": False,
             "reason": "imported, record unknown",
-            "judged_at": datetime(2030, 1, 1, 0, 0, 0),
+            # Must beat the local verdict's CURRENT_TIMESTAMP, since
+            # import_stock_judgments only applies a row whose judged_at is
+            # newer. Relative rather than a fixed future date, which stops
+            # being one. (Copilot, PR #368, round 52.)
+            "judged_at": datetime.now() + timedelta(days=365),
         }])
         db.propagate_stock_judgments(conn, alice["id"])
         conn.commit()
