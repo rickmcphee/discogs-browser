@@ -841,6 +841,84 @@ def _seed_release_crawler_item(conn, site, url, listing_title, artist="Artist A"
     return db.compute_item_key(artist.title(), title, url)
 
 
+def _seed_two_crawlers_on_one_url(conn, first_listing, second_listing):
+    """Two stock rows sharing an item_key and folding to different record keys.
+
+    `item_key` hashes artist|title|url and nothing else, so two crawlers that
+    find one record at one URL write two rows under one key -- which the
+    schema allows on purpose. `record_key` folds the *listing* title, so the
+    two rows disagree whenever the sites name what they matched differently.
+    """
+    for site in ("MarketA", "MarketB"):
+        db.register_crawler(conn, site, f"/{site}.py")
+    ids = {r["site_name"]: r["id"] for r in conn.execute(
+        "SELECT id, site_name FROM crawlers").fetchall()}
+    db.upsert_catalog_release(conn, {
+        "discogs_id": "r1", "artist": "Artist A", "title": "Album A", "year": None,
+        "label": None, "format": None, "barcode": None, "cover_image_url": None,
+        "discogs_url": None,
+    })
+    rel = conn.execute("SELECT * FROM catalog WHERE discogs_id='r1'").fetchone()
+    for site, listing_title, price in (
+        ("MarketA", first_listing, 10.0), ("MarketB", second_listing, 11.0),
+    ):
+        db.upsert_stock_item_from_release(conn, "r1", ids[site], rel, {
+            "url": "https://shop/x", "price": price, "currency": "USD",
+            "title": listing_title,
+        })
+    return db.compute_item_key("Artist A", "Album A", "https://shop/x")
+
+
+def test_one_item_key_is_billed_once_even_when_its_rows_fold_apart(pg_test_db):
+    """A judgment is stored per item_key, so two record groups sharing one buy
+    a second model call and nothing else: the same artist and title travel
+    twice and the second verdict overwrites the first on the same row.
+    (Copilot, PR #368, round 26.)
+    """
+    with db.get_admin_pool().connection() as conn:
+        item_key = _seed_two_crawlers_on_one_url(
+            conn, "Album A Deluxe Reissue", "Album A Live At Leeds")
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+        rows = conn.execute(
+            "SELECT record_key FROM stock_items WHERE item_key = %s", [item_key]
+        ).fetchall()
+    assert len({r["record_key"] for r in rows}) == 2, "the collision did not arise"
+
+    with db.user_scope(alice["id"]) as conn:
+        billable = db.get_unjudged_stock_items(conn, alice["id"], 0)
+    assert [b["item_key"] for b in billable] == [item_key], (
+        "one item_key was offered to the model more than once"
+    )
+
+
+def test_the_sweep_keeps_the_winner_the_live_writers_chose(pg_test_db):
+    """Both writers upsert the identity, so the last one to run owns its key.
+    The sweep has to break the same tie the same way or the two take it in
+    turns: a sweep re-pointing the identity at an earlier row, the next live
+    write pointing it back, and the stored key meaning whichever ran last.
+    (Copilot, PR #368, round 26.)
+    """
+    with db.get_admin_pool().connection() as conn:
+        item_key = _seed_two_crawlers_on_one_url(
+            conn, "Album A Deluxe Reissue", "Album A Live At Leeds")
+        conn.commit()
+        live = conn.execute(
+            "SELECT record_key FROM stock_item_identities WHERE item_key = %s", [item_key]
+        ).fetchone()["record_key"]
+
+        db.backfill_stock_keys(conn)
+        conn.commit()
+        after = conn.execute(
+            "SELECT record_key FROM stock_item_identities WHERE item_key = %s", [item_key]
+        ).fetchone()["record_key"]
+
+    assert after == live, (
+        f"the sweep moved the identity from {live!r} to {after!r}; "
+        "it and the live writers disagree on the winner"
+    )
+
+
 def test_backfill_reconciles_an_identity_keyed_before_its_stock_row_came_back(pg_test_db):
     """An identity can be left holding a key its own stock row disagrees with,
     and nothing but this sweep can put them back together.

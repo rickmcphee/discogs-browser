@@ -402,6 +402,20 @@ that table whole and asked it only for the unkeyed orphans — which gave the
 index a reader again, and is what keeps this bounded by the live catalog
 rather than by every URL a shop has ever used.
 
+**One `item_key` can hold two record keys, and is billed once regardless.**
+`item_key` hashes artist, title and URL, so two crawlers finding one record at
+one URL write two `stock_items` rows under one key — which the schema permits
+deliberately. `record_key` folds the *listing* title, so those rows disagree
+whenever the two sites name what they matched differently, and only one of
+them can supply the identity's single key. Two things follow. The sweep breaks
+that tie the way the live writers do, newest write first, or the two take it
+in turns and the stored key means whichever ran last. And the billable set is
+deduplicated by `item_key` after grouping by record, because a verdict is
+stored per `item_key`: two groups sharing one buy a second model call and
+nothing else, the same artist and title travelling twice for one row. The
+`item_key` floor then reads the group that was not billed as judged from that
+same row.
+
 **A missing key is not compared at all.** Every query that reads `record_key`
 also requires it to be present, on both sides, and an unkeyed stock row simply
 sits out that run.

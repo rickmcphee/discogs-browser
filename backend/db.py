@@ -1279,8 +1279,19 @@ def backfill_stock_keys(conn) -> int:
     # has a key is left alone. The work grew with all the URLs a shop had ever
     # used rather than with the catalog it stocks today.
     #
-    # The live half, driven from stock_items: one row per item_key, the same
-    # one the old LATERAL picked.
+    # The live half, driven from stock_items: one row per item_key.
+    #
+    # item_key hashes artist|title|url and nothing else, so two crawlers
+    # finding one record at one URL write two rows under one key -- which the
+    # schema allows deliberately. record_key folds the *listing* title, so
+    # those rows disagree whenever the sites name what they matched
+    # differently, and only one of them can supply the identity's single key.
+    # Both live writers upsert that identity, so the last one to run owns it;
+    # this has to break the tie the same way or the two take it in turns, a
+    # sweep re-pointing the identity at an earlier row and the next live write
+    # pointing it back. Hence `s.id DESC` beside `last_seen DESC`: within a
+    # sync the timestamps are identical, and the highest id is the last write.
+    # (Copilot, PR #368, round 26.)
     live = conn.execute(
         """
         SELECT DISTINCT ON (s.item_key)
@@ -1288,7 +1299,7 @@ def backfill_stock_keys(conn) -> int:
                i.record_key, i.artist, i.title
         FROM stock_items s
         JOIN stock_item_identities i ON i.item_key = s.item_key
-        ORDER BY s.item_key, s.last_seen DESC, s.id
+        ORDER BY s.item_key, s.last_seen DESC, s.id DESC
         """
     ).fetchall()
     # And the orphans worth reading: no live stock row and no key, which is
@@ -4071,10 +4082,13 @@ def _record_group_sql(alias: str = "s") -> str:
     """What a taste judgment is billed per: the artist's bare key and
     `record_key` (title_key.py).
 
-    One step coarser than the pair `_cheapest_clause` groups by, which uses
-    `title_key` — that one asks "is this the same pressing", and a red and a
-    black copy of an album are two pressings but one record, so one answer to
-    the question the model is being asked.
+    Not the pair `_cheapest_clause` groups by, which uses `title_key` — that
+    one asks "is this the same pressing", and a red and a black copy of an
+    album are two pressings but one record, so one answer to the question the
+    model is being asked. Coarser than it on the fenced pressing variants, and
+    deliberately finer on word order, repeated words and the noise words a
+    record can be *named* with, which `title_key` folds away and this keeps.
+    Do not reach for one when a query wants the other.
 
     `record_key` bare, with no COALESCE behind it, because every query that
     reads it also requires it to be non-NULL. Three separate re-billing bugs
@@ -4158,18 +4172,32 @@ def get_unjudged_stock_items(conn, user_id: int, limit: int) -> list[dict]:
     *between* groups stays oldest-first on `last_seen`, so a
     `recommendation_item_limit` that truncates the set drops the newest
     arrivals rather than an arbitrary slice of it.
+
+    Then deduplicated by `item_key`, because a verdict is stored per item_key
+    and two record groups sharing one buy a second model call and nothing
+    else: the same artist and title travel twice and the second answer
+    overwrites the first on the same row. Groups share an item_key when two
+    crawlers find one record at one URL and name what they matched
+    differently -- the rows fold apart while the key that stores the verdict
+    does not. Whichever group is billed, the `item_key` floor in
+    `_record_judged_exists` reads the other as judged from the same row.
+    A no-op wherever the keys behave. (Copilot, PR #368, round 26.)
     """
     limit_clause = "LIMIT %(limit)s" if limit > 0 else ""
     group = _record_group_sql("s")
     rows = conn.execute(
         f"""
         SELECT g.item_key, g.artist, g.title FROM (
-            SELECT DISTINCT ON ({group})
-                   s.item_key, s.artist, s.title,
-                   MIN(s.last_seen) OVER (PARTITION BY {group}) AS first_seen
-            FROM stock_items s
-            WHERE {_unjudged_record_where('%(user_id)s')}
-            ORDER BY {group}, s.item_key
+            SELECT DISTINCT ON (r.item_key) r.item_key, r.artist, r.title, r.first_seen
+            FROM (
+                SELECT DISTINCT ON ({group})
+                       s.item_key, s.artist, s.title,
+                       MIN(s.last_seen) OVER (PARTITION BY {group}) AS first_seen
+                FROM stock_items s
+                WHERE {_unjudged_record_where('%(user_id)s')}
+                ORDER BY {group}, s.item_key
+            ) r
+            ORDER BY r.item_key, r.first_seen ASC
         ) g
         ORDER BY g.first_seen ASC, g.item_key
         {limit_clause}
