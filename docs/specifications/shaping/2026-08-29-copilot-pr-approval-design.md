@@ -300,3 +300,57 @@ is the change that reaches production.
   on. All are live today, and none depends on Copilot ever gaining an approval.
 - If the promotion pull request is ever observed merging with an approval older
   than its head commit, that is the stale-approval gap above, not a new one.
+
+## Amendment (2026-09-16, branch `claude/funny-goodall-osfwo5`)
+
+Two things this document records as fact have changed underneath it, found while
+adopting the convention in
+[`2026-09-16-copilot-review-thread-resolution-design.md`](2026-09-16-copilot-review-thread-resolution-design.md).
+The decision above is unaffected — if anything the first finding sharpens it —
+so the body is left as written and corrected here.
+
+**Copilot now submits reviews in `state: "APPROVED"`.** "What Copilot can
+actually do today" says its review is always a **Comment** one, citing PR #233,
+where every review did carry `state: "COMMENTED"`. That is no longer what the API
+returns. Read on 2026-09-16 across the ten most recent pull requests carrying
+Copilot reviews, its 🟢 verdicts split cleanly by whether the branch moved
+afterwards: those on a superseded commit carry `DISMISSED`, those on the pull
+request's final head carry `APPROVED` — six of them, live, one per pull request.
+PR #371 is the whole shape in a single review: `state: "APPROVED"`,
+`author_association: "NONE"`, on the final head, submitted before the merge, and
+the *only* review that pull request received.
+
+What this does **not** establish is whether such an approval counts toward
+`required_approving_review_count`. GitHub's documentation, quoted above, says
+Copilot's reviews do not — and the observed merges prove nothing either way,
+because the owner's bypass waives the `pull_request` rule entire. So what has
+changed is the mechanism this document rests on ("it can only ever comment"), not
+necessarily the conclusion it drew from it ("it cannot satisfy the requirement").
+**That gap is worth closing deliberately rather than by assumption**, because the
+"Why approval is the wrong power to hand it" section above describes precisely
+what follows if it does count: an approval attaching to a head, surviving later
+pushes under `dismiss_stale_reviews_on_push: false`, on pull requests whose code
+an agent wrote. The cheap check is a pull request that does not use the bypass —
+the promotion pull request is the live instance — watched for whether its
+required review reads as satisfied with no human approval on it.
+
+One observation cuts the other way and is recorded because it is unexplained: a
+🟢 review on a superseded commit comes back `DISMISSED`, which is not what
+`dismiss_stale_reviews_on_push: false` would predict of a review that survives
+every later push. The mechanism was not established — Copilot's own app
+superseding its previous review would produce the same shape — so this is a
+correlation from one read, not a refutation of the ruleset line above.
+
+**The verdict wording has changed, and there are three verdicts rather than
+two.** The opening section's "`🟢 Approval recommended` or `🟡 Changes
+recommended`" uses wording that no longer appears anywhere. Observed verbatim,
+and these are the only three: `### 🟢 Approved`, `### 🟡 Changes recommended`,
+`### 🔵 Needs a closer look`. The third is new to this document, and is a
+`COMMENTED` review like 🟡. The PR #233 table is left as it stands — it is a
+dated record of what that pull request showed in August, not a claim about
+current wording.
+
+Finally, the section proposing `required_review_thread_resolution: true` now has
+a consequence it did not have when it was written, because sessions resolve
+Copilot's threads as a matter of routine. See "Why this must not become a merge
+gate" in the thread-resolution design.
