@@ -1786,7 +1786,7 @@ class CrawlManager:
         # the life of the process.
         try:
             import httpx
-            from db import get_app_pool, get_enabled_crawlers, replace_stock_items, update_crawler_last_run, enqueue_crawl_queue_for_stock_item, delete_dead_stock_crawl_queue_rows, backfill_title_keys
+            from db import get_app_pool, get_enabled_crawlers, replace_stock_items, update_crawler_last_run, enqueue_crawl_queue_for_stock_item, delete_dead_stock_crawl_queue_rows
             from crawler import load_enabled_crawlers
             from config import crawl_library_only
 
@@ -1936,12 +1936,15 @@ class CrawlManager:
             library_only = crawl_library_only()
             with get_app_pool().connection() as conn:
                 swept = delete_dead_stock_crawl_queue_rows(conn, library_only)
-                # Normally zero; non-zero only for rows an older binary
-                # wrote during a rolling deploy. See backfill_title_keys.
-                keyed = backfill_title_keys(conn)
                 conn.commit()
+            # Off the event loop: the sweep folds every stock row in Python to
+            # find the stale ones, which is CPU-bound and proportional to the
+            # catalog. Normally it rewrites nothing -- a non-zero count means
+            # rows an older binary left with no key, or with one folded from a
+            # title it has since moved off. See backfill_stock_keys.
+            keyed = await run_in_threadpool(self._sweep_stock_keys)
             if keyed:
-                log.info("Keyed %d stock rows written without a title key", keyed)
+                log.info("Re-keyed %d stock and identity rows whose fold key was missing or stale", keyed)
             if swept:
                 # INFO, not WARNING: routers/logs.py filters in SQL by exact
                 # level membership (WHERE level = ANY(...)), not
@@ -2000,12 +2003,109 @@ class CrawlManager:
         return task is not None and not task.done()
 
     @staticmethod
-    def _claim_judgment_run(user_id: int) -> Optional[str]:
-        from db import user_scope, claim_stock_judgment_run
+    def _sweep_stock_keys() -> int:
+        """db.backfill_stock_keys on its own connection. Blocking, and both
+        callers hand it to a thread: it folds every stock row in Python, which
+        is CPU-bound and grows with the catalog.
+
+        Every *stock* row, but not every identity. A live identity takes its
+        key from its stock row rather than being folded again, and of the
+        orphans only the unkeyed ones are read at all -- a keyed orphan holds
+        the marketplace's name for what it matched, which re-deriving would
+        destroy. That is what keeps this bounded by the live catalog instead
+        of by every URL any shop has ever used."""
+        from db import get_app_pool, backfill_stock_keys
+        with get_app_pool().connection() as conn:
+            keyed = backfill_stock_keys(conn)
+            conn.commit()
+        return keyed
+
+    def _stock_sync_running_anywhere(self) -> bool:
+        """The local flag plus the cross-Machine one. Blocking; call it off
+        the event loop.
+
+        `stock_sync_running` reads this process's `_stock_task` and nothing
+        else, so on the deployment this app actually runs -- more than one
+        Machine, one shared catalog, serialized by STOCK_SYNC_LOCK_KEY -- a
+        judgment request that lands on the Machine *not* running the sync sees
+        an idle process and starts anyway. That is the whole leak the guard
+        exists to close, reopened by routing. The advisory lock is the only
+        thing that knows the truth, so ask it.
+
+        A lock rather than a row, unlike the judgment run's own claim below:
+        the sync has no per-user row to read, and what is being asked here is
+        whether some *other* kind of work is in flight, not whether this
+        user's own run can be taken over.
+
+        Fails open: a cost guard that turns a database hiccup into a dead
+        Refresh button is worse than one that occasionally lets a run through.
+        """
+        if self.stock_sync_running:
+            return True
+        from db import get_app_pool, advisory_lock_held
+        try:
+            with get_app_pool().connection() as conn:
+                return advisory_lock_held(conn, STOCK_SYNC_LOCK_KEY)
+        except Exception:
+            log.warning("Could not read the stock sync lock; allowing judgment to start", exc_info=True)
+            return False
+
+    @staticmethod
+    def _claim_judgment_run(user_id: int):
+        """`(run_token, sync_won)`. `sync_won` says a stock sync took the lock
+        while this was claiming, which is a different refusal from a run
+        already being under way and reads differently to the user.
+
+        The guard in start_judgment_only is check-then-act on its own: the
+        lock can be taken after that read returns false and before this claim
+        commits, and `start_stock_sync` has no mirror guard by design, so both
+        would then run and the judgment would spend the user's credit on a
+        catalog being replaced under it. So the lock is read again here, with
+        the claim written and *not yet committed*, and a sync found holding it
+        rolls the claim back.
+
+        That is the decision point, not a linearization point, and the
+        difference is worth being exact about: nothing here is atomic with
+        the commit either, so a sync can still take the lock between this
+        read and it. What the second read buys is that the decision is made
+        as late as the claim can make it and with the row already written, so
+        the window is the gap to the commit rather than the whole of
+        `start_judgment_only`, and a refusal still leaves no row. A sync that
+        starts after the decision is the overlap the missing mirror guard
+        permits on purpose -- which is also why closing the remaining gap is
+        not worth reaching for. (Copilot, PR #368, rounds 32 and 36.)
+
+        Rolled back rather than claimed-and-closed, because a refusal leaving
+        no row is a property the router and the button both depend on.
+        Reading the lock rather than taking it, for the reason
+        `db.advisory_lock_held` gives: a probe would hold it for a moment, and
+        a genuine sync's own `pg_try_advisory_lock` would fail against that.
+        (Copilot, PR #368, round 32.)
+        """
+        from db import user_scope, claim_stock_judgment_run, advisory_lock_held
         with user_scope(user_id) as conn:
             run_token = claim_stock_judgment_run(conn, user_id)
+            if run_token is None:
+                return None, False
+            # Fails open like the guard above, and inside a savepoint so that
+            # failing open is actually available: an error raised on this
+            # connection would otherwise abort the claim's own transaction and
+            # leave nothing to commit, turning a database hiccup into the dead
+            # Refresh button that guard exists to avoid.
+            try:
+                with conn.transaction():
+                    sync_running = advisory_lock_held(conn, STOCK_SYNC_LOCK_KEY)
+            except Exception:
+                log.warning(
+                    "Could not re-read the stock sync lock; allowing the claim",
+                    exc_info=True,
+                )
+                sync_running = False
+            if sync_running:
+                conn.rollback()
+                return None, True
             conn.commit()
-        return run_token
+        return run_token, False
 
     @staticmethod
     def _finish_judgment_run(user_id: int, run_token: Optional[str], status: str, **fields):
@@ -2027,7 +2127,29 @@ class CrawlManager:
             log.warning("Could not record the end of user %d's recommendation run: %s", user_id, e)
             return None
 
-    async def start_judgment_only(self, user_id: int) -> bool:
+    async def start_judgment_only(self, user_id: int) -> dict:
+        """Returns `{"started": bool, "stock_sync_running": bool}`.
+
+        A dict rather than the bare bool, because two different refusals reach
+        here and the caller cannot re-derive which one happened: the router
+        reads the run row for "already running", but a sync running on another
+        Machine leaves no row to read. Saying so is what lets the button
+        explain itself rather than looking like the click did nothing.
+        """
+        # A stock sync replaces each crawler's whole snapshot, so judging
+        # against one in progress spends the user's own Anthropic credit on
+        # items about to be deleted. Held here rather than in the router so no
+        # other call site can start a run around it, and before the claim
+        # below so a refused start leaves no row behind. The mirror guard on
+        # start_stock_sync is deliberately *not* restored with it: judgment is
+        # per-user and the sync is global, so one user's run must not be able
+        # to hold up everyone's catalog refresh.
+        if await run_in_threadpool(self._stock_sync_running_anywhere):
+            log.warning(
+                "Stock sync running, ignoring judgment start request for %s",
+                self._username_for_log(user_id),
+            )
+            return {"started": False, "stock_sync_running": True}
         # The row decides, not judgment_running(). _judgment_tasks is this
         # process's memory, and the deployment runs more than one Machine
         # behind one hostname, so it covers only the half of the requests that
@@ -2041,13 +2163,19 @@ class CrawlManager:
         # nothing but another judgment run for the same user, and the claim is
         # a single atomic upsert -- two concurrent starts cannot both win it.
         # Blocking psycopg calls, so off the event loop, same as start_sync's.
-        run_token = await run_in_threadpool(self._claim_judgment_run, user_id)
+        run_token, sync_won = await run_in_threadpool(self._claim_judgment_run, user_id)
+        if sync_won:
+            log.warning(
+                "Stock sync took the lock mid-claim, refusing judgment start for %s",
+                self._username_for_log(user_id),
+            )
+            return {"started": False, "stock_sync_running": True}
         if run_token is None:
             log.warning(
                 "Recommendation run already under way for %s, ignoring start request",
                 self._username_for_log(user_id),
             )
-            return False
+            return {"started": False, "stock_sync_running": False}
         # The claim was granted, so whatever this Machine still has running for
         # this user is working a run that is no longer its own -- and is left
         # alone to find that out at its next checkpoint, deliberately unlike
@@ -2080,25 +2208,29 @@ class CrawlManager:
         self._judgment_tasks[user_id] = asyncio.create_task(
             self._run_judgment_phase(user_id, run_token)
         )
-        return True
+        return {"started": True, "stock_sync_running": False}
 
     async def _run_judgment_phase(self, user_id: int, run_token: Optional[str] = None):
         from db import (
             get_identity_pool, user_scope, get_unjudged_stock_items, count_unjudged_stock_items,
             get_taste_listing, upsert_stock_judgments, record_stock_judgment_progress,
+            propagate_stock_judgments,
         )
         import recommendations
         import anthropic
 
         # Placeholder until the query below confirms the user still exists --
         # keeps the except block's own log line safe even if that query itself
-        # (or anything after it) is what raises.
+        # (or anything after it) is what raises. Defined out here, with the
+        # helpers, precisely so the handlers can never meet an unbound name:
+        # none of these definitions can raise, and everything that can --
+        # including the opening broadcast -- is inside the try.
         username = f"user {user_id}"
 
         async def broadcast(event: dict):
             await self._broadcast({**event, "user_id": user_id})
 
-        async def close(event: dict, status: str, judged=None, error=None):
+        async def close(event: dict, status: str, judged=None, error=None, inherited=None):
             """Record the run's outcome, then announce it -- in that order.
 
             A dispossessed worker can reach any of these endings, and the close
@@ -2111,7 +2243,9 @@ class CrawlManager:
             Only a definite False silences it. None means the close could not be
             attempted, which is no evidence of a takeover, and a run with no
             token never entered the claim protocol at all."""
-            closed = self._finish_judgment_run(user_id, run_token, status, judged=judged, error=error)
+            closed = self._finish_judgment_run(
+                user_id, run_token, status, judged=judged, error=error, inherited=inherited
+            )
             if not (run_token is not None and closed is False):
                 await broadcast(event)
 
@@ -2130,20 +2264,41 @@ class CrawlManager:
                 return True
             return False
 
-        async def stop_requested(progress, judged: int, total: int) -> bool:
+        async def stop_requested(progress, judged: int, total: int, inherited: int) -> bool:
             """Whether the user has asked this run to stop. Announced, unlike a
-            takeover: this ending is the one they asked for."""
+            takeover: this ending is the one they asked for.
+
+            Carries `inherited` like the two completions do, and for the same
+            reason: a stopped run has still fanned out everything it judged
+            before the stop, and a run that inherited without judging reports
+            `judged: 0` while having written rows. Leaving it off this ending
+            alone would put the Recommended filter back behind the gate
+            `judged > 0` used to hold it behind."""
             if progress is not None and progress["stop_requested"]:
                 await close(
-                    {"status": "stock_judgment_stopped", "judged": judged, "total": total},
-                    "stopped", judged=judged,
+                    {
+                        "status": "stock_judgment_stopped",
+                        "judged": judged, "total": total, "inherited": inherited,
+                    },
+                    "stopped", judged=judged, inherited=inherited,
                 )
-                log.info("Recommendation run stopped for %s after %d items", username, judged)
+                log.info(
+                    "Recommendation run stopped for %s after %d records judged, %d listings inherited",
+                    username, judged, inherited,
+                )
                 return True
             return False
 
-        await broadcast({"status": "stock_judgment_started"})
         try:
+            # Inside the try, not before it, because the finally below is what
+            # closes this run's claimed row. This await is a cancellation
+            # point -- a shutdown, most plausibly -- and landing on it outside
+            # the try left the row saying 'running' with nothing to close it,
+            # refusing this user every later Refresh until the heartbeat went
+            # stale. The claim replaced an advisory lock that had the same
+            # exposure for the same reason; the mechanism changed and the
+            # hazard did not.
+            await broadcast({"status": "stock_judgment_started"})
             with get_identity_pool().connection() as conn:
                 user = conn.execute(
                     "SELECT discogs_username, anthropic_api_key, recommendation_item_limit FROM users WHERE id = %s",
@@ -2171,13 +2326,88 @@ class CrawlManager:
             # turn a real 0 into 300 (0 is falsy), breaking that contract.
             limit = user["recommendation_item_limit"]
 
+            # Two different things, and only one of them is optional.
+            #
+            # For a row with no record_key, this is a convenience: the
+            # billable set and propagation both skip such a row rather than
+            # comparing it against something else, so it is never mis-billed
+            # whether this runs or not. What the sweep buys is that it takes
+            # part in *this* run instead of the next, which is also why it
+            # needs no atomicity with the queries below -- an old Machine can
+            # add another unkeyed row a moment after this commits, and that
+            # row simply sits out this run.
+            #
+            # For a row whose key is *stale*, it is the repair. That row is in
+            # the billable set, matching on a record it is not, and nothing
+            # else in the app will ever notice: see backfill_stock_keys for
+            # how an old binary produces one with no NULL to mark it. Running
+            # here rather than only at sync end is what keeps the window to a
+            # single run.
+            #
+            # Off the event loop because it now folds every row to find them.
+            # Normally it rewrites nothing, at a cost measured in
+            # backfill_stock_keys against the round trips that follow it.
+            swept = await run_in_threadpool(self._sweep_stock_keys)
+            if swept:
+                log.info(
+                    "Re-keyed %d stock and identity rows, missing or stale, before judging for %s",
+                    swept, username,
+                )
+
+            # Before the counts, not after -- but not to keep anything out of
+            # the billable set, which already excludes a listing whose record
+            # holds a verdict whether its own row has been written or not.
+            # What running first buys is the two things only a written row
+            # gives: `inherited`, reported below and to the browser so a run
+            # that spends nothing still reads as having done something, and
+            # the per-listing rows the Recommended filter matches on, in place
+            # for the view the user refreshes into.
+            #
+            # In a scope of its own because user_scope sets app.user_id
+            # transaction-locally, so committing inside one and carrying on
+            # would leave every later statement on that connection with no RLS
+            # identity at all.
+            with user_scope(user_id) as conn:
+                # The claim first, before anything is written, exactly as each
+                # batch does it below. propagate_stock_judgments inserts into
+                # stock_item_judgments, and the lock this takes is what orders
+                # that write against a clear or an import. The sweep above can
+                # run for the best part of a second, and a run taken over or
+                # expired during it would otherwise recreate rows a Clear had
+                # just removed.
+                progress = record_stock_judgment_progress(conn, user_id, run_token)
+                if progress is not None or run_token is None:
+                    inherited = propagate_stock_judgments(conn, user_id)
+                    # Counted in the same transaction as the rows it counts,
+                    # not at the pre-flight checkpoint below. Everything
+                    # between here and there can raise -- the billable set is
+                    # two queries and a taste read -- and the error close
+                    # carries no count, so the row would keep saying 0 with
+                    # these judgments committed. A client polling from the
+                    # other Machine has only the row.
+                    record_stock_judgment_progress(
+                        conn, user_id, run_token, inherited=inherited
+                    )
+                else:
+                    inherited = 0
+                conn.commit()
+            if taken_over(progress):
+                return
             with user_scope(user_id) as conn:
                 total_unjudged = count_unjudged_stock_items(conn, user_id)
                 unjudged = get_unjudged_stock_items(conn, user_id, limit)
                 taste_listing = get_taste_listing(conn, user_id)
+            if inherited:
+                log.info(
+                    "Inherited %d existing judgments for %s before judging (no API call)",
+                    inherited, username,
+                )
 
             if not unjudged:
-                await close({"status": "stock_judgment_complete", "judged": 0}, "complete", judged=0)
+                await close(
+                    {"status": "stock_judgment_complete", "judged": 0, "inherited": inherited},
+                    "complete", judged=0, inherited=inherited,
+                )
                 log.info("Found 0/0 items to judge for %s, nothing to do", username)
                 return
             log.info("Found %d/%d items to judge for %s", len(unjudged), total_unjudged, username)
@@ -2189,10 +2419,10 @@ class CrawlManager:
             # clicked Refresh is in, and honouring it costs them nothing.
             with user_scope(user_id) as conn:
                 progress = record_stock_judgment_progress(
-                    conn, user_id, run_token, total=len(unjudged)
+                    conn, user_id, run_token, total=len(unjudged), inherited=inherited
                 )
                 conn.commit()
-            if taken_over(progress) or await stop_requested(progress, 0, len(unjudged)):
+            if taken_over(progress) or await stop_requested(progress, 0, len(unjudged), inherited):
                 return
 
             client = anthropic.Anthropic(api_key=api_key)
@@ -2232,13 +2462,36 @@ class CrawlManager:
                 # outlasted JUDGMENT_RUN_STALE_MINUTES.
                 with user_scope(user_id) as conn:
                     progress = record_stock_judgment_progress(
-                        conn, user_id, run_token, judged=judged + len(results)
+                        conn, user_id, run_token, judged=judged + len(results),
+                        inherited=inherited,
                     )
                     still_ours = progress is not None or run_token is None
                     if results and still_ours:
                         upsert_stock_judgments(conn, user_id, results)
+                        # Fan this batch's verdicts out to the other listings
+                        # of the records it just judged. Per batch rather than
+                        # once at the end because the Recommended filter
+                        # refreshes as each batch lands, and a record showing
+                        # only the one listing the model happened to be shown
+                        # is a half-populated view for the rest of the run.
+                        # Inside the same guard as the upsert: a dispossessed
+                        # run must not fan out over the run that replaced it.
+                        inherited += propagate_stock_judgments(conn, user_id)
                         judged += len(results)
                         recommended_in_batch = sum(1 for r in results if r["recommended"])
+                        # Again, with what the fan-out above added. The write
+                        # at the top of this block had to come first -- it is
+                        # the claim check that gates the two writes after it --
+                        # so it could only carry the count as it stood before
+                        # them. Leaving it there would close a run cancelled
+                        # between this commit and the next checkpoint on a
+                        # count short by this batch, with the rows themselves
+                        # committed: a poll-only client would be told less was
+                        # inherited than the table holds. Same transaction, so
+                        # the count and the rows it counts land together.
+                        record_stock_judgment_progress(
+                            conn, user_id, run_token, inherited=inherited
+                        )
                     conn.commit()
                 log.info("Judged batch %d/%d for %s: %d recommended", judged, len(unjudged), username, recommended_in_batch)
                 # Before the broadcast: a run that has lost its claim must not
@@ -2253,11 +2506,17 @@ class CrawlManager:
                 # above runs the API call on a worker thread that a cancelled
                 # await does not interrupt -- which is why the stop is a flag
                 # read here rather than a task.cancel().
-                if await stop_requested(progress, judged, len(unjudged)):
+                if await stop_requested(progress, judged, len(unjudged), inherited):
                     return
 
-            await close({"status": "stock_judgment_complete", "judged": judged}, "complete", judged=judged)
-            log.info("Stock judgment complete for %s: %d items judged", username, judged)
+            await close(
+                {"status": "stock_judgment_complete", "judged": judged, "inherited": inherited},
+                "complete", judged=judged, inherited=inherited,
+            )
+            log.info(
+                "Stock judgment complete for %s: %d records judged, %d listings inherited",
+                username, judged, inherited,
+            )
         except asyncio.CancelledError:
             log.info("Judgment run cancelled")
             raise
