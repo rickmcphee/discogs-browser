@@ -78,7 +78,15 @@ both that guard and `test_get_identity_raises_on_bad_token` reference
 `discogs.HTTPStatusError` instead of naming a transport module;
 `test_sync_broadcasts_sanitized_error_when_fields_fetch_fails` pins the
 guard itself, failing if the catch drifts back to a type the client does
-not raise. The
+not raise. *(Amended 2026-09-16, branch `claude/sleepy-dijkstra-dlsrbx`: that
+test no longer pins the catch, because there is nothing left for it to
+distinguish. The generic sync-failure path now sanitizes an `HTTPStatusError`
+through the same helper, so an escaped exception reaches the user as the same
+sentence rather than as the raw transport string — the harm the pin existed to
+catch cannot happen on either path. The test now asserts that invariant
+directly: whichever handler catches it, the message names the status and
+carries neither Discogs' response body nor the request URL. The guard itself
+stays, for its early return.)* The
 catalog-crawler 429 handling in `crawl_manager` keeps `httpx.HTTPStatusError`
 — catalog crawlers speak plain `httpx` and are untouched by authlib.
 

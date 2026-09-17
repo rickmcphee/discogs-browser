@@ -285,6 +285,31 @@ The reply and the resolve take **different ids**, and only the reply is REST. Re
 - `pytest-asyncio` with `asyncio_mode = "auto"` (all async tests run automatically)
 - HTML fixtures for Amazon price regression tests: `backend/tests/fixtures/crawlers/amazon/`
 - To capture a new fixture: `python backend/scripts/capture_fixture.py amazon <url> "Artist - Title"`
+- **A test helper's own *name* can put CodeQL alerts into production code, and the
+  report will not mention the test.** `py/clear-text-logging-sensitive-data`
+  classifies a function by name against a heuristic whose password arm matches
+  `oauth` — alongside `pass(wd|word|code|phrase)`, `(auth…)?.?key`,
+  `api.?(key|tok)` and `mfa`, with sibling arms for `secret`/`trusted`/
+  `confidential`, `acc(ou)?nt`/`puid`/`user.?(name|id)`/`session.?(id|key)`/`uid`,
+  and `cert`. Whatever such a function returns is then sensitive data, every
+  value derived from it inherits that, and each `log.*` line the derived value
+  reaches becomes a clear-text-logging sink — in whatever code the test merely
+  *calls*. A helper named `_oauth_user()` returning an ordinary `users` row put
+  nine alerts into `crawl_manager.py`, six of them inside a function the branch
+  never touched, and the fix was renaming the helper. Because alerts are
+  attributed to the sink, the production diff looks guilty and the file that
+  actually caused them never appears in the list — budget for that before
+  bisecting. Name fixture helpers for the state they establish, not the
+  credential involved.
+- Code scanning here is GitHub's **default setup**, so there is no workflow file
+  to read and no SARIF artifact to download; the alert detail lives only in check
+  annotations, which the MCP GitHub tools do not expose. To see it, reproduce
+  locally with the bundle from
+  `github/codeql-action/releases/latest/download/codeql-bundle-linux64.tar.gz`
+  and `codeql database analyze <db> codeql/python-queries:codeql-suites/python-code-scanning.qls`.
+  Run it over the base commit as well as the head — the PR check reports only
+  alerts *new* since the base, so a head-only run cannot tell you which of its
+  findings the check is actually red about.
 - Playwright-dependent code (live crawl, browser launch) is not unit-tested; integration testing is manual
 - **A test may never assume pre-existing schema or role state.** The session-scoped `pg_run_database` fixture (`backend/tests/conftest.py`) builds each pytest session a fresh `<base>_run_<hex>` database from `TEMPLATE template0` and poisons `app_user`/`app_identity`'s `BYPASSRLS` attributes (inverted from what `_ensure_role` sets) before the run's first `init_tenant_schema()`. Anything a test asserts on must therefore be constructed by the code under test during that run, not inherited from a prior run or a hand-provisioned local database. See `docs/specifications/shaping/2026-08-09-test-database-freshness-design.md`.
 - Poisoning also rotates both roles' passwords to random values; `init_tenant_schema()` rewrites them from `IDENTITY_DB_PASSWORD`/`APP_DB_PASSWORD`. Teardown restores both `BYPASSRLS` bits but *not* the passwords — they are unknowable after the fact, and the next run sets them again. A crashed run can therefore leave the cluster's roles holding random passwords until something re-runs `init_tenant_schema()`; `make test-db-clean` repairs the bits only.
