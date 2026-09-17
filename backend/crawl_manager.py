@@ -81,6 +81,27 @@ def _is_playwright_timeout(exc: BaseException) -> bool:
     return isinstance(exc, PlaywrightTimeoutError)
 
 
+# THROWAWAY DIAGNOSTIC -- NOT FOR MERGE.
+#
+# This comment exists only so that backend/crawl_manager.py appears in a
+# pull request's diff, with no new code of any kind. PR #374 reports nine
+# py/clear-text-logging-sensitive-data alerts as "new alerts in code changed
+# by this pull request", all of them on pre-existing log statements that
+# that branch never edits -- three logging a bare int user_id, six logging
+# _username_for_log's output. Neither is a credential, but two PRs touching
+# this same file earlier the same day reported nothing, so the question is
+# whether those alerts are genuinely introduced or merely attributed to any
+# PR whose diff includes this file.
+#
+# The block is exactly twenty-one lines, the same shift PR #374's helper
+# introduces at this spot, so if the alerts are attribution rather than
+# taint they should land on the same line numbers that PR reported: 1061,
+# 1066 and 1074 for the user_id sinks.
+#
+# Read the CodeQL check on this PR, then close it. Nothing here is a change
+# to the application.
+
+
 class _ClaimLost(Exception):
     """Raised when the run a worker is writing is no longer the run in the row.
 
