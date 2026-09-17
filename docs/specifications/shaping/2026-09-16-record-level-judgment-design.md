@@ -106,8 +106,11 @@ propagation writes a per-listing row for each. The only consequence of a merge
 is that one taste verdict covers both pressings — which is the correct answer,
 since the pressing is not what the model is being asked about.
 
-So judgment uses a coarser key, `record_key(title, artist)`, which drops that
-vocabulary.
+So judgment uses a different key, `record_key(title, artist)`, which drops
+that vocabulary. Coarser than `title_key` there, and — as the sections below
+arrive at — deliberately *finer* in two places, because a pressing key can be
+forgiving where a record key cannot: it keeps word order and repeats, and it
+spares the noise words a record can be *named* with.
 
 Not by word list alone, though. Merging is not free here either — it is
 merely *differently* priced. The merged record inherits a verdict and, with

@@ -1374,6 +1374,16 @@ export default function App() {
       // Refresh for the whole of a run whose events went to the other Machine.
       setRecommendationRunning(r.running)
       setRecommendationStopping(Boolean(r.run?.running && r.run.stop_requested))
+      // An ending that arrived while this POST was in flight deferred its
+      // reconciliation rather than doing it, so the start owes that read
+      // whenever no run follows to do it instead. A running start is already
+      // covered, since its poll reads the row every few seconds; a refused or
+      // idle one is not, and if the ending was a replay after a Clear it has
+      // left hasJudgedItems optimistically true over an empty table -- rounds
+      // 23 and 24, reopened by deferring. (Copilot, PR #368, round 29.)
+      if (!r.running) {
+        discoverJudgmentRun()
+      }
       // A refused start used to pass in silence, which is the same
       // "did that do anything?" the button's own faces exist to answer. Two
       // refusals reach here and they need different words: a sync in progress

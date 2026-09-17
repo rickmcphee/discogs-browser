@@ -369,6 +369,49 @@ describe('stopping a recommendation run from the profile page', () => {
     await waitFor(() => expect(within(row).getByRole('button')).toHaveTextContent('Stop'))
   })
 
+  // The other half of letting a start own the run state: the ending's own
+  // reconciliation is dropped, not deferred. If that ending is a replay after
+  // a Clear it has already set hasJudgedItems optimistically, and when the
+  // start then comes back refused -- a stock sync blocked it, say -- no run
+  // poll starts and nothing is left to read `any_judged: false` back.
+  // Recommended and Export stay enabled over an empty table, which is rounds
+  // 23 and 24 again. (Copilot, PR #368, round 29.)
+  it('reconciles after a refused start that swallowed an ending mid-flight', async () => {
+    getJudgmentStatus.mockResolvedValue({ any_judged: true, run: null })
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const row = await openProfile()
+    await waitFor(() =>
+      expect(screen.getByText('Export').closest('button')).not.toBeDisabled(),
+    )
+
+    getJudgmentStatus.mockResolvedValue({ any_judged: false, run: null })
+    fireEvent.click(within(row.closest('table') as HTMLElement).getByRole('button', { name: 'Clear' }))
+    await waitFor(() =>
+      expect(screen.getByText('Export').closest('button')).toBeDisabled(),
+    )
+
+    let settleStart: (v: unknown) => void = () => {}
+    postJudgmentStart.mockImplementationOnce(() => new Promise((resolve) => { settleStart = resolve }))
+    fireEvent.click(within(row).getByRole('button'))
+
+    // Replayed inside the start, so the ending defers to it and reconciles
+    // nothing of its own.
+    await act(async () => {
+      SilentEventSource.instances[0].emit({
+        status: 'stock_judgment_complete', judged: 0, total: 300, inherited: 12, id: 9,
+      })
+    })
+
+    // And the start is refused, so no run poll follows it either.
+    await act(async () => {
+      settleStart({ started: false, running: false, stock_sync_running: true, run: null })
+    })
+
+    await waitFor(() =>
+      expect(screen.getByText('Export').closest('button')).toBeDisabled(),
+    )
+  })
+
   it('keeps Stopping… when a started event is delivered after the stop click', async () => {
     getJudgmentStatus.mockResolvedValue({ any_judged: true, run: run() })
     const row = await openProfile()

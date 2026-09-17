@@ -606,9 +606,11 @@ ALTER TABLE listings ADD COLUMN IF NOT EXISTS listing_image_url TEXT;
 -- title moves, which leaves no NULL to look for.
 ALTER TABLE stock_items ADD COLUMN IF NOT EXISTS title_key TEXT;
 
--- The coarser fold two rows share when they are the same *record* rather than
--- the same pressing (title_key.py's record_key): what a taste judgment is
--- billed per, so a red and a black copy of one album are one paid verdict.
+-- The fold two rows share when they are the same *record* rather than the
+-- same pressing (title_key.py's record_key): what a taste judgment is billed
+-- per, so a red and a black copy of one album are one paid verdict. Coarser
+-- than title_key on the fenced pressing variants, and finer on word order,
+-- repeats and the noise words a record can be named with.
 -- Written and swept by the same paths as title_key above.
 ALTER TABLE stock_items ADD COLUMN IF NOT EXISTS record_key TEXT;
 
