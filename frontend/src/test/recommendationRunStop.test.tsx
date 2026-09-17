@@ -412,6 +412,45 @@ describe('stopping a recommendation run from the profile page', () => {
     )
   })
 
+  // The start-pending flag was released only by the newest *action*, copied
+  // from the stop's own rule -- where it is right, because a newer stop raises
+  // the flag again. A newer Stop does not raise the start flag, so when one
+  // supersedes an in-flight start nothing ever lowers it: it stays true for
+  // the life of the page, and every later ending skips its run-state cleanup
+  // and its reconciliation. (Copilot, PR #368, round 30.)
+  it('releases the start-pending flag when a stop supersedes the start', async () => {
+    getJudgmentStatus.mockResolvedValue({ any_judged: true, run: null })
+    const row = await openProfile()
+    await waitFor(() => expect(within(row).getByRole('button')).toHaveTextContent('Refresh'))
+
+    let settleStart: (v: unknown) => void = () => {}
+    postJudgmentStart.mockImplementationOnce(() => new Promise((resolve) => { settleStart = resolve }))
+    fireEvent.click(within(row).getByRole('button'))
+
+    // The run announces itself, so the button offers Stop while the POST that
+    // started it is still open.
+    await act(async () => {
+      SilentEventSource.instances[0].emit({ status: 'stock_judgment_started', id: 1 })
+    })
+    await waitFor(() => expect(within(row).getByRole('button')).toHaveTextContent('Stop'))
+
+    // Stop supersedes the start, taking the action counter with it.
+    fireEvent.click(within(row).getByRole('button'))
+    await waitFor(() => expect(postJudgmentStop).toHaveBeenCalled())
+    await act(async () => {
+      settleStart({ started: true, running: true, run: run() })
+    })
+
+    // The ending must still be able to put the button back.
+    getJudgmentStatus.mockResolvedValue({ any_judged: true, run: null })
+    await act(async () => {
+      SilentEventSource.instances[0].emit({
+        status: 'stock_judgment_complete', judged: 40, total: 40, id: 1,
+      })
+    })
+    await waitFor(() => expect(within(row).getByRole('button')).toHaveTextContent('Refresh'))
+  })
+
   it('keeps Stopping… when a started event is delivered after the stop click', async () => {
     getJudgmentStatus.mockResolvedValue({ any_judged: true, run: run() })
     const row = await openProfile()

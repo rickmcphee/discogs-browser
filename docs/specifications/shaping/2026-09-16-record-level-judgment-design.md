@@ -290,8 +290,12 @@ only ever upserted, one row per `item_key` ever seen, and
 are matched to records through it.
 
 Both write paths compute the key once and put the identical value in both
-tables, so the two can never drift into disagreeing about which record an
-item_key belongs to.
+tables, so no single write can leave them disagreeing about which record an
+`item_key` belongs to. That is a guarantee about each write, not about the
+pair: one `item_key` may carry several live `stock_items` rows whose keys
+differ — see the collision section below — and the identity can then equal
+only one of them. What is ruled out is a *write* that puts two derivations of
+the same title in the two tables.
 
 The backfill has to reconcile them too, and this is easy to get wrong twice.
 
@@ -301,10 +305,17 @@ for what it matched) while the identity stores the catalog target's name. A
 backfill reading each table's own columns would put a different key in each,
 and since the judgment path matches identity against stock row, a historical
 judgment whose two keys disagree simply stops being found — and is billed
-again, silently. So the backfill keys the stock rows first and then *copies*
-each identity's key from its live stock row, falling back to folding its own
-name only for an item that no longer has one. Equal by construction rather
-than by two derivations agreeing.
+again, silently. So the backfill keys the stock rows first and then takes each
+identity's key *from* its live stock row rather than re-deriving it: equal by
+copying rather than by two derivations agreeing.
+
+Two later refinements narrow that, and both matter. An identity already
+holding the key of *any* of its live rows is left alone, because with a
+collision there is no better answer and re-pointing it makes the sweep and the
+live writers take the identity in turns. And an identity with no live row at
+all is only ever *filled*, never re-derived — its key is the fold of the
+marketplace's name for what it matched, which its own `title` is not, so
+re-folding would overwrite a valid key and reopen the re-listing leak.
 
 Second, it has to look at every identity with a stock row, not only at those
 missing a key. An item out of stock when a new machine boots is keyed from the
@@ -580,7 +591,10 @@ given under Storage — and returns one row per group, unkeyed rows having been
 excluded by the `WHERE`.
 `DISTINCT ON` picks the representative deterministically: lowest `item_key`
 within the group, so a run judging the same catalog twice batches it
-identically. `count_unjudged_stock_items` counts the same groups.
+identically. The representatives are then deduplicated by `item_key`, since
+two groups can share the one row that stores their verdict, and
+`count_unjudged_stock_items` counts what survives that — the set the model is
+actually sent, not the number of groups.
 
 `ORDER BY MIN(last_seen) ASC` is preserved as the ordering across groups —
 oldest-seen record first, so a `recommendation_item_limit` that truncates the
