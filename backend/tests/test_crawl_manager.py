@@ -1750,12 +1750,12 @@ async def test_sync_collection_reports_a_refused_discogs_token(pg_schema, monkey
     # writing is the one a browser served by the other Machine polls -- the
     # only place that browser can learn a sync failed at all.
     with db.user_scope(user["id"]) as conn:
-        run_token = db.claim_library_sync_run(conn, user["id"], "new", "all")
+        claim = db.claim_library_sync_run(conn, user["id"], "new", "all")
         conn.commit()
 
     manager = CrawlManager()
     with caplog.at_level(logging.ERROR, logger="crawl_manager"):
-        await manager._sync_collection(user["id"], "new", run_token=run_token)
+        await manager._sync_collection(user["id"], "new", run_token=claim)
 
     errors = [e for e in manager.recent_events() if e["status"] == "sync_error"]
     assert len(errors) == 1
@@ -1908,13 +1908,13 @@ async def test_sync_collection_logs_a_sync_that_died_without_choosing_an_outcome
     # A claimed run, as start_sync leaves one: the backstop's line is gated on
     # its close having actually taken the row, so there has to be a row.
     with db.user_scope(user["id"]) as conn:
-        run_token = db.claim_library_sync_run(conn, user["id"], "new", "all")
+        claim = db.claim_library_sync_run(conn, user["id"], "new", "all")
         conn.commit()
 
     manager = CrawlManager()
     with caplog.at_level(logging.ERROR, logger="crawl_manager"):
         with pytest.raises(KeyboardInterrupt):
-            await manager._sync_collection(user["id"], "new", run_token=run_token)
+            await manager._sync_collection(user["id"], "new", run_token=claim)
 
     assert any("ended unexpectedly" in r.getMessage() for r in caplog.records)
     with db.user_scope(user["id"]) as conn:
@@ -1933,12 +1933,12 @@ async def test_sync_collection_does_not_call_a_completed_sync_unexpected(
     _collection_pages([[_collection_item(111)]])
 
     with db.user_scope(user["id"]) as conn:
-        run_token = db.claim_library_sync_run(conn, user["id"], "all", "all")
+        claim = db.claim_library_sync_run(conn, user["id"], "all", "all")
         conn.commit()
 
     manager = CrawlManager()
     with caplog.at_level(logging.ERROR, logger="crawl_manager"):
-        await manager._sync_collection(user["id"], "all", run_token=run_token)
+        await manager._sync_collection(user["id"], "all", run_token=claim)
 
     assert not [r for r in caplog.records if "ended unexpectedly" in r.getMessage()]
     with db.user_scope(user["id"]) as conn:
