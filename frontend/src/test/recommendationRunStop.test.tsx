@@ -905,6 +905,56 @@ describe('stopping a recommendation run from the profile page', () => {
     ).toBeInTheDocument()
   })
 
+  // The claim measures writes so an unrelated writer keeps its banner, but a
+  // claim taken once and never renewed is broken by the run's *own* next
+  // progress line -- and then nothing can ever close the run out. Every
+  // writer of a running banner renews it. (Copilot, PR #368, round 40.)
+  it('still closes out a run whose own progress event rewrote the banner', async () => {
+    getJudgmentStatus.mockResolvedValue({ any_judged: true, run: run() })
+    const row = await openProfile()
+    await waitFor(() =>
+      expect(screen.getByText(/Finding recommendations for Store items…/)).toBeInTheDocument(),
+    )
+
+    await act(async () => {
+      SilentEventSource.instances[0].emit({
+        status: 'stock_judgment_progress', judged: 40, total: 120, id: 8,
+      })
+    })
+    expect(screen.getByText(/Finding recommendations for Store items… 40\/120/)).toBeInTheDocument()
+
+    // The stream drops here; only the poll sees the run end.
+    getJudgmentStatus.mockResolvedValue({
+      any_judged: true,
+      run: run({ status: 'complete', running: false, judged: 120, total: 120 }),
+    })
+    await act(async () => { await vi.advanceTimersByTimeAsync(PAST_ONE_POLL) })
+
+    await waitFor(() => expect(within(row).getByRole('button')).toHaveTextContent('Refresh'))
+    expect(screen.getByText(/Finished finding recommendations — 120 items checked/)).toBeInTheDocument()
+    expect(screen.queryByText(/40\/120/)).not.toBeInTheDocument()
+  })
+
+  // A stale row still says `status: 'running'` while `running` is false --
+  // that is what staleness is. Reporting it as a completion invents a finish
+  // for a worker that died. (Copilot, PR #368, round 40.)
+  it('says a discovered run stopped responding rather than that it finished', async () => {
+    getJudgmentStatus.mockResolvedValue({ any_judged: true, run: run() })
+    await openProfile()
+    await waitFor(() =>
+      expect(screen.getByText(/Finding recommendations for Store items…/)).toBeInTheDocument(),
+    )
+
+    getJudgmentStatus.mockResolvedValue({
+      any_judged: true,
+      run: run({ running: false, stale: true, judged: 40, total: 120 }),
+    })
+    await act(async () => { await vi.advanceTimersByTimeAsync(PAST_ONE_POLL) })
+
+    await waitFor(() => expect(screen.getByText(/stopped responding/)).toBeInTheDocument())
+    expect(screen.queryByText(/Finished finding recommendations/)).not.toBeInTheDocument()
+  })
+
   it('does not poll the run once nothing is running', async () => {
     await openProfile()
     const atRest = getJudgmentStatus.mock.calls.length

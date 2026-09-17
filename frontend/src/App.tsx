@@ -139,6 +139,12 @@ function collectionSyncOutcomeMessage(run: CollectionSyncRun): string {
   return `Synced ${run.synced} records${wantlistPart}`
 }
 
+// One wording for a run whose Machine stopped heartbeating, shared by the Stop
+// reply and the poll: it did not finish, it stopped responding, and the
+// staleness window exists to recover from exactly that.
+const STALE_JUDGMENT_RUN_MESSAGE =
+  'That recommendation run stopped responding — nothing is running now, and Refresh will start a fresh one.'
+
 // Written from an event on the Machine running the job, and from the run row
 // on the Machine that hears nothing -- one function, so the two cannot drift
 // into describing the same ending differently. (Copilot, PR #368, round 39.)
@@ -542,10 +548,18 @@ export default function App() {
           // "Finished, 0 items" for it would be worse than leaving the last
           // true thing on screen.
           if (s.run) {
-            setSyncStatus(judgmentEndingMessage(
-              s.run.status === 'running' ? 'complete' : s.run.status,
-              s.run.judged, s.run.total ?? 0, s.run.inherited ?? 0, s.run.error,
-            ))
+            // A stale row still says `status: 'running'` while `running` is
+            // false -- that is what staleness *is*, a claim whose heartbeat
+            // stopped. Mapping it to 'complete' would report a finish that
+            // never happened for a worker that died mid-run. The Stop path
+            // already draws that distinction; so does this one.
+            // (Copilot, PR #368, round 40.)
+            setSyncStatus(s.run.stale
+              ? STALE_JUDGMENT_RUN_MESSAGE
+              : judgmentEndingMessage(
+                s.run.status === 'running' ? 'complete' : s.run.status,
+                s.run.judged, s.run.total ?? 0, s.run.inherited ?? 0, s.run.error,
+              ))
           }
         }
       }
@@ -619,14 +633,28 @@ export default function App() {
   // still spending the user's key reads as finished for the whole of its
   // length. So whoever restores the flags restores these with them.
   // (Copilot, PR #368, round 34.)
+  // Renewed by *every* writer of a running banner -- this read, and the
+  // started and progress events -- rather than by the read alone. A claim
+  // taken once and never renewed is broken by the run's own next progress
+  // line, which then leaves nothing able to close the run out: the write
+  // count no longer matches, so the poll declines the take-down and drops the
+  // claim, and "…40/120" sits there with its spinner for good. Renewing on
+  // our own writes keeps an *unrelated* writer -- a stock sync on the same
+  // shared banner -- protected, which is the whole point of measuring writes
+  // rather than just flagging ownership. (Copilot, PR #368, round 40.)
+  //
+  // Recorded after the write, so the claim measures silence from the point
+  // the message landed rather than counting it as news -- the same shape the
+  // price-refresh claim uses.
+  const claimJudgmentBanner = useCallback(() => {
+    judgmentBannerWrites.current = statusWrites.current
+  }, [])
+
   const showJudgmentRunning = useCallback(() => {
     setSyncing(true)
     setSyncStatus('Finding recommendations for Store items…')
-    // Recorded after its own write, so the claim measures silence from the
-    // point this message landed rather than counting it as news -- the same
-    // shape the price-refresh claim uses.
-    judgmentBannerWrites.current = statusWrites.current
-  }, [setSyncStatus])
+    claimJudgmentBanner()
+  }, [setSyncStatus, claimJudgmentBanner])
 
   const discoverJudgmentRun = useCallback(async (waitForRun = false): Promise<boolean> => {
     const action = latestJudgmentActionSeq.current
@@ -893,6 +921,7 @@ export default function App() {
         latestJudgmentRunSeq.current++
         setRecommendationRunning(true)
         setSyncStatus('Finding recommendations for Store items…', event.id ?? null)
+        claimJudgmentBanner()
         return
       }
       if (event.status === 'stock_judgment_progress') {
@@ -905,6 +934,7 @@ export default function App() {
         setStockSyncGeneration(g => g + 1)
         setStockJudgmentGeneration(g => g + 1)
         setSyncStatus(`Finding recommendations for Store items… ${event.judged}/${event.total}`, event.id ?? null)
+        claimJudgmentBanner()
         return
       }
       if (event.status === 'stock_judgment_complete' || event.status === 'stock_judgment_stopped') {
@@ -1043,7 +1073,8 @@ export default function App() {
       source?.close()
       clearTimeout(reconnectTimer)
     }
-  }, [authState, setSyncStatus, fetchPriceStatus, refreshJudgmentStatus, discoverJudgmentRun])
+  }, [authState, setSyncStatus, fetchPriceStatus, refreshJudgmentStatus, discoverJudgmentRun,
+      claimJudgmentBanner])
 
   // Rides priceGeneration rather than a notification-specific SSE event: a
   // per-user event would have to be tagged with an owner, and the crawl worker
@@ -1601,7 +1632,7 @@ export default function App() {
         r.stopping
           ? 'Stopping the recommendation run — finishing the batch already paid for…'
           : r.run?.stale
-            ? 'That recommendation run stopped responding — nothing is running now, and Refresh will start a fresh one.'
+            ? STALE_JUDGMENT_RUN_MESSAGE
             : 'No recommendation run to stop — it had already finished.',
       )
     } catch (e: any) {

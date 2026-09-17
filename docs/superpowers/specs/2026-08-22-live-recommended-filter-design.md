@@ -180,12 +180,31 @@ Four changes, all in `frontend/src/App.tsx`, no new endpoints.
    Store items…" spun past a run that had completed, stopped or failed, for as
    long as the page stayed open. `refreshJudgmentStatus` already reconciled the
    flags from the row and now reconciles these with them, using the same claim
-   in both directions — `showJudgmentRunning` records `statusWrites` after its
-   own write, and the ending is written only if that value still stands, so a
-   terminal event that did arrive (and wrote the same ending already) is not
-   echoed. The claim is dropped either way, since the run is over. A single
-   `judgmentEndingMessage` builds that message for both the event path and the
-   row path, so the two cannot drift into describing one ending two ways.
+   in both directions — the claim records `statusWrites` after a running
+   banner is written, and the ending is written only if that value still
+   stands, so a terminal event that did arrive (and wrote the same ending
+   already) is not echoed. The claim is dropped either way, since the run is
+   over.
+
+   **Every writer of a running banner renews that claim**, not just the read:
+   `showJudgmentRunning`, `stock_judgment_started` and
+   `stock_judgment_progress` all call `claimJudgmentBanner()`. Taken once and
+   never renewed, it is broken by the run's *own* next progress line — and
+   then nothing can close the run out at all, because the write count no
+   longer matches, so the poll declines the take-down and drops the claim,
+   leaving "…40/120" and its spinner up for good once the stream disconnects.
+   Renewing on our own writes is what keeps an *unrelated* writer — a stock
+   sync on the same shared banner — protected, which is the reason for
+   measuring writes rather than simply flagging ownership.
+
+   A single `judgmentEndingMessage` builds that message for both the event
+   path and the row path, so the two cannot drift into describing one ending
+   two ways — and a **stale** row is not one of its endings. A stale row still
+   reads `status: 'running'` while `running` is false, since that is what
+   staleness is: a claim whose heartbeat stopped. Reporting it as a completion
+   would invent a finish for a worker that died, so the poll says it stopped
+   responding, in the same words the Stop reply already uses
+   (`STALE_JUDGMENT_RUN_MESSAGE`).
 
 No change needed to `StockBrowser.tsx` itself: the effect that resets the
 filter away from "recommended" (`:118-122`) only fires when
