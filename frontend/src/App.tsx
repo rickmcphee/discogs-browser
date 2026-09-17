@@ -185,6 +185,28 @@ function judgmentRowEndingMessage(run: StockJudgmentRun): string {
   )
 }
 
+// Which share of the shared spinner an SSE status is evidence for, or null
+// for a terminal one and for anything that is not a sync. Any event narrating
+// work *in progress* proves that work is live, whether or not this client saw
+// it start: a stream reconnecting after the start event has left the replay
+// buffer gets a progress line first. Taking the owner only on `*_started` left
+// such a sync writing a live banner while owning no share of the spinner, so
+// it showed progress with nothing turning beside it -- and a judgment run
+// ending alongside it removed the last owner and hid the indicator while the
+// sync went on. Derived here rather than repeated in a dozen handlers, so one
+// added later cannot forget it. A judgment run has its own way in, through
+// showJudgmentRunning. (Copilot, PR #368, round 50.)
+const SYNC_ENDINGS = ['complete', 'error', 'aborted']
+
+function spinnerOwnerOf(status: string | undefined): string | null {
+  if (!status) return null
+  const live = (prefix: string) =>
+    status.startsWith(prefix) && !SYNC_ENDINGS.some(end => status === `${prefix}${end}`)
+  if (live('stock_sync_')) return 'stock'
+  if (live('sync_')) return 'collection'
+  return null
+}
+
 function formatElapsed(seconds: number | null): string {
   if (seconds === null) return 'unknown'
   if (seconds < 60) return `${seconds}s`
@@ -857,8 +879,9 @@ export default function App() {
     function handleEvent(e: MessageEvent) {
       const event: CrawlEvent = JSON.parse(e.data)
       if (event.status === 'ping') return
+      const owner = spinnerOwnerOf(event.status)
+      if (owner !== null) beginSyncing(owner)
       if (event.status === 'sync_started') {
-        beginSyncing('collection')
         setSyncStatus(event.scope === 'wishlist' ? 'Syncing wantlist…' : 'Syncing collection…', event.id ?? null)
         return
       }
@@ -925,7 +948,6 @@ export default function App() {
         return
       }
       if (event.status === 'stock_sync_started') {
-        beginSyncing('stock')
         setStockSyncTarget(event.crawler_id ?? 'all')
         setStockSyncStarting(null)
         setSyncStatus('Syncing in-stock catalog…', event.id ?? null)

@@ -955,12 +955,16 @@ describe('stopping a recommendation run from the profile page', () => {
     expect(screen.queryByText(/Finished finding recommendations/)).not.toBeInTheDocument()
   })
 
-  // The banner and the spinner are separate claims. A write that takes the
-  // message without taking the spinner -- a source-filter load failure does
-  // exactly that, and so does a sync progress line reaching a client that
-  // missed `stock_sync_started` -- used to strand the spinner: one number
-  // answered both questions, so preserving the newer message also preserved a
-  // finished run's spinner, for good. (Copilot, PR #368, round 41.)
+  // The banner and the spinner are different things. A write that takes the
+  // message without wanting the spinner -- a Plex match line, a source-filter
+  // load failure -- used to strand the spinner: one number answered both
+  // questions, so preserving the newer message also preserved a finished run's
+  // spinner, for good. (Copilot, PR #368, round 41.)
+  //
+  // It used a stock-sync progress line until round 50, when those became
+  // evidence of a live sync and started taking a share of the spinner. The
+  // behaviour pinned here is unchanged; only the choice of a banner-only
+  // writer had to move.
   it('lowers the spinner on completion even when another message holds the banner', async () => {
     getJudgmentStatus.mockResolvedValue({ any_judged: true, run: run() })
     await openProfile()
@@ -971,10 +975,10 @@ describe('stopping a recommendation run from the profile page', () => {
 
     await act(async () => {
       SilentEventSource.instances[0].emit({
-        status: 'stock_sync_progress', synced: 300, source: 'Amazon', id: 9,
+        status: 'plex_match_progress', matched: 12, total: 40, id: 9,
       })
     })
-    expect(screen.getByText(/Syncing in-stock catalog… 300 items/)).toBeInTheDocument()
+    expect(screen.getByText(/Matching collection against Plex… 12\/40/)).toBeInTheDocument()
 
     getJudgmentStatus.mockResolvedValue({
       any_judged: true,
@@ -983,7 +987,7 @@ describe('stopping a recommendation run from the profile page', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(PAST_ONE_POLL) })
 
     // The newer message stands, and the spinner this run raised comes down.
-    expect(screen.getByText(/Syncing in-stock catalog… 300 items/)).toBeInTheDocument()
+    expect(screen.getByText(/Matching collection against Plex… 12\/40/)).toBeInTheDocument()
     await waitFor(() => expect(screen.queryAllByText('⟳')).toHaveLength(0))
   })
 
@@ -1118,9 +1122,11 @@ describe('stopping a recommendation run from the profile page', () => {
   // The spinner is shared, and the HTTP take-down has asked whose it is since
   // round 41 -- the terminal SSE handlers never did. A stock sync that raised
   // it after this run claimed it lost its busy indicator the moment the
-  // judgment ended, and nothing raised it again: only `stock_sync_started`
-  // raises, not its progress lines, so the sync ran to completion with no sign
-  // of it. (Copilot, PR #368, round 46.)
+  // judgment ended, and at the time nothing raised it again -- only
+  // `stock_sync_started` did, not its progress lines, so the sync ran to
+  // completion with no sign of it. Round 50 made every non-terminal sync event
+  // take the owner as well, which narrows the window; the ownership rule this
+  // pins is what makes either of them enough. (Copilot, PR #368, round 46.)
   it('leaves a stock sync its spinner when a judgment ending arrives', async () => {
     getJudgmentStatus.mockResolvedValue({ any_judged: true, run: run() })
     await openProfile()
@@ -1265,6 +1271,38 @@ describe('stopping a recommendation run from the profile page', () => {
 
     expect(screen.getByText(/Finding recommendations for Store items…/)).toBeInTheDocument()
     expect(screen.queryByText(/Finished finding recommendations/)).not.toBeInTheDocument()
+    expect(screen.getAllByText('⟳').length).toBeGreaterThan(0)
+  })
+
+  // A progress line proves the sync is live whether or not this client saw it
+  // start: a stream reconnecting after `*_started` has left the replay buffer
+  // gets one first. Taking the owner only on the start event left such a sync
+  // writing a live banner while owning no share of the spinner, so a judgment
+  // run ending alongside it removed the last owner and hid the indicator while
+  // the sync went on. (Copilot, PR #368, round 50.)
+  it.each([
+    ['stock', { status: 'stock_sync_progress', synced: 300, source: 'Amazon', id: 50 },
+      /Syncing in-stock catalog… 300 items/],
+    ['collection', { status: 'sync_progress', synced: 40, page: 2, total_pages: 9, id: 51 },
+      /Syncing collection… 40 records/],
+  ])('gives a %s sync the spinner when its first event is a progress line', async (_owner, event, banner) => {
+    getJudgmentStatus.mockResolvedValue({ any_judged: true, run: run() })
+    await openProfile()
+    await waitFor(() =>
+      expect(screen.getByText(/Finding recommendations for Store items…/)).toBeInTheDocument(),
+    )
+
+    // No `*_started` at all -- it was evicted before this stream connected.
+    await act(async () => { SilentEventSource.instances[0].emit(event) })
+    expect(screen.getByText(banner)).toBeInTheDocument()
+
+    getJudgmentStatus.mockResolvedValue({ any_judged: true, run: null })
+    await act(async () => {
+      SilentEventSource.instances[0].emit({
+        status: 'stock_judgment_complete', judged: 40, total: 40, id: 52,
+      })
+    })
+
     expect(screen.getAllByText('⟳').length).toBeGreaterThan(0)
   })
 

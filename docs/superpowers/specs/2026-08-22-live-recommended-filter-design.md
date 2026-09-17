@@ -249,15 +249,22 @@ Four changes, all in `frontend/src/App.tsx`, no new endpoints.
    sync on the same shared banner — protected, which is the reason for
    measuring writes rather than simply flagging ownership.
 
-   **Ending a run releases the claim rather than clearing the state**, and
+   **Ending a run gives up its share rather than clearing the state**, and
    `releaseJudgmentPresentation()` is the one way to do it: the HTTP take-down
-   and both terminal SSE handlers call it, and it lowers the spinner only if
-   nothing has raised it since the claim was taken. The events used to lower it
-   outright, which the poll had stopped doing, so a stock sync that raised the
-   spinner after a judgment run claimed it lost its busy indicator the moment
-   that run ended — and nothing raised it again, because only
-   `stock_sync_started` raises, not its progress lines. The sync then ran to
-   completion with no sign of it.
+   and both terminal SSE handlers call it, and it removes the judgment owner —
+   which lowers the spinner only if no other owner remains, whenever that owner
+   was added. The events used to lower it outright, so a stock sync that had
+   the spinner up when a judgment run ended lost its busy indicator on the
+   spot, and at the time nothing put it back.
+
+   **And every non-terminal sync event takes its owner, not only `*_started`.**
+   A progress line proves the work is live whether or not this client saw it
+   begin: a stream reconnecting after the start event has left the replay
+   buffer receives one first. `spinnerOwnerOf` derives the owner from the
+   status, in one place rather than in a dozen handlers, so a handler added
+   later cannot forget it — and a sync that has only ever sent progress still
+   holds a share, which is what keeps a judgment ending beside it from
+   removing the last one.
 
    The *message* is not released the same way: a terminal event is
    authoritative about its own run's ending and writes it regardless, which is
