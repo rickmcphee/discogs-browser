@@ -955,6 +955,38 @@ describe('stopping a recommendation run from the profile page', () => {
     expect(screen.queryByText(/Finished finding recommendations/)).not.toBeInTheDocument()
   })
 
+  // The banner and the spinner are separate claims. A write that takes the
+  // message without taking the spinner -- a source-filter load failure does
+  // exactly that, and so does a sync progress line reaching a client that
+  // missed `stock_sync_started` -- used to strand the spinner: one number
+  // answered both questions, so preserving the newer message also preserved a
+  // finished run's spinner, for good. (Copilot, PR #368, round 41.)
+  it('lowers the spinner on completion even when another message holds the banner', async () => {
+    getJudgmentStatus.mockResolvedValue({ any_judged: true, run: run() })
+    await openProfile()
+    await waitFor(() =>
+      expect(screen.getByText(/Finding recommendations for Store items…/)).toBeInTheDocument(),
+    )
+    expect(screen.getAllByText('⟳').length).toBeGreaterThan(0)
+
+    await act(async () => {
+      SilentEventSource.instances[0].emit({
+        status: 'stock_sync_progress', synced: 300, source: 'Amazon', id: 9,
+      })
+    })
+    expect(screen.getByText(/Syncing in-stock catalog… 300 items/)).toBeInTheDocument()
+
+    getJudgmentStatus.mockResolvedValue({
+      any_judged: true,
+      run: run({ status: 'complete', running: false, judged: 40, total: 40 }),
+    })
+    await act(async () => { await vi.advanceTimersByTimeAsync(PAST_ONE_POLL) })
+
+    // The newer message stands, and the spinner this run raised comes down.
+    expect(screen.getByText(/Syncing in-stock catalog… 300 items/)).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryAllByText('⟳')).toHaveLength(0))
+  })
+
   it('does not poll the run once nothing is running', async () => {
     await openProfile()
     const atRest = getJudgmentStatus.mock.calls.length

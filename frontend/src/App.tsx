@@ -296,12 +296,16 @@ export default function App() {
   // window it opened, which an older start losing to a newer *start* still
   // cannot do. Zero means no start in flight. (Copilot, PR #368, round 30.)
   const judgmentStartPending = useRef(0)
-  // The `statusWrites` value left behind by showJudgmentRunning's own write,
-  // or null when this client is not presenting a run. It answers both halves
-  // of "may I take this banner down": whether the running banner is ours at
-  // all, and whether anything has written over it since. (Copilot, PR #368,
-  // round 39.)
-  const judgmentBannerWrites = useRef<number | null>(null)
+  // What this client left behind when it last presented a run, or null when
+  // it is not presenting one. Two counters, because the take-down asks two
+  // questions and one number cannot answer both: is the *banner* still the
+  // one we wrote, so may we replace it with the ending, and is the *spinner*
+  // still the one we raised, so may we lower it. A write can take the banner
+  // without taking the spinner -- a source-filter load failure writes through
+  // setSyncStatus and never touches `syncing` -- and answering both with
+  // `writes` alone left a completed run's spinner turning for good every time
+  // one did. (Copilot, PR #368, rounds 39-41.)
+  const judgmentPresentation = useRef<{ writes: number; raises: number } | null>(null)
   // The last (status, judged) the poll saw, so it can tell a run that has
   // advanced from one it has merely been asked about again. Null means "no
   // read yet", and only that very first read is exempt from the bump -- it is
@@ -372,9 +376,23 @@ export default function App() {
   // message reaches the banner: a write that skips it is invisible to the
   // guard, and the guard then talks over it.
   const statusWrites = useRef(0)
+  // Raises of the shared `syncing` spinner, counted for the same reason
+  // statusWrites counts banner writes: it is the only way a later owner can
+  // be told apart from no owner at all. The banner and the spinner are
+  // *separate* claims -- a writer can take the message without taking the
+  // spinner (a source-filter load failure does exactly that) -- and a claim
+  // that answered both with one number stranded the spinner whenever it did.
+  // (Copilot, PR #368, round 41.)
+  const syncingRaises = useRef(0)
 
   // eventId is null for locally-generated messages (button-click failures) that never
   // survive a refresh and so never need replay suppression; those always show.
+  // One way in, so no raiser is invisible to the count.
+  const beginSyncing = useCallback(() => {
+    syncingRaises.current++
+    setSyncing(true)
+  }, [])
+
   const setSyncStatus = useCallback((message: string, eventId: number | null = null) => {
     statusWrites.current++
     setSyncMessage(message)
@@ -538,11 +556,16 @@ export default function App() {
       // bumped the counter, so this stays quiet rather than saying it twice.
       // The claim is dropped either way: the run is over, so it is no longer
       // ours to take down.
-      const claimed = judgmentBannerWrites.current
+      const claimed = judgmentPresentation.current
       if (claimed !== null && !s.run?.running && !judgmentStopPending.current) {
-        judgmentBannerWrites.current = null
-        if (statusWrites.current === claimed) {
-          setSyncing(false)
+        judgmentPresentation.current = null
+        // Asked separately, because they are separate claims. Nothing has
+        // raised the spinner since we did, so it is still ours to lower even
+        // where the banner has moved on to someone else's message -- and that
+        // is exactly when leaving it up is worst, since it would then be
+        // spinning beside a message that has nothing to do with a run.
+        if (syncingRaises.current === claimed.raises) setSyncing(false)
+        if (statusWrites.current === claimed.writes) {
           // A row that has gone entirely -- cleared out from under us -- can
           // still end the spinner, but has nothing to report, and inventing
           // "Finished, 0 items" for it would be worse than leaving the last
@@ -647,14 +670,17 @@ export default function App() {
   // the message landed rather than counting it as news -- the same shape the
   // price-refresh claim uses.
   const claimJudgmentBanner = useCallback(() => {
-    judgmentBannerWrites.current = statusWrites.current
+    judgmentPresentation.current = {
+      writes: statusWrites.current,
+      raises: syncingRaises.current,
+    }
   }, [])
 
   const showJudgmentRunning = useCallback(() => {
-    setSyncing(true)
+    beginSyncing()
     setSyncStatus('Finding recommendations for Store items…')
     claimJudgmentBanner()
-  }, [setSyncStatus, claimJudgmentBanner])
+  }, [setSyncStatus, claimJudgmentBanner, beginSyncing])
 
   const discoverJudgmentRun = useCallback(async (waitForRun = false): Promise<boolean> => {
     const action = latestJudgmentActionSeq.current
@@ -776,7 +802,7 @@ export default function App() {
       const event: CrawlEvent = JSON.parse(e.data)
       if (event.status === 'ping') return
       if (event.status === 'sync_started') {
-        setSyncing(true)
+        beginSyncing()
         setSyncStatus(event.scope === 'wishlist' ? 'Syncing wantlist…' : 'Syncing collection…', event.id ?? null)
         return
       }
@@ -843,7 +869,7 @@ export default function App() {
         return
       }
       if (event.status === 'stock_sync_started') {
-        setSyncing(true)
+        beginSyncing()
         setStockSyncTarget(event.crawler_id ?? 'all')
         setStockSyncStarting(null)
         setSyncStatus('Syncing in-stock catalog…', event.id ?? null)
@@ -907,7 +933,7 @@ export default function App() {
         return
       }
       if (event.status === 'stock_judgment_started') {
-        setSyncing(true)
+        beginSyncing()
         // The same-Machine fast path for the button: this browser heard the
         // run start, so it need not wait for the poll's first tick. A run
         // whose events go to the other Machine's subscribers reaches the same
@@ -1074,7 +1100,7 @@ export default function App() {
       clearTimeout(reconnectTimer)
     }
   }, [authState, setSyncStatus, fetchPriceStatus, refreshJudgmentStatus, discoverJudgmentRun,
-      claimJudgmentBanner])
+      claimJudgmentBanner, beginSyncing])
 
   // Rides priceGeneration rather than a notification-specific SSE event: a
   // per-user event would have to be tagged with an owner, and the crawl worker
@@ -1229,7 +1255,7 @@ export default function App() {
             // Whatever outcome the stream announced, it was not this run's --
             // this one is still going.
             sseAnnouncedOutcomeRef.current = false
-            setSyncing(true)
+            beginSyncing()
             const progress = `${run.page}/${run.total_pages}/${run.synced}/${run.wishlist_synced}`
             if (progress !== lastSyncProgressRef.current) {
               lastSyncProgressRef.current = progress
@@ -1302,7 +1328,7 @@ export default function App() {
     // Keyed on whether the user is signed in, not on the authState object:
     // that object is replaced on every revalidation, and restarting the poll
     // for one costs nothing but risks everything above.
-  }, [authed, syncPollNonce, setSyncStatus, fetchPriceStatus, releaseSyncFollow])
+  }, [authed, syncPollNonce, setSyncStatus, fetchPriceStatus, releaseSyncFollow, beginSyncing])
 
   // Follows a run to its end over HTTP, because the events that narrate one
   // reach only the Machine running it. Keyed on the flag rather than on the

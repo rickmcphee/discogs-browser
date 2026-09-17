@@ -186,6 +186,19 @@ Four changes, all in `frontend/src/App.tsx`, no new endpoints.
    already) is not echoed. The claim is dropped either way, since the run is
    over.
 
+   **The banner and the spinner are two claims, not one**, and the claim
+   carries a counter for each: `statusWrites` for the message, and a
+   `syncingRaises` count for the shared `syncing` flag, incremented by a
+   `beginSyncing()` that every raiser now goes through. They come apart
+   because a write can take the message without taking the spinner — a
+   source-filter load failure writes through `setSyncStatus` and never touches
+   `syncing`, and so does a sync progress line reaching a client that missed
+   `stock_sync_started`. Answering both with `statusWrites` alone meant that
+   preserving such a message also preserved a *finished* run's spinner, which
+   then turned beside it for as long as the page stayed open. The take-down
+   asks the two separately: lower the spinner if nothing has raised it since
+   we did, write the ending if nothing has written the banner since.
+
    **Every writer of a running banner renews that claim**, not just the read:
    `showJudgmentRunning`, `stock_judgment_started` and
    `stock_judgment_progress` all call `claimJudgmentBanner()`. Taken once and
