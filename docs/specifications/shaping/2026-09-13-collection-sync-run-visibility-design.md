@@ -306,9 +306,10 @@ next click is no longer refused.
 
 Every exit from `_sync_collection_blocking` closes it: the three early error
 returns (no user, no Discogs token, collection-fields fetch failed) now go
-through one `sync_error` helper that records *and* broadcasts — in that order,
-because the close is what reveals whether there is still a run of ours to
-speak for. A dispossessed worker can reach an ordinary exception, and
+through one `sync_error` helper that records, then logs *and* broadcasts — the
+record first, because the close is what reveals whether there is still a run of
+ours to speak for, and the log on the announcing side of that answer rather
+than ahead of it. A dispossessed worker can reach an ordinary exception, and
 announcing first tells every browser on this Machine that the run failed when
 the run belongs to the replacement and may be going perfectly well; a terminal
 sync event also sets the client's "an outcome was just published" flag, so the
@@ -319,6 +320,39 @@ the worse error. The happy path records `complete` with both counts, and the
 `except` records `error` with the message. A `finally` closes anything else as an error — its `UPDATE` is
 `WHERE status = 'running'`, so it can be called unconditionally and cannot
 overwrite an outcome a path already recorded.
+
+**Amendment (2026-09-16, branch `claude/sleepy-dijkstra-dlsrbx`):** the log
+line is new, and it is in the helper rather than at the call sites because
+the call sites are where it was missing. Two of those three early returns end
+a sync *before* the collection page walk — one before it has contacted Discogs
+at all, the other on the collection-fields request itself, which does reach
+Discogs and is refused — and neither wrote anything to
+the log — so a user whose stored OAuth token had been refused saw a
+Collection tab that simply never gained a record, and the entire log record of
+each attempt was the "Collection sync started for X" line with nothing after
+it. Nothing in the run row reaches the Logs tab, and nothing in this
+document's cross-Machine story helps: the run row and the events both reported
+the failure faithfully, to a banner, in a generic wording that named neither
+the fault nor the fix. What the run row says is now also what the log says,
+and for a Discogs error status both name the HTTP status — see
+`crawl_manager._discogs_request_error`.
+
+That placement is not cosmetic. A dispossessed worker reaching an ordinary
+exception must not write "Collection sync failed for alice" to the Logs tab
+either: the tab is shared rather than per-run, so the line would be the same
+false report the suppressed broadcast exists to prevent, in the one place a
+reader goes to check. What happened to that worker is still recorded — the
+caller's own "this sync's run was taken over" warning says it.
+
+The traceback is the one thing the two do not share, and it is withheld
+exactly where the message was sanitized. `logging_config`'s queue handler
+appends a formatted traceback to the stored message, and an
+`HTTPStatusError`'s carries the full request URL and the response detail —
+the two things `_discogs_request_error` exists to leave out. Attaching one to
+a failure that path has already classified would write the original into
+`app_logs` underneath the sentence written to omit it. An exception nothing
+has classified keeps its traceback, because there it is the only account of
+what happened.
 
 Best effort throughout, on its own connection: failing to *narrate* a sync must
 never be what ends one, and the connection the page loop was using may be in a

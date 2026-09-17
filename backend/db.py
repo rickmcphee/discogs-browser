@@ -1875,6 +1875,35 @@ def create_user(conn, discogs_user_id: int, discogs_username: str, invited_by: O
     ).fetchone()
 
 
+def update_user_discogs_credentials(
+    conn, user_id: int, discogs_username: str,
+    oauth_token_encrypted: bytes, oauth_secret_encrypted: bytes,
+):
+    """Replace the Discogs identity a user's row authenticates with.
+
+    The stored pair is what every collection sync signs its requests with, and
+    it used to be written once, at signup, and never again -- so a token the
+    user revoked on Discogs (or one orphaned by a consumer-key rotation) stayed
+    on the row for good. Signing in again, the one remedy a user can reach,
+    minted a working token and threw it away.
+
+    The username goes with it because it is not a display name: every Discogs
+    URL the sync builds is keyed on it, so a rename leaves the row addressing a
+    name the API no longer resolves. The account is identified by
+    discogs_user_id, which a rename does not change.
+    """
+    conn.execute(
+        """
+        UPDATE users SET
+            discogs_username = %s,
+            discogs_oauth_token_encrypted = %s,
+            discogs_oauth_secret_encrypted = %s
+        WHERE id = %s
+        """,
+        [discogs_username, oauth_token_encrypted, oauth_secret_encrypted, user_id],
+    )
+
+
 def create_invite(conn, created_by: int, code: str, note: Optional[str] = None) -> dict:
     return conn.execute(
         """
