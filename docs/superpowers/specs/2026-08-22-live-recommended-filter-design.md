@@ -141,7 +141,7 @@ Four changes, all in `frontend/src/App.tsx`, no new endpoints.
    reads as finished for its whole length, Stop button beside a completion
    message. The rule is now that whoever restores the flags restores these
    with them — `showJudgmentRunning()`, called from the start reply when it
-   reports a run under way, and from `discoverJudgmentRun` itself whenever a
+   reports a run under way, and from `refreshJudgmentStatus` itself whenever a
    read finds one. That covers the *error* ending, which reconciles the flags
    exactly as the two terminal ones do (an error names no run either, so a
    replayed one can belong to a run since replaced, and "Finding
@@ -152,11 +152,23 @@ Four changes, all in `frontend/src/App.tsx`, no new endpoints.
    that read and from nothing else, since no event is coming. Putting the
    restore at each ending's call site, as the first two passes at this did,
    left that one out; it belongs in the read. Fenced there on
-   `latestJudgmentActionSeq`, since the retry loop spans seconds and a newer
-   action is newer truth, and on `judgmentStopPending`, because a Stop in
-   flight owns the presentation exactly as it owns the flags —
-   `refreshJudgmentStatus` already applies that condition to the flags it
-   writes beside it.
+   `latestJudgmentActionSeq`, since a newer action is newer truth, and on
+   `judgmentStopPending`, because a Stop in flight owns the presentation
+   exactly as it owns the flags — `refreshJudgmentStatus` already applies that
+   condition to the flags it writes beside it.
+
+   **In the innermost read, not the retry loop around it**, which is what
+   makes the fence below survivable. `discoverJudgmentRun` runs its loop once,
+   at mount or on a click; the run *poll* calls `refreshJudgmentStatus`
+   directly. With the turn-on at the outer level, a read that declined — for
+   the good reason in the next paragraph — had no second chance, and a
+   cross-Machine run whose mount-time read lost that race sat with no banner
+   and no spinner for the rest of its length once the competing writer went
+   quiet, its row-only ending unreported for want of a claim. One level down,
+   every reader of the row gets it and every tick is a fresh baseline. It
+   fires only while **no claim is held**: while one is, the run's own progress
+   lines own the banner, and re-announcing the generic message over "…40/120"
+   every few seconds is the clobber the fence exists to prevent.
 
    **And on `statusWrites`, because neither of those fences can see the
    banner.** `latestJudgmentActionSeq` moves on user actions only; no SSE

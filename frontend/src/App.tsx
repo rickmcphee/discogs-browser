@@ -530,6 +530,38 @@ export default function App() {
     }).catch(() => {})
   }, [fetchUnreadNotifications])
 
+  // Writing a live-run banner, raising the spinner and claiming both are one
+  // act, and this is the only way to perform any of them. They were three
+  // calls a writer had to remember, and three consecutive rounds found one
+  // that forgot: `stock_judgment_progress` claimed without raising, and then
+  // the start refusal, the start's failure recovery and the Stop reply each
+  // wrote without claiming. The failure is the same every time -- the claim
+  // still names an older write, so when the poll sees the run end it lowers
+  // the spinner and then declines to say so, leaving a message about a live
+  // run beside a Refresh button for as long as the page stays open. A caller
+  // cannot forget a step it has no way to take separately.
+  // (Copilot, PR #368, rounds 43-45.)
+  //
+  // The raise cannot be left to the reads, either: the fence protecting a
+  // claimed banner also blocks the read that would otherwise have raised the
+  // spinner, so a progress line arriving first left an active run turning
+  // nothing at all.
+  //
+  // Recorded after the write, so the claim measures silence from the point
+  // the message landed rather than counting it as news -- the same shape the
+  // price-refresh claim uses.
+  const showJudgmentRunning = useCallback((
+    message = 'Finding recommendations for Store items…',
+    eventId: number | null = null,
+  ) => {
+    beginSyncing()
+    setSyncStatus(message, eventId)
+    judgmentPresentation.current = {
+      writes: statusWrites.current,
+      raises: syncingRaises.current,
+    }
+  }, [setSyncStatus, beginSyncing])
+
   // The other end of that claim, shared by everything that ends a judgment
   // run: the HTTP take-down and both terminal SSE handlers. It lowers the
   // spinner only if nothing has raised it since we did, and hands the claim
@@ -560,6 +592,12 @@ export default function App() {
   const refreshJudgmentStatus = useCallback(async (): Promise<JudgmentStatus | null> => {
     const judgedSeq = ++latestHasJudgedItemsSeq.current
     const runSeq = ++latestJudgmentRunSeq.current
+    // The banner and the newest user action as this read found them, for the
+    // turn-on below. Read at entry, so a caller that wants its own message
+    // replaced writes it *before* asking and its write is part of the
+    // baseline rather than news. (Copilot, PR #368, round 38.)
+    const action = latestJudgmentActionSeq.current
+    const writes = statusWrites.current
     try {
       const s = await getJudgmentStatus()
       if (judgedSeq === latestHasJudgedItemsSeq.current) setHasJudgedItems(s.any_judged)
@@ -587,6 +625,24 @@ export default function App() {
       // stayed open. The flags were already reconciled here; the presentation
       // was not. (Copilot, PR #368, round 39.)
       //
+      // The presentation is turned on here and not only in the discovery read,
+      // because a read that loses the banner race has to be able to try again.
+      // The fence is right to decline -- an overlapping stock sync's progress
+      // line is newer and more specific than a generic judgment banner -- but
+      // declining *permanently* left a cross-Machine run with no banner and no
+      // spinner once that sync finished, and, with no claim ever taken, no way
+      // to report its row-only ending either. The poll calls this function
+      // directly, so every tick is a fresh baseline and a fresh chance.
+      // (Copilot, PR #368, round 47.)
+      //
+      // Only when we hold no claim: while we do, the run's own progress lines
+      // own the banner, and re-announcing the generic message over "…40/120"
+      // every few seconds is the clobber the fence exists to prevent.
+      if (s.run?.running && judgmentPresentation.current === null
+          && action === latestJudgmentActionSeq.current && !judgmentStopPending.current
+          && statusWrites.current === writes) {
+        showJudgmentRunning()
+      }
       // Only a banner this client put up and nobody has written over since --
       // if a terminal event did arrive it wrote the same ending already and
       // bumped the counter, so this stays quiet rather than saying it twice.
@@ -641,7 +697,7 @@ export default function App() {
       // say", and the poll below decides for itself whether to keep trying.
       return null
     }
-  }, [setSyncStatus, releaseJudgmentPresentation])
+  }, [setSyncStatus, releaseJudgmentPresentation, showJudgmentRunning])
 
   // The discovery read, retried a bounded number of times, in the shape the
   // collection sync's own discovery poll already uses.
@@ -691,72 +747,20 @@ export default function App() {
   // the message landed rather than counting it as news -- the same shape the
   // price-refresh claim uses.
   //
-  // Writing a live-run banner, raising the spinner and claiming both are one
-  // act, and this is the only way to perform any of them. They were three
-  // calls a writer had to remember, and three consecutive rounds found one
-  // that forgot: `stock_judgment_progress` claimed without raising, and then
-  // the start refusal, the start's failure recovery and the Stop reply each
-  // wrote without claiming. The failure is the same every time -- the claim
-  // still names an older write, so when the poll sees the run end it lowers
-  // the spinner and then declines to say so, leaving a message about a live
-  // run beside a Refresh button for as long as the page stays open. A caller
-  // cannot forget a step it has no way to take separately.
-  // (Copilot, PR #368, rounds 43-45.)
-  //
-  // The raise cannot be left to the reads, either: the fence protecting a
-  // claimed banner also blocks the read that would otherwise have raised the
-  // spinner, so a progress line arriving first left an active run turning
-  // nothing at all.
-  //
-  // Recorded after the write, so the claim measures silence from the point
-  // the message landed rather than counting it as news -- the same shape the
-  // price-refresh claim uses.
-  const showJudgmentRunning = useCallback((
-    message = 'Finding recommendations for Store items…',
-    eventId: number | null = null,
-  ) => {
-    beginSyncing()
-    setSyncStatus(message, eventId)
-    judgmentPresentation.current = {
-      writes: statusWrites.current,
-      raises: syncingRaises.current,
-    }
-  }, [setSyncStatus, beginSyncing])
-
   const discoverJudgmentRun = useCallback(async (waitForRun = false): Promise<boolean> => {
     const action = latestJudgmentActionSeq.current
-    // The banner as this read found it. `latestJudgmentActionSeq` fences user
-    // actions and nothing else -- no SSE handler advances it -- so it cannot
-    // see a `stock_judgment_progress` rendering "40/120", or an overlapping
-    // stock sync rendering its own progress, landing while this read is in
-    // flight. Restoring over either would replace a newer, more specific
-    // message with a generic one. Same measure the price-refresh claim uses,
-    // and read at entry for the same reason its own comment gives: a caller
-    // that wants its message replaced writes it *before* asking, so its write
-    // is part of the baseline rather than news. (Copilot, PR #368, round 38.)
-    const writes = statusWrites.current
     for (let attempt = 0; attempt < POLL_READ_ATTEMPTS; attempt++) {
+      // The presentation comes from refreshJudgmentStatus itself, not from
+      // here. It began at this call site, because the caller that needed it
+      // most was the mount-time read -- a page loaded while a run is going on
+      // the other Machine gets its Stop button from that read and nothing
+      // else, no event being on the way. But this loop runs once, and the
+      // *poll* calls refreshJudgmentStatus directly, so a read that lost the
+      // banner race here had no second chance. It lives one level down now,
+      // where every reader of the row gets it and every tick retries it.
+      // (Copilot, PR #368, rounds 34-37 and 47.)
       const status = await refreshJudgmentStatus()
-      if (status?.run?.running) {
-        // Here rather than at each call site, because *every* caller needs it
-        // and the one that needed it most was not a call site I had thought
-        // about: the mount-time read. A page loaded while a run is going on
-        // the other Machine got its Stop button from this read and nothing
-        // else -- no event is coming -- so it sat beside an empty banner with
-        // no spinner for the whole of a paid run. The two endings' reads had
-        // been given this individually; the bootstrap read and the start
-        // handler's had not. (Copilot, PR #368, rounds 34-37.)
-        //
-        // Fenced like the flags this read has just written: the loop can span
-        // seconds, so a newer action is newer truth, and a Stop in flight owns
-        // the presentation exactly as it owns the flags -- refreshJudgmentStatus
-        // skips them under judgmentStopPending for the same reason.
-        if (action === latestJudgmentActionSeq.current && !judgmentStopPending.current
-            && statusWrites.current === writes) {
-          showJudgmentRunning()
-        }
-        return true
-      }
+      if (status?.run?.running) return true
       if (status && !waitForRun) return false
       if (attempt < POLL_READ_ATTEMPTS - 1) {
         await new Promise(r => setTimeout(r, JUDGMENT_RUN_POLL_MS))
@@ -764,7 +768,7 @@ export default function App() {
       }
     }
     return false
-  }, [refreshJudgmentStatus, showJudgmentRunning])
+  }, [refreshJudgmentStatus])
 
   // Continuous, unconditional health poll -- drives `backendUp`, which gates
   // BackendDownScreen for both "backend not up yet" and "backend went down

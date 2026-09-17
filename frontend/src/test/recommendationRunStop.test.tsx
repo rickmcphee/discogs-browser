@@ -1169,6 +1169,39 @@ describe('stopping a recommendation run from the profile page', () => {
     expect(screen.getAllByText('⟳').length).toBeGreaterThan(0)
   })
 
+  // Declining is right; declining forever is not. The read that loses the
+  // banner race to an overlapping stock sync correctly leaves that sync's
+  // progress line alone -- but the judgment run is still going, and nothing
+  // used to try again, because only the discovery read turned the
+  // presentation on and the poll calls refreshJudgmentStatus directly. Once
+  // the sync finished, a cross-Machine run sat with no banner and no spinner,
+  // and with no claim ever taken its row-only ending went unreported too.
+  // (Copilot, PR #368, round 47.)
+  it('retries the presentation on a later poll after losing the banner race', async () => {
+    let settleRead: (v: unknown) => void = () => {}
+    getJudgmentStatus.mockImplementationOnce(() => new Promise((resolve) => { settleRead = resolve }))
+    getJudgmentStatus.mockResolvedValue({ any_judged: true, run: run() })
+    await openProfile()
+
+    await act(async () => {
+      SilentEventSource.instances[0].emit({
+        status: 'stock_sync_progress', synced: 300, source: 'Amazon', id: 30,
+      })
+    })
+    await act(async () => { settleRead({ any_judged: true, run: run() }) })
+
+    // Round 38: the sync's newer, more specific line stands.
+    expect(screen.getByText(/Syncing in-stock catalog… 300 items/)).toBeInTheDocument()
+    expect(screen.queryByText(/^Finding recommendations for Store items…$/)).not.toBeInTheDocument()
+
+    // And the next tick, with nothing else writing, picks the run back up.
+    await act(async () => { await vi.advanceTimersByTimeAsync(PAST_ONE_POLL) })
+    await waitFor(() =>
+      expect(screen.getByText(/Finding recommendations for Store items…/)).toBeInTheDocument(),
+    )
+    expect(screen.getAllByText('⟳').length).toBeGreaterThan(0)
+  })
+
   it('does not poll the run once nothing is running', async () => {
     await openProfile()
     const atRest = getJudgmentStatus.mock.calls.length
