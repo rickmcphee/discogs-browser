@@ -977,6 +977,27 @@ CREATE TABLE IF NOT EXISTS stock_judgment_runs (
 -- that spent nothing checked nothing.
 ALTER TABLE stock_judgment_runs ADD COLUMN IF NOT EXISTS inherited INTEGER NOT NULL DEFAULT 0;
 
+-- Zeroed by the schema and not only by the claim, for the same rolling-deploy
+-- reason the fold-key triggers exist: an old binary's claim cannot name a
+-- column it does not know, so its ON CONFLICT resets `judged` and leaves
+-- `inherited` holding the *previous* run's count -- which a status request
+-- served by a new Machine then reports as this run's. A new run is exactly a
+-- new run_token, so that is what this watches. The claim still sets it too,
+-- and the two agree. (Copilot, PR #368, round 27.)
+CREATE OR REPLACE FUNCTION reset_run_counts_on_new_claim() RETURNS trigger AS $$
+BEGIN
+    IF NEW.run_token IS DISTINCT FROM OLD.run_token THEN
+        NEW.inherited := 0;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS stock_judgment_runs_reset_counts ON stock_judgment_runs;
+CREATE TRIGGER stock_judgment_runs_reset_counts
+    BEFORE UPDATE ON stock_judgment_runs
+    FOR EACH ROW EXECUTE FUNCTION reset_run_counts_on_new_claim();
+
 CREATE TABLE IF NOT EXISTS user_hidden_crawlers (
     user_id INTEGER NOT NULL REFERENCES users(id),
     crawler_id INTEGER NOT NULL REFERENCES crawlers(id),
@@ -1286,17 +1307,30 @@ def backfill_stock_keys(conn) -> int:
     # schema allows deliberately. record_key folds the *listing* title, so
     # those rows disagree whenever the sites name what they matched
     # differently, and only one of them can supply the identity's single key.
-    # Both live writers upsert that identity, so the last one to run owns it;
-    # this has to break the tie the same way or the two take it in turns, a
-    # sweep re-pointing the identity at an earlier row and the next live write
-    # pointing it back. Hence `s.id DESC` beside `last_seen DESC`: within a
-    # sync the timestamps are identical, and the highest id is the last write.
-    # (Copilot, PR #368, round 26.)
+    # Both live writers upsert that identity, so the last one to run owns it,
+    # and a sweep that picks a different row re-points the identity while the
+    # next live write points it back -- the two taking it in turns, and a
+    # verdict written about one of the two records reaching listings of the
+    # other through whichever key the identity is holding.
+    #
+    # Ordering cannot settle that, because there is no column that says which
+    # write committed last. `last_seen` is CURRENT_TIMESTAMP, which is the
+    # *transaction start*, so a catalog replacement that began first, was
+    # overtaken, and committed last still carries the older stamp -- and
+    # `s.id DESC` only settles the timestamps-equal case. So this stops
+    # trying: an identity holding the key of *any* of its live rows is a
+    # legitimate winner and is left alone. Only one matching none is stale,
+    # and repairing that is what this pass is for. The `ORDER BY` picks which
+    # row to repair it from, one time, and the next sweep then agrees with
+    # itself. (Copilot, PR #368, rounds 26 and 27.)
     live = conn.execute(
         """
         SELECT DISTINCT ON (s.item_key)
                s.item_key, s.record_key AS stock_record_key,
-               i.record_key, i.artist, i.title
+               i.record_key, i.artist, i.title,
+               bool_or(s.record_key IS NOT NULL
+                       AND s.record_key IS NOT DISTINCT FROM i.record_key)
+                   OVER (PARTITION BY s.item_key) AS identity_matches_a_row
         FROM stock_items s
         JOIN stock_item_identities i ON i.item_key = s.item_key
         ORDER BY s.item_key, s.last_seen DESC, s.id DESC
@@ -1314,6 +1348,10 @@ def backfill_stock_keys(conn) -> int:
     ).fetchall()
     wrong = []
     for row in live:
+        if row["identity_matches_a_row"]:
+            # Already the fold of one of this item's live rows, so whichever
+            # writer put it there won a tie this pass has no better answer to.
+            continue
         wanted = row["stock_record_key"]
         if wanted is None:
             # The stock row is there but has no key yet -- the trigger cleared
@@ -4180,7 +4218,7 @@ def get_unjudged_stock_items(conn, user_id: int, limit: int) -> list[dict]:
     crawlers find one record at one URL and name what they matched
     differently -- the rows fold apart while the key that stores the verdict
     does not. Whichever group is billed, the `item_key` floor in
-    `_record_judged_exists` reads the other as judged from the same row.
+    `_judged_record_sql` reads the other as judged from the same row.
     A no-op wherever the keys behave. (Copilot, PR #368, round 26.)
     """
     limit_clause = "LIMIT %(limit)s" if limit > 0 else ""

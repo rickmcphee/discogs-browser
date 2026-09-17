@@ -407,14 +407,20 @@ rather than by every URL a shop has ever used.
 one URL write two `stock_items` rows under one key — which the schema permits
 deliberately. `record_key` folds the *listing* title, so those rows disagree
 whenever the two sites name what they matched differently, and only one of
-them can supply the identity's single key. Two things follow. The sweep breaks
-that tie the way the live writers do, newest write first, or the two take it
-in turns and the stored key means whichever ran last. And the billable set is
+them can supply the identity's single key. Two things follow. The sweep does
+not try to pick a winner at all: an identity already holding the key of *any*
+of its live rows is left alone, and only one matching none is repaired. It
+cannot do better, because no column says which write committed last —
+`last_seen` is `CURRENT_TIMESTAMP`, the transaction start, so a writer that
+opened first and committed last carries the older stamp. Out-guessing that
+makes the sweep and the live writers take the identity in turns, and once a
+colliding item holds a verdict, a flip lets listings of the *other* record
+inherit one written about the first. And the billable set is
 deduplicated by `item_key` after grouping by record, because a verdict is
 stored per `item_key`: two groups sharing one buy a second model call and
 nothing else, the same artist and title travelling twice for one row. The
-`item_key` floor then reads the group that was not billed as judged from that
-same row.
+`item_key` floor in `_judged_record_sql` then reads the group that was not
+billed as judged from that same row.
 
 **A missing key is not compared at all.** Every query that reads `record_key`
 also requires it to be present, on both sides, and an unkeyed stock row simply

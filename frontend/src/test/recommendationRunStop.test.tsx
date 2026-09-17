@@ -321,6 +321,23 @@ describe('stopping a recommendation run from the profile page', () => {
     await waitFor(() => expect(within(row).getByRole('button')).toHaveTextContent('Stop'))
   })
 
+  // start_judgment_only reads the guards and the router then reads the row for
+  // `running`, so a run that refused this start can finish in between and
+  // leave every flag false. Both named branches miss it, and the click passes
+  // in silence -- which is what those branches were added to end.
+  // (Copilot, PR #368, round 27.)
+  it('says something when a start is refused and the reason has already gone', async () => {
+    const row = await openProfile()
+    await waitFor(() => expect(within(row).getByRole('button')).toHaveTextContent('Refresh'))
+
+    postJudgmentStart.mockResolvedValueOnce({
+      started: false, running: false, stock_sync_running: false, run: null,
+    })
+    fireEvent.click(within(row).getByRole('button'))
+
+    await screen.findByText('Recommendations did not start — try Refresh again.')
+  })
+
   it('keeps Stopping… when a started event is delivered after the stop click', async () => {
     getJudgmentStatus.mockResolvedValue({ any_judged: true, run: run() })
     const row = await openProfile()

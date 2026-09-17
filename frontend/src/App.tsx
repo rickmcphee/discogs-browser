@@ -1368,6 +1368,14 @@ export default function App() {
         setSyncStatus('A recommendation run is already under way — use Stop to end it.')
       } else if (!r.started && r.stock_sync_running) {
         setSyncStatus('In-stock sync running — try Refresh again once it finishes.')
+      } else if (!r.started) {
+        // A refusal whose reason has already gone. start_judgment_only reads
+        // the guards, the router then reads the row for `running`, and a run
+        // that refused this start can finish in between -- leaving all three
+        // flags false. Falling through here is the silence the branches above
+        // exist to end, so the last one says the only thing still true.
+        // (Copilot, PR #368, round 27.)
+        setSyncStatus('Recommendations did not start — try Refresh again.')
       }
     } catch (e: any) {
       // Fenced exactly like the success path above. A rejection can arrive

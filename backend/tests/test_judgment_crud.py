@@ -892,12 +892,19 @@ def test_one_item_key_is_billed_once_even_when_its_rows_fold_apart(pg_test_db):
     )
 
 
-def test_the_sweep_keeps_the_winner_the_live_writers_chose(pg_test_db):
-    """Both writers upsert the identity, so the last one to run owns its key.
-    The sweep has to break the same tie the same way or the two take it in
-    turns: a sweep re-pointing the identity at an earlier row, the next live
-    write pointing it back, and the stored key meaning whichever ran last.
-    (Copilot, PR #368, round 26.)
+def test_the_sweep_leaves_an_identity_that_matches_any_of_its_rows(pg_test_db):
+    """Both writers upsert the identity, so the last one to run owns its key,
+    and a sweep that prefers a different row re-points it while the next live
+    write points it back -- the two taking it in turns, with a verdict written
+    about one of the records reaching listings of the other through whichever
+    key is being held.
+
+    No ordering settles that, because no column says which write committed
+    last: `last_seen` is CURRENT_TIMESTAMP, the *transaction start*, so a
+    writer that began first and committed last still carries the older stamp.
+    The rule is therefore not "pick the newest" but "an identity already
+    holding one of its rows' keys is a legitimate winner".
+    (Copilot, PR #368, rounds 26 and 27.)
     """
     with db.get_admin_pool().connection() as conn:
         item_key = _seed_two_crawlers_on_one_url(
@@ -917,6 +924,49 @@ def test_the_sweep_keeps_the_winner_the_live_writers_chose(pg_test_db):
         f"the sweep moved the identity from {live!r} to {after!r}; "
         "it and the live writers disagree on the winner"
     )
+
+
+def test_the_sweep_does_not_reverse_a_writer_that_committed_last_but_began_first(pg_test_db):
+    """The interleaving `last_seen DESC` cannot see. A catalog replacement
+    opens its transaction, a release crawl opens later and commits first, then
+    the replacement commits last and owns the identity -- while its stock row
+    still carries the *earlier* CURRENT_TIMESTAMP. Ordering on that stamp
+    picks the overtaking row and reverses the identity.
+    (Copilot, PR #368, round 27.)
+    """
+    with db.get_admin_pool().connection() as conn:
+        item_key = _seed_two_crawlers_on_one_url(
+            conn, "Album A Deluxe Reissue", "Album A Live At Leeds")
+        rows = conn.execute(
+            "SELECT id, record_key FROM stock_items WHERE item_key = %s ORDER BY id",
+            [item_key],
+        ).fetchall()
+        first, second = rows[0], rows[1]
+        # The row written first began first, so it stamps the earlier time --
+        # and here it is also the one that committed last, so its key is the
+        # one the identity legitimately holds.
+        conn.execute(
+            "UPDATE stock_items SET last_seen = last_seen - INTERVAL '5 minutes' WHERE id = %s",
+            [first["id"]],
+        )
+        conn.execute(
+            "UPDATE stock_item_identities SET record_key = %s WHERE item_key = %s",
+            [first["record_key"], item_key],
+        )
+        conn.commit()
+
+        db.backfill_stock_keys(conn)
+        conn.commit()
+        after = conn.execute(
+            "SELECT record_key FROM stock_item_identities WHERE item_key = %s", [item_key]
+        ).fetchone()["record_key"]
+
+    assert after == first["record_key"], (
+        f"the sweep reversed the identity to {after!r}, the row with the newer "
+        f"last_seen, discarding {first['record_key']!r} from the writer that "
+        "committed last"
+    )
+    assert first["record_key"] != second["record_key"], "the collision did not arise"
 
 
 def test_backfill_reconciles_an_identity_keyed_before_its_stock_row_came_back(pg_test_db):
@@ -1923,6 +1973,45 @@ def test_claim_stock_judgment_run_clears_the_previous_runs_stop_flag(pg_test_db)
         assert db.record_stock_judgment_progress(
             conn, user_id, second, total=10
         ) == {"stop_requested": False}
+
+
+def test_an_old_binarys_claim_still_clears_the_previous_runs_inherited_count(pg_test_db):
+    """The deploy is rolling, so a Machine running the binary from before the
+    `inherited` column keeps claiming runs. Its ON CONFLICT cannot name a
+    column it does not know, so it resets `judged` and leaves `inherited`
+    holding the last run's count -- which a status request served by a *new*
+    Machine then reports as this run's. The schema zeroes it on any change of
+    `run_token`, which is what a new run is. (Copilot, PR #368, round 27.)
+
+    The claim below is the pre-`inherited` statement, executed verbatim.
+    """
+    with db.get_admin_pool().connection() as conn:
+        user_id = _alice(conn)
+        conn.commit()
+    with db.user_scope(user_id) as conn:
+        first = db.claim_stock_judgment_run(conn, user_id)
+        db.record_stock_judgment_progress(conn, user_id, first, inherited=17)
+        assert db.finish_stock_judgment_run(conn, user_id, first, "complete") is True
+        conn.commit()
+        assert db.get_stock_judgment_run(conn, user_id)["inherited"] == 17
+
+        conn.execute(
+            """
+            INSERT INTO stock_judgment_runs (user_id, status, run_token)
+            VALUES (%(user_id)s, 'running', %(run_token)s)
+            ON CONFLICT (user_id) DO UPDATE SET
+                status = 'running', run_token = EXCLUDED.run_token,
+                judged = 0, total = NULL, error = NULL, stop_requested = FALSE,
+                started_at = CURRENT_TIMESTAMP,
+                heartbeat_at = clock_timestamp(), finished_at = NULL
+            """,
+            {"user_id": user_id, "run_token": "old-binary-token"},
+        )
+        conn.commit()
+
+        assert db.get_stock_judgment_run(conn, user_id)["inherited"] == 0, (
+            "the new run reports the previous run's inherited count"
+        )
 
 
 def test_record_stock_judgment_progress_is_fenced_on_the_claim(pg_test_db):
