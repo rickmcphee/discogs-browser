@@ -17,7 +17,7 @@ import { useIsMobile } from './hooks/useMediaQuery'
 import { navButtonClass, primaryButtonClass, secondaryButtonClass, dismissButtonClass } from './styles/buttons'
 import { refreshCollection, getCollectionStatus, openCrawlStream, getCrawlStatus, postCrawlStart, postStockSyncStart, postJudgmentStart, postJudgmentStop, clearJudgments, exportRecommendationsCsv, importRecommendationsCsv, getCrawlers, getUserSettings, getUserHiddenCrawlers, postUserHiddenCrawlers, getJudgmentStatus, getPriceStatus, getNotificationsUnread, markNotificationsRead, checkHealth, getAuthStatus, setUnauthorizedHandler, hasAvatar } from './api/client'
 import type { StockSyncStartResult } from './api/client'
-import type { CrawlEvent, CrawlStatus, CollectionStatus, CollectionSyncRun, Crawler, AuthStatus, JudgmentStatus } from './api/types'
+import type { CrawlEvent, CrawlStatus, CollectionStatus, CollectionSyncRun, Crawler, AuthStatus, JudgmentStatus, StockJudgmentRun } from './api/types'
 
 type View = 'collection' | 'wantlist' | 'store' | 'settings' | 'logs' | 'queue' | 'account' | 'notifications'
 type LibraryView = Extract<View, 'collection' | 'wantlist' | 'store'>
@@ -139,6 +139,81 @@ function collectionSyncOutcomeMessage(run: CollectionSyncRun): string {
   return `Synced ${run.synced} records${wantlistPart}`
 }
 
+// One wording for a run whose Machine stopped heartbeating, shared by the Stop
+// reply and the poll: it did not finish, it stopped responding, and the
+// staleness window exists to recover from exactly that.
+const STALE_JUDGMENT_RUN_MESSAGE =
+  'That recommendation run stopped responding — nothing is running now, and Refresh will start a fresh one.'
+
+// Written from an event on the Machine running the job, and from the run row
+// on the Machine that hears nothing -- one function, so the two cannot drift
+// into describing the same ending differently. (Copilot, PR #368, round 39.)
+function judgmentEndingMessage(
+  status: 'complete' | 'stopped' | 'error',
+  judged: number,
+  total: number,
+  inherited: number,
+  error: string | null,
+): string {
+  if (status === 'error') return `Finding recommendations failed: ${error}`
+  // Inherited listings are reported on either ending: a run stopped halfway
+  // still fanned out everything it judged before the stop, and those listings
+  // are as much "not paid for again" as the judged ones.
+  const inheritedPart = inherited > 0 ? `, ${inherited} matched to records already judged` : ''
+  return status === 'stopped'
+    // Says what was kept, not just that it ended: the items judged before the
+    // stop stay judged and are not paid for again, and the rest are simply
+    // still unjudged for the next run to pick up.
+    ? `Recommendation run stopped — ${judged} of ${total} items checked${inheritedPart}`
+    : `Finished finding recommendations — ${judged} items checked${inheritedPart}`
+}
+
+// The same ending read off a run *row* rather than an event, for the two
+// readers that are handed one: the poll, and a start whose accepted run had
+// already finished by the time the router read the row. Shared for the reason
+// judgmentEndingMessage is shared, and so the stale distinction is drawn once
+// rather than at each reader. (Copilot, PR #368, round 44.)
+function judgmentRowEndingMessage(run: StockJudgmentRun): string {
+  // A stale row still says `status: 'running'` while `running` is false --
+  // that is what staleness *is*, a claim whose heartbeat stopped. Mapping it
+  // to 'complete' would report a finish that never happened for a worker that
+  // died mid-run. (Copilot, PR #368, round 40.)
+  if (run.stale) return STALE_JUDGMENT_RUN_MESSAGE
+  return judgmentEndingMessage(
+    run.status === 'running' ? 'complete' : run.status,
+    run.judged, run.total ?? 0, run.inherited ?? 0, run.error,
+  )
+}
+
+// Which share of the shared spinner an SSE status belongs to, or null for
+// anything that is not a sync. Any event of a sync's own is evidence that sync
+// exists, whether or not this client saw it start: a stream reconnecting after
+// the start event has left the replay buffer gets a progress line first.
+// Taking the owner only on `*_started` left such a sync writing a live banner
+// while owning no share of the spinner, so it showed progress with nothing
+// turning beside it -- and a judgment run ending alongside it removed the last
+// owner and hid the indicator while the sync went on. Derived here rather than
+// repeated in a dozen handlers, so one added later cannot forget it. A
+// judgment run has its own way in, through showJudgmentRunning.
+// (Copilot, PR #368, round 50.)
+//
+// Endings are deliberately not excluded here, so that what ends a sync is
+// decided in one place: the handler for the ending, which takes the share
+// back through endSyncing before this pass returns. A list of terminal
+// statuses here is a second answer to that question, free to disagree with
+// the first -- and it did. `stock_sync_error` is terminal only when it
+// carries no `source`; with one it reports a single catalog site failing
+// inside a run that goes on to the next, and a reconnect landing on that
+// event owned nothing. Taking a share back the same tick costs one state
+// write inside a batch that renders nothing between the two.
+// (Copilot, PR #368, round 51.)
+function spinnerOwnerOf(status: string | undefined): string | null {
+  if (!status) return null
+  if (status.startsWith('stock_sync_')) return 'stock'
+  if (status.startsWith('sync_')) return 'collection'
+  return null
+}
+
 function formatElapsed(seconds: number | null): string {
   if (seconds === null) return 'unknown'
   if (seconds < 60) return `${seconds}s`
@@ -249,6 +324,34 @@ export default function App() {
   // these two flags. Without this the poll re-enables the button mid-request
   // and the stop's own reply, being older than that read, is then discarded.
   const judgmentStopPending = useRef(false)
+  // The same for a start. A run's ending says nothing about a run being
+  // created: an ending can be replayed while a Refresh POST is still short of
+  // its claim commit, and clearing the flags on it bumps the run sequence, so
+  // the start's own reply -- authoritative about the claim it just made --
+  // fails its sequence check and is discarded. Where this browser's SSE is
+  // served by the other Machine nothing corrects that, and a paid run hides
+  // behind a Refresh button. While a start is in flight it owns the run state
+  // and an ending defers to it. (Copilot, PR #368, round 28.)
+  //
+  // The *action* that raised it, not a bare true, because the two flags are
+  // released by different rules. A newer stop raises the stop flag again, so
+  // an older stop declining to lower it is right; a newer stop does not raise
+  // *this* one, so the same rule left it true for the life of the page
+  // whenever a Stop superseded an in-flight start -- and every later ending
+  // then skipped its cleanup. Holding the action lets a start lower only the
+  // window it opened, which an older start losing to a newer *start* still
+  // cannot do. Zero means no start in flight. (Copilot, PR #368, round 30.)
+  const judgmentStartPending = useRef(0)
+  // The banner this client left behind when it last presented a run, or null
+  // when it is not presenting one. Only the banner: it holds one message and
+  // the newest writer wins, so the take-down asks whether ours is still the
+  // one on screen before replacing it with the ending. The spinner is not
+  // claimed at all -- "busy" is true while *any* operation is going, which is
+  // a question about a set rather than about who spoke last, and
+  // `spinnerOwners` answers it. This carried a second counter for the spinner
+  // until round 48 showed the counter could not answer that question however
+  // it was read. (Copilot, PR #368, rounds 39-41 and 48.)
+  const judgmentPresentation = useRef<{ writes: number } | null>(null)
   // The last (status, judged) the poll saw, so it can tell a run that has
   // advanced from one it has merely been asked about again. Null means "no
   // read yet", and only that very first read is exempt from the bump -- it is
@@ -319,9 +422,36 @@ export default function App() {
   // message reaches the banner: a write that skips it is invisible to the
   // guard, and the guard then talks over it.
   const statusWrites = useRef(0)
+  // The operations that currently want the shared spinner. `syncing` is
+  // derived from the set rather than written by whoever spoke last, because
+  // the banner and the spinner are not the same kind of thing: a banner holds
+  // one message and the newest writer wins, while "busy" is true for as long
+  // as *any* of these is going.
+  //
+  // This was a count of raises for several rounds, on the theory that a later
+  // owner can be told apart from no owner by the number moving. It cannot:
+  // counting answers "has anyone raised since I did", which gets one of the
+  // two cases wrong whichever way it is read. A judgment run renewing its
+  // claim while a stock sync is going bumps the count itself, so at its
+  // ending the number matches and it takes the sync's spinner away with it;
+  // and a collection poll re-raising every tick makes the judgment's own
+  // claim unmatchable for good, stranding its spinner instead. A set answers
+  // the question that was actually being asked. (Copilot, PR #368, round 48.)
+  const spinnerOwners = useRef<Set<string>>(new Set())
 
   // eventId is null for locally-generated messages (button-click failures) that never
   // survive a refresh and so never need replay suppression; those always show.
+  // One way in and one way out, so no owner is invisible to the derivation.
+  const beginSyncing = useCallback((owner: string) => {
+    spinnerOwners.current.add(owner)
+    setSyncing(true)
+  }, [])
+
+  const endSyncing = useCallback((owner: string) => {
+    spinnerOwners.current.delete(owner)
+    setSyncing(spinnerOwners.current.size > 0)
+  }, [])
+
   const setSyncStatus = useCallback((message: string, eventId: number | null = null) => {
     statusWrites.current++
     setSyncMessage(message)
@@ -442,6 +572,59 @@ export default function App() {
     }).catch(() => {})
   }, [fetchUnreadNotifications])
 
+  // Writing a live-run banner, raising the spinner and claiming both are one
+  // act, and this is the only way to perform any of them. They were three
+  // calls a writer had to remember, and three consecutive rounds found one
+  // that forgot: `stock_judgment_progress` claimed without raising, and then
+  // the start refusal, the start's failure recovery and the Stop reply each
+  // wrote without claiming. The failure is the same every time -- the claim
+  // still names an older write, so when the poll sees the run end it lowers
+  // the spinner and then declines to say so, leaving a message about a live
+  // run beside a Refresh button for as long as the page stays open. A caller
+  // cannot forget a step it has no way to take separately.
+  // (Copilot, PR #368, rounds 43-45.)
+  //
+  // The raise cannot be left to the reads, either: the fence protecting a
+  // claimed banner also blocks the read that would otherwise have raised the
+  // spinner, so a progress line arriving first left an active run turning
+  // nothing at all.
+  //
+  // Recorded after the write, so the claim measures silence from the point
+  // the message landed rather than counting it as news -- the same shape the
+  // price-refresh claim uses.
+  const showJudgmentRunning = useCallback((
+    message = 'Finding recommendations for Store items…',
+    eventId: number | null = null,
+  ) => {
+    beginSyncing('judgment')
+    setSyncStatus(message, eventId)
+    judgmentPresentation.current = { writes: statusWrites.current }
+  }, [setSyncStatus, beginSyncing])
+
+  // The other end of that claim, shared by everything that ends a judgment
+  // run: the HTTP take-down, both terminal SSE handlers, and the Stop reply's
+  // own two endings -- the run had already finished, or its Machine is gone
+  // and the row is stale. That last pair turns the run poll off as it writes,
+  // so it is the last reader there will be. It gives up this run's share of
+  // the spinner -- which lowers it only if nothing else still wants it -- and
+  // hands the claim back so a caller that also owns the banner can decide
+  // about the message.
+  //
+  // The events used to lower the spinner outright, which the HTTP path had
+  // stopped doing, so a stock sync that raised it after this run claimed it
+  // lost its busy indicator the moment the judgment ended, and at the time
+  // nothing raised it again -- a sync took its share from `*_started` alone,
+  // never from the progress lines that followed. That half is history:
+  // spinnerOwnerOf takes the share from any sync event now. This release is
+  // what fixed the other half. (Copilot, PR #368, rounds 46, 50 and 52.)
+  const releaseJudgmentPresentation = useCallback(() => {
+    const claimed = judgmentPresentation.current
+    if (claimed === null) return null
+    judgmentPresentation.current = null
+    endSyncing('judgment')
+    return claimed
+  }, [endSyncing])
+
   // Same race, same fix, for hasJudgedItems: the bootstrap fetch below and
   // handleImportRecommendations's post-import refresh can both have a
   // getJudgmentStatus() request in flight, and the judgment SSE handlers and
@@ -453,6 +636,12 @@ export default function App() {
   const refreshJudgmentStatus = useCallback(async (): Promise<JudgmentStatus | null> => {
     const judgedSeq = ++latestHasJudgedItemsSeq.current
     const runSeq = ++latestJudgmentRunSeq.current
+    // The banner and the newest user action as this read found them, for the
+    // turn-on below. Read at entry, so a caller that wants its own message
+    // replaced writes it *before* asking and its write is part of the
+    // baseline rather than news. (Copilot, PR #368, round 38.)
+    const action = latestJudgmentActionSeq.current
+    const writes = statusWrites.current
     try {
       const s = await getJudgmentStatus()
       if (judgedSeq === latestHasJudgedItemsSeq.current) setHasJudgedItems(s.any_judged)
@@ -471,6 +660,54 @@ export default function App() {
         setRecommendationRunning(Boolean(s.run?.running))
         setRecommendationStopping(Boolean(s.run?.running && s.run.stop_requested))
       }
+      // The other half of showJudgmentRunning, and the half a read had no
+      // reason to do until a read started turning the presentation *on*. A run
+      // this client only ever heard about over HTTP gets no terminal event on
+      // this Machine, so nothing else would ever take the spinner down:
+      // "Finding recommendations for Store items…" would go on spinning past
+      // a run that had completed, stopped or failed, for as long as the page
+      // stayed open. The flags were already reconciled here; the presentation
+      // was not. (Copilot, PR #368, round 39.)
+      //
+      // The presentation is turned on here and not only in the discovery read,
+      // because a read that loses the banner race has to be able to try again.
+      // The fence is right to decline -- an overlapping stock sync's progress
+      // line is newer and more specific than a generic judgment banner -- but
+      // declining *permanently* left a cross-Machine run with no banner and no
+      // spinner once that sync finished, and, with no claim ever taken, no way
+      // to report its row-only ending either. The poll calls this function
+      // directly, so every tick is a fresh baseline and a fresh chance.
+      // (Copilot, PR #368, round 47.)
+      //
+      // Only when we hold no claim: while we do, the run's own progress lines
+      // own the banner, and re-announcing the generic message over "…40/120"
+      // every few seconds is the clobber the fence exists to prevent.
+      if (s.run?.running && judgmentPresentation.current === null
+          && action === latestJudgmentActionSeq.current && !judgmentStopPending.current
+          && statusWrites.current === writes) {
+        showJudgmentRunning()
+      }
+      // Only a banner this client put up and nobody has written over since --
+      // if a terminal event did arrive it wrote the same ending already and
+      // bumped the counter, so this stays quiet rather than saying it twice.
+      // The claim is dropped either way: the run is over, so it is no longer
+      // ours to take down.
+      if (judgmentPresentation.current !== null && !s.run?.running && !judgmentStopPending.current) {
+        // Two questions, asked separately. Giving up this run's share of the
+        // spinner lowers it only if nothing else still wants it, and it is
+        // given up even where the banner has moved on to someone else's
+        // message -- that is exactly when holding on is worst, since the
+        // spinner would then be turning beside a message with nothing to do
+        // with a run.
+        const claimed = releaseJudgmentPresentation()
+        if (claimed !== null && statusWrites.current === claimed.writes) {
+          // A row that has gone entirely -- cleared out from under us -- can
+          // still end the spinner, but has nothing to report, and inventing
+          // "Finished, 0 items" for it would be worse than leaving the last
+          // true thing on screen.
+          if (s.run) setSyncStatus(judgmentRowEndingMessage(s.run))
+        }
+      }
       // The judgments this run has written are invisible to an already-open
       // Store tab unless something tells it to refetch, and on the Machine
       // that is not running the job nothing does: the generation bumps live on
@@ -487,7 +724,11 @@ export default function App() {
       // identically -- a previous `complete/40` and a fresh one-batch run that
       // also reaches `complete/40` between two reads are indistinguishable
       // without it, and the Store would sit on the older run's judgments.
-      const seen = `${s.run?.started_at ?? 'none'}/${s.run?.status ?? 'none'}/${s.run?.judged ?? 0}`
+      // inherited is in the key beside judged: a run can write rows to
+      // stock_item_judgments without judging anything, and those rows are
+      // exactly what the Store tab needs to refetch for.
+      const seen = `${s.run?.started_at ?? 'none'}/${s.run?.status ?? 'none'}`
+        + `/${s.run?.judged ?? 0}/${s.run?.inherited ?? 0}`
       if (seen !== lastJudgmentRunSeen.current) {
         if (lastJudgmentRunSeen.current !== null) {
           setStockSyncGeneration(g => g + 1)
@@ -501,7 +742,7 @@ export default function App() {
       // say", and the poll below decides for itself whether to keep trying.
       return null
     }
-  }, [])
+  }, [setSyncStatus, releaseJudgmentPresentation, showJudgmentRunning])
 
   // The discovery read, retried a bounded number of times, in the shape the
   // collection sync's own discovery poll already uses.
@@ -517,13 +758,58 @@ export default function App() {
   // committing the claim, so an immediate read can win that race and answer
   // `run: null` about a run that is about to exist. Ending there would hide it
   // for good, since nothing else is coming. Returns whether a run is under way.
+  //
+  // Fenced on the action counter, because the retry spans seconds and a user
+  // can act inside it. Every attempt calls refreshJudgmentStatus, which bumps
+  // latestJudgmentRunSeq -- so a retry landing after a Refresh click holds a
+  // token newer than the start request's, reads the row before that claim
+  // commits, and the accepted start response is discarded by its own sequence
+  // check. Where this browser's SSE is served by the other Machine nothing
+  // else corrects it, and a paid run sits behind a button still reading
+  // Refresh. A newer action is newer truth and drives its own reads, so this
+  // one stops. Read rather than bumped: callers that own an action take it
+  // first and must not fence themselves out. (Copilot, PR #368, round 25.)
+  // The run flags are not the whole of "a run is under way" -- the spinner and
+  // the banner say it too, and nothing reconciles *those* against the row. An
+  // ending replayed onto a live run keeps its hands off the flags, by the
+  // start-in-flight guard while a start owns them and by the read that follows
+  // otherwise, but still turns the spinner off and writes "Finished…". On the
+  // Machine not running the job no later event corrects that, so a run that is
+  // still spending the user's key reads as finished for the whole of its
+  // length. So whoever restores the flags restores these with them.
+  // (Copilot, PR #368, round 34.)
+  // Renewed by *every* writer of a running banner -- this read, and the
+  // started and progress events -- rather than by the read alone. A claim
+  // taken once and never renewed is broken by the run's own next progress
+  // line, which then leaves nothing able to close the run out: the write
+  // count no longer matches, so the poll declines the take-down and drops the
+  // claim, and "…40/120" sits there with its spinner for good. Renewing on
+  // our own writes keeps an *unrelated* writer -- a stock sync on the same
+  // shared banner -- protected, which is the whole point of measuring writes
+  // rather than just flagging ownership. (Copilot, PR #368, round 40.)
+  //
+  // Recorded after the write, so the claim measures silence from the point
+  // the message landed rather than counting it as news -- the same shape the
+  // price-refresh claim uses.
+  //
   const discoverJudgmentRun = useCallback(async (waitForRun = false): Promise<boolean> => {
+    const action = latestJudgmentActionSeq.current
     for (let attempt = 0; attempt < POLL_READ_ATTEMPTS; attempt++) {
+      // The presentation comes from refreshJudgmentStatus itself, not from
+      // here. It began at this call site, because the caller that needed it
+      // most was the mount-time read -- a page loaded while a run is going on
+      // the other Machine gets its Stop button from that read and nothing
+      // else, no event being on the way. But this loop runs once, and the
+      // *poll* calls refreshJudgmentStatus directly, so a read that lost the
+      // banner race here had no second chance. It lives one level down now,
+      // where every reader of the row gets it and every tick retries it.
+      // (Copilot, PR #368, rounds 34-37 and 47.)
       const status = await refreshJudgmentStatus()
       if (status?.run?.running) return true
       if (status && !waitForRun) return false
       if (attempt < POLL_READ_ATTEMPTS - 1) {
         await new Promise(r => setTimeout(r, JUDGMENT_RUN_POLL_MS))
+        if (action !== latestJudgmentActionSeq.current) return false
       }
     }
     return false
@@ -605,8 +891,9 @@ export default function App() {
     function handleEvent(e: MessageEvent) {
       const event: CrawlEvent = JSON.parse(e.data)
       if (event.status === 'ping') return
+      const owner = spinnerOwnerOf(event.status)
+      if (owner !== null) beginSyncing(owner)
       if (event.status === 'sync_started') {
-        setSyncing(true)
         setSyncStatus(event.scope === 'wishlist' ? 'Syncing wantlist…' : 'Syncing collection…', event.id ?? null)
         return
       }
@@ -630,7 +917,7 @@ export default function App() {
         // clears this again the moment it sees the run still running.
         sseAnnouncedOutcomeRef.current = true
         sseTerminalSeqRef.current += 1
-        setSyncing(false)
+        endSyncing('collection')
         if (event.scope === 'wishlist') {
           setSyncStatus(`Synced ${event.wishlist_synced} wantlist items for ${event.username}`, event.id ?? null)
         } else {
@@ -644,7 +931,7 @@ export default function App() {
       if (event.status === 'sync_error') {
         sseAnnouncedOutcomeRef.current = true
         sseTerminalSeqRef.current += 1
-        setSyncing(false)
+        endSyncing('collection')
         setSyncStatus(`Sync failed: ${event.error}`, event.id ?? null)
         // Each page's writes (including price_paid) commit before the next page
         // starts, so a sync that fails partway through can still have changed
@@ -673,7 +960,6 @@ export default function App() {
         return
       }
       if (event.status === 'stock_sync_started') {
-        setSyncing(true)
         setStockSyncTarget(event.crawler_id ?? 'all')
         setStockSyncStarting(null)
         setSyncStatus('Syncing in-stock catalog…', event.id ?? null)
@@ -710,7 +996,7 @@ export default function App() {
         return
       }
       if (event.status === 'stock_sync_complete') {
-        setSyncing(false)
+        endSyncing('stock')
         setStockSyncTarget(null)
         setStockSyncStarting(null)
         setSyncStatus(`In-stock sync complete: ${event.synced} items`, event.id ?? null)
@@ -721,7 +1007,7 @@ export default function App() {
       }
       if (event.status === 'stock_sync_error') {
         if (!event.source) {
-          setSyncing(false)
+          endSyncing('stock')
           setStockSyncTarget(null)
           setStockSyncStarting(null)
         }
@@ -729,7 +1015,7 @@ export default function App() {
         return
       }
       if (event.status === 'stock_sync_aborted') {
-        setSyncing(false)
+        endSyncing('stock')
         setStockSyncTarget(null)
         setStockSyncStarting(null)
         const sources = event.sources?.length ? ` (${event.sources.join(', ')})` : ''
@@ -737,7 +1023,6 @@ export default function App() {
         return
       }
       if (event.status === 'stock_judgment_started') {
-        setSyncing(true)
         // The same-Machine fast path for the button: this browser heard the
         // run start, so it need not wait for the poll's first tick. A run
         // whose events go to the other Machine's subscribers reaches the same
@@ -750,7 +1035,7 @@ export default function App() {
         // nothing. The row clears it, through the poll or a terminal event.
         latestJudgmentRunSeq.current++
         setRecommendationRunning(true)
-        setSyncStatus('Finding recommendations for Store items…', event.id ?? null)
+        showJudgmentRunning(undefined, event.id ?? null)
         return
       }
       if (event.status === 'stock_judgment_progress') {
@@ -762,48 +1047,101 @@ export default function App() {
         setRecommendationRunning(true)
         setStockSyncGeneration(g => g + 1)
         setStockJudgmentGeneration(g => g + 1)
-        setSyncStatus(`Finding recommendations for Store items… ${event.judged}/${event.total}`, event.id ?? null)
+        showJudgmentRunning(
+          `Finding recommendations for Store items… ${event.judged}/${event.total}`, event.id ?? null)
         return
       }
       if (event.status === 'stock_judgment_complete' || event.status === 'stock_judgment_stopped') {
         const stopped = event.status === 'stock_judgment_stopped'
-        setSyncing(false)
-        latestJudgmentRunSeq.current++
-        setRecommendationRunning(false)
-        setRecommendationStopping(false)
+        const judged = event.judged ?? 0
+        const inherited = event.inherited ?? 0
+        // Everything this handler says about the run defers to a start in
+        // flight, not only the flags. Round 28 gave a newer Refresh ownership
+        // of those and the presentation went on tearing itself down anyway: a
+        // replayed ending gave up the spinner share and wrote "Finished..."
+        // over a run the click had just started -- and the one thing that
+        // would have repaired it, the read below, is skipped in exactly this
+        // case, so the stale ending stood for the length of the request. The
+        // start owns the presentation instead, and writes it on every path it
+        // can take: its reply, its refusal, or its failure recovery's read.
+        // (Copilot, PR #368, round 55.)
+        const reconcile = judgmentStartPending.current === 0
+        if (reconcile) {
+          releaseJudgmentPresentation()
+          latestJudgmentRunSeq.current++
+          setRecommendationRunning(false)
+          setRecommendationStopping(false)
+        }
+        // Either count proves judgments now exist. A run that judged nothing
+        // but inherited something still wrote rows, and gating on `judged`
+        // alone left Recommended and Export disabled in any client whose
+        // bootstrap fetch had returned any_judged: false.
+        //
+        // Written *before* the read below, not after, because whoever bumps
+        // the sequence last is the one whose answer survives. An ending can be
+        // replayed after a Clear has removed every judgment -- its counts are
+        // then true of a run that happened and false of the database -- and
+        // bumping after starting the read threw away the one `any_judged:
+        // false` that could tell the two apart, leaving Recommended and Export
+        // enabled over an empty table. (Copilot, PR #368, round 23.)
+        if (judged > 0 || inherited > 0) {
+          latestHasJudgedItemsSeq.current++
+          setHasJudgedItems(true)
+        }
         // A judgment event names no run, so an ending delivered late -- this
         // Machine's buffer replaying it, or a slow queue -- is indistinguishable
         // from the current run's. Clearing the flags on it is right nearly
         // always and wrong exactly when a newer run has started since, where it
         // would take Stop away from a run still spending and stop the poll that
-        // would have noticed. So the row gets the last word: one read, which
+        // would have noticed. So the row gets the last word: a read, which
         // restores the flags if a run is in fact still going.
-        refreshJudgmentStatus()
-        if ((event.judged ?? 0) > 0) {
-          latestHasJudgedItemsSeq.current++
-          setHasJudgedItems(true)
-        }
+        //
+        // Retried rather than fired once, because a read that never lands
+        // cannot overrule anything. refreshJudgmentStatus swallows a failed
+        // request into null, this handler has just stopped the run poll, and
+        // on the Machine that did not run the job nothing else is coming --
+        // so one dropped request leaves the optimistic write above standing
+        // for good, which is the empty-table state the reordering was for.
+        // (Copilot, PR #368, round 24.)
         setStockSyncGeneration(g => g + 1)
         setStockJudgmentGeneration(g => g + 1)
-        setSyncStatus(
-          stopped
-            // Says what was kept, not just that it ended: the items judged
-            // before the stop stay judged and are not paid for again, and the
-            // rest are simply still unjudged for the next run to pick up.
-            ? `Recommendation run stopped — ${event.judged} of ${event.total} items checked`
-            : `Finished finding recommendations — ${event.judged} items checked`,
+        if (reconcile) setSyncStatus(
+          judgmentEndingMessage(
+            stopped ? 'stopped' : 'complete', judged, event.total ?? 0, inherited, null,
+          ),
           event.id ?? null,
         )
+        // Asked last, after the message above, because the read restores the
+        // spinner and the banner when it finds the run still going -- the
+        // presentation this handler has just written is as wrong as the flags
+        // were -- and it only replaces a banner nothing has touched since it
+        // was issued. Writing first is what puts *this* ending's message
+        // inside that baseline, so the read may overrule it while a newer
+        // event still cannot be overruled. (Copilot, PR #368, round 38.)
+        if (reconcile) discoverJudgmentRun()
         return
       }
       if (event.status === 'stock_judgment_error') {
-        setSyncing(false)
-        latestJudgmentRunSeq.current++
-        setRecommendationRunning(false)
-        setRecommendationStopping(false)
-        // Confirmed against the row, same as the two endings above.
-        refreshJudgmentStatus()
-        setSyncStatus(`Finding recommendations failed: ${event.error}`, event.id ?? null)
+        // Defers to a start in flight as the two endings above do, and on the
+        // same terms: the presentation and the message go with the flags.
+        const reconcile = judgmentStartPending.current === 0
+        if (reconcile) {
+          releaseJudgmentPresentation()
+          latestJudgmentRunSeq.current++
+          setRecommendationRunning(false)
+          setRecommendationStopping(false)
+          // Confirmed against the row, same as the two endings above, and
+          // retried for the same reason -- and it restores the presentation
+          // as well, which an error ending needs as much as they do. An error
+          // names no run either, so a replayed one can belong to a run that
+          // has since been replaced; the row saying a run is live makes the
+          // failure a *previous* run's, and leaving "Finding recommendations
+          // failed" up with the spinner off then describes the wrong run for
+          // the length of the right one. (Copilot, PR #368, round 35.)
+          setSyncStatus(judgmentEndingMessage('error', 0, 0, 0, event.error ?? null), event.id ?? null)
+        }
+        // After the message, for the reason the two endings above give.
+        if (reconcile) discoverJudgmentRun()
         return
       }
       if (event.type === 'listing_changed') {
@@ -860,7 +1198,8 @@ export default function App() {
       source?.close()
       clearTimeout(reconnectTimer)
     }
-  }, [authState, setSyncStatus, fetchPriceStatus, refreshJudgmentStatus])
+  }, [authState, setSyncStatus, fetchPriceStatus, refreshJudgmentStatus, discoverJudgmentRun,
+      showJudgmentRunning, releaseJudgmentPresentation, beginSyncing, endSyncing])
 
   // Rides priceGeneration rather than a notification-specific SSE event: a
   // per-user event would have to be tagged with an owner, and the crawl worker
@@ -1015,7 +1354,7 @@ export default function App() {
             // Whatever outcome the stream announced, it was not this run's --
             // this one is still going.
             sseAnnouncedOutcomeRef.current = false
-            setSyncing(true)
+            beginSyncing('collection')
             const progress = `${run.page}/${run.total_pages}/${run.synced}/${run.wishlist_synced}`
             if (progress !== lastSyncProgressRef.current) {
               lastSyncProgressRef.current = progress
@@ -1044,7 +1383,7 @@ export default function App() {
           } else if (followingSyncRef.current) {
             const alreadySpoken = sseAnnouncedOutcomeRef.current
             releaseSyncFollow()
-            setSyncing(false)
+            endSyncing('collection')
             // The refetch happens either way -- it is the whole point, and the
             // one thing that must not be lost. The line is skipped only when
             // the stream has just said the same thing.
@@ -1088,7 +1427,8 @@ export default function App() {
     // Keyed on whether the user is signed in, not on the authState object:
     // that object is replaced on every revalidation, and restarting the poll
     // for one costs nothing but risks everything above.
-  }, [authed, syncPollNonce, setSyncStatus, fetchPriceStatus, releaseSyncFollow])
+  }, [authed, syncPollNonce, setSyncStatus, fetchPriceStatus, releaseSyncFollow, beginSyncing,
+      endSyncing])
 
   // Follows a run to its end over HTTP, because the events that narrate one
   // reach only the Machine running it. Keyed on the flag rather than on the
@@ -1300,8 +1640,13 @@ export default function App() {
     // newest writer and turn a disabled "Stopping…" back into "Stop".
     const action = ++latestJudgmentActionSeq.current
     const seq = ++latestJudgmentRunSeq.current
+    judgmentStartPending.current = action
     try {
       const r = await postJudgmentStart()
+      // Lowered the moment this POST is no longer in flight, by the start that
+      // opened the window and nobody else. The recovery in the catch below
+      // reads the row itself, so it needs the window shut before it runs.
+      if (judgmentStartPending.current === action) judgmentStartPending.current = 0
       if (action !== latestJudgmentActionSeq.current) return
       if (seq !== latestJudgmentRunSeq.current) return
       // The reply carries the row, so the button flips to Stop on the response
@@ -1309,17 +1654,67 @@ export default function App() {
       // Refresh for the whole of a run whose events went to the other Machine.
       setRecommendationRunning(r.running)
       setRecommendationStopping(Boolean(r.run?.running && r.run.stop_requested))
+      // The reply knows a run is live, so it restores the spinner and the
+      // banner as well as the flags -- an ending replayed while this POST was
+      // in flight deferred the flags to this start and left the presentation
+      // saying "Finished…". Before the refusal branches below, so the one that
+      // explains *why* a start was refused still gets the last word.
+      // (Copilot, PR #368, round 34.)
+      if (r.running) showJudgmentRunning()
       // A refused start used to pass in silence, which is the same
-      // "did that do anything?" the button's own faces exist to answer.
+      // "did that do anything?" the button's own faces exist to answer. Two
+      // refusals reach here and they need different words: a sync in progress
+      // is worth waiting out, an existing run is worth stopping.
+      //
+      // The run wins when both are true, and both can be: a stock sync is
+      // deliberately allowed to start while a user's judgment run is going --
+      // that mirror guard was not restored, because the sync is global and
+      // judgment is per-user. Saying "try again once the sync finishes" there
+      // sends the user to wait out something that is not what will refuse
+      // them next; their own run is, and Stop is the thing that ends it.
       if (!r.started && r.running) {
-        setSyncStatus('A recommendation run is already under way — use Stop to end it.')
+        showJudgmentRunning('A recommendation run is already under way — use Stop to end it.')
+      } else if (!r.started && r.stock_sync_running) {
+        setSyncStatus('In-stock sync running — try Refresh again once it finishes.')
+      } else if (!r.started) {
+        // A refusal whose reason has already gone. start_judgment_only reads
+        // the guards, the router then reads the row for `running`, and a run
+        // that refused this start can finish in between -- leaving all three
+        // flags false. Falling through here is the silence the branches above
+        // exist to end, so the last one says the only thing still true.
+        // (Copilot, PR #368, round 27.)
+        setSyncStatus('Recommendations did not start — try Refresh again.')
+      } else if (!r.running && r.run) {
+        // An accepted run can be over before the router reads its row: the
+        // start returns once the task exists, and a run with nothing to bill
+        // -- every record already judged, so the whole of it is propagation --
+        // finishes inside that gap. The reply then carries started: true,
+        // running: false and a terminal row; nothing was running to claim for,
+        // so the read below has no claim to reconcile against and says
+        // nothing, and on the Machine not running the job no event says it
+        // either. The click reported a run that did happen as nothing at all.
+        // Report the row it handed us. (Copilot, PR #368, round 44.)
+        setSyncStatus(judgmentRowEndingMessage(r.run))
       }
+      // An ending that arrived while this POST was in flight deferred its
+      // reconciliation rather than doing it, so the start owes that read
+      // whenever no run follows to do it instead. A running start is already
+      // covered, since its poll reads the row every few seconds; a refused or
+      // idle one is not, and if the ending was a replay after a Clear it has
+      // left hasJudgedItems optimistically true over an empty table -- rounds
+      // 23 and 24, reopened by deferring. (Copilot, PR #368, round 29.)
+      //
+      // Last, after the refusal messages above, so the read may overrule one
+      // of them if the row turns out to hold a live run after all, while a
+      // newer event still cannot be overruled. (Copilot, PR #368, round 38.)
+      if (!r.running) discoverJudgmentRun()
     } catch (e: any) {
       // Fenced exactly like the success path above. A rejection can arrive
       // after a started event has enabled Stop and the user has clicked it, and
       // both the message and the recovery read below would then talk over that
       // newer state -- the read especially, since its snapshot can predate the
       // stop commit and would turn the disabled "Stopping…" back into "Stop".
+      if (judgmentStartPending.current === action) judgmentStartPending.current = 0
       if (action !== latestJudgmentActionSeq.current) return
       // A failed request is not a failed start. The server may have claimed
       // the run and created the task before the connection dropped, in which
@@ -1335,13 +1730,13 @@ export default function App() {
       // above bumps the latter itself, so comparing against it here would
       // discard this verdict every time.
       if (action !== latestJudgmentActionSeq.current) return
-      setSyncStatus(
-        running
-          ? 'That request failed, but the recommendation run did start — use Stop to end it.'
-          : `Refresh recommendations failed to start: ${e.message}`,
-      )
+      if (running) {
+        showJudgmentRunning('That request failed, but the recommendation run did start — use Stop to end it.')
+      } else {
+        setSyncStatus(`Refresh recommendations failed to start: ${e.message}`)
+      }
     }
-  }, [setSyncStatus, discoverJudgmentRun])
+  }, [setSyncStatus, discoverJudgmentRun, showJudgmentRunning])
 
   const handleStopRecommendations = useCallback(async () => {
     // Optimistic, and corrected by the reply a moment later: the click has to
@@ -1370,13 +1765,24 @@ export default function App() {
       // it stopped responding. Saying so names the state the staleness window
       // exists to recover from, rather than reporting a completion that never
       // happened.
-      setSyncStatus(
-        r.stopping
-          ? 'Stopping the recommendation run — finishing the batch already paid for…'
-          : r.run?.stale
-            ? 'That recommendation run stopped responding — nothing is running now, and Refresh will start a fresh one.'
-            : 'No recommendation run to stop — it had already finished.',
-      )
+      if (r.stopping) {
+        // A run finishing the batch it has already paid for is still a live
+        // run, so this is a running banner like any other -- and claiming it
+        // is what lets the poll close it out. The two endings below are not:
+        // claiming one would put a spinner over a run that has stopped.
+        showJudgmentRunning('Stopping the recommendation run — finishing the batch already paid for…')
+      } else {
+        // The fourth ender, and the one round 46's sweep did not reach: this
+        // reply is terminal and the line above turns the poll off with it, so
+        // on the cross-Machine path nothing is left that could release the
+        // share -- no terminal event arrives, and no further read runs. The
+        // judgment would hold its owner for the life of the page and the
+        // spinner would turn over a run that has finished.
+        releaseJudgmentPresentation()
+        setSyncStatus(r.run?.stale
+          ? STALE_JUDGMENT_RUN_MESSAGE
+          : 'No recommendation run to stop — it had already finished.')
+      }
     } catch (e: any) {
       if (action !== latestJudgmentActionSeq.current) return
       latestJudgmentRunSeq.current++
@@ -1387,7 +1793,7 @@ export default function App() {
       // race must not re-open the window its successor is still inside.
       if (action === latestJudgmentActionSeq.current) judgmentStopPending.current = false
     }
-  }, [setSyncStatus])
+  }, [setSyncStatus, showJudgmentRunning, releaseJudgmentPresentation])
 
   const handleExportRecommendations = useCallback(async () => {
     try {

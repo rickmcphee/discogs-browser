@@ -11,7 +11,7 @@ from psycopg_pool import ConnectionPool
 
 import config
 from logging_config import get_logger
-from title_key import title_key
+from title_key import title_key, record_key
 
 log = get_logger("db")
 
@@ -398,6 +398,18 @@ CREATE TABLE IF NOT EXISTS stock_item_identities (
     last_seen TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+-- The same record_key the item's stock_items row carries, written by the same
+-- two paths from the same computed value, so each write aligns the pair for
+-- the observation it is writing. Not a promise that the two always match:
+-- one item_key can carry several live stock rows whose keys differ (see
+-- backfill_stock_keys), and this row is valid when it holds the key of any
+-- one of them.
+-- Here as well as there because this table is the durable one: a judged
+-- listing that goes out of stock, or is re-listed at a new URL, loses its
+-- stock_items row but keeps this one, and the judgment path has to be able to
+-- ask which record that verdict was about long afterwards.
+ALTER TABLE stock_item_identities ADD COLUMN IF NOT EXISTS record_key TEXT;
+
 ALTER TABLE crawl_queue ALTER COLUMN discogs_id DROP NOT NULL;
 ALTER TABLE crawl_queue ADD COLUMN IF NOT EXISTS item_key TEXT REFERENCES stock_item_identities(item_key);
 
@@ -592,9 +604,82 @@ ALTER TABLE listings ADD COLUMN IF NOT EXISTS listing_image_url TEXT;
 -- The fold of `title` two stores' rows share when they sell the same pressing
 -- (title_key.py): what the Store tab's Cheapest filter groups rows by, with
 -- the artist's bare key and the currency. Written by replace_stock_items and
--- upsert_stock_item_from_release; backfill_title_keys sweeps any NULL at boot
--- and at the end of every stock sync.
+-- upsert_stock_item_from_release; backfill_stock_keys re-folds every row at
+-- boot and at the end of every stock sync, repairing a key that is missing
+-- *or* stale -- an old binary preserves one it does not know about while the
+-- title moves, which leaves no NULL to look for.
 ALTER TABLE stock_items ADD COLUMN IF NOT EXISTS title_key TEXT;
+
+-- The fold two rows share when they are the same *record* rather than the
+-- same pressing (title_key.py's record_key): what a taste judgment is billed
+-- per, so a red and a black copy of one album are one paid verdict. Coarser
+-- than title_key on the fenced pressing variants, and finer on word order,
+-- repeats and the noise words a record can be named with.
+-- Written and swept by the same paths as title_key above.
+ALTER TABLE stock_items ADD COLUMN IF NOT EXISTS record_key TEXT;
+
+-- A fold key whose source has moved is worse than one that is missing, and
+-- only the database can catch it at the moment it happens.
+--
+-- The deployment is rolling, so an old binary goes on writing these tables
+-- after a new one has added a key column. Its INSERT does not name a column
+-- it has never heard of, so ON CONFLICT DO UPDATE *preserves* the key while
+-- the title moves -- leaving a key folded from a title the row no longer has,
+-- with nothing NULL to mark it. backfill_stock_keys repairs that, but it
+-- cannot repair it *fast*: between one sweep returning and the judgment
+-- queries that follow, such a row is non-NULL, so the billable set compares
+-- it, groups the listing under a record it is not, and can hand it that
+-- record's verdict. The per-listing judgment then survives every later sweep,
+-- because `_judged_record_sql`'s item_key floor reads it as judged for good.
+--
+-- So the write that creates the hazard is the write that clears it. A key
+-- left untouched while its source fields change is by definition not derived
+-- from them, and NULL is the one value every reader already handles: skipped
+-- by the judgment path, COALESCEd to the raw title by the Cheapest filter,
+-- and re-folded by the next sweep.
+--
+-- Each key is judged on its own, because the old binary knows `title_key` and
+-- writes it correctly; nulling that too would throw away a good value. A
+-- writer that changes a title to one folding to the *same* key trips this and
+-- costs one re-fold, which is the cheap side of a test that cannot itself
+-- fold. The sweep never trips it: it writes keys and leaves sources alone.
+CREATE OR REPLACE FUNCTION clear_fold_keys_left_behind() RETURNS trigger AS $$
+BEGIN
+    IF (NEW.artist IS DISTINCT FROM OLD.artist
+        OR NEW.title IS DISTINCT FROM OLD.title
+        OR NEW.listing_title IS DISTINCT FROM OLD.listing_title) THEN
+        IF NEW.title_key IS NOT DISTINCT FROM OLD.title_key THEN
+            NEW.title_key := NULL;
+        END IF;
+        IF NEW.record_key IS NOT DISTINCT FROM OLD.record_key THEN
+            NEW.record_key := NULL;
+        END IF;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Its own function: stock_item_identities has no listing_title and no
+-- title_key, and naming a missing column would raise at trigger time.
+CREATE OR REPLACE FUNCTION clear_identity_fold_key_left_behind() RETURNS trigger AS $$
+BEGIN
+    IF (NEW.artist IS DISTINCT FROM OLD.artist OR NEW.title IS DISTINCT FROM OLD.title)
+       AND NEW.record_key IS NOT DISTINCT FROM OLD.record_key THEN
+        NEW.record_key := NULL;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS stock_items_clear_stale_fold_keys ON stock_items;
+CREATE TRIGGER stock_items_clear_stale_fold_keys
+    BEFORE UPDATE ON stock_items
+    FOR EACH ROW EXECUTE FUNCTION clear_fold_keys_left_behind();
+
+DROP TRIGGER IF EXISTS stock_item_identities_clear_stale_fold_key ON stock_item_identities;
+CREATE TRIGGER stock_item_identities_clear_stale_fold_key
+    BEFORE UPDATE ON stock_item_identities
+    FOR EACH ROW EXECUTE FUNCTION clear_identity_fold_key_left_behind();
 
 -- Expression indexes, because every artist read path case-folds now: the
 -- artist filters in get_library_releases/get_stock_items, and
@@ -661,10 +746,44 @@ CREATE INDEX IF NOT EXISTS stock_items_cheapest_fold_idx
     ON stock_items ({_artist_sort_sql("artist", escape_percent=False)},
                     COALESCE(title_key, title), COALESCE(UPPER(currency), 'USD'));
 
--- backfill_title_keys runs at the end of every stock sync and is normally a
--- no-op; this makes finding out so a lookup on an empty index, not a scan.
-CREATE INDEX IF NOT EXISTS stock_items_title_key_null_idx
-    ON stock_items (id) WHERE title_key IS NULL;
+-- Dropped with the query that used them. backfill_stock_keys no longer asks
+-- which keys are missing -- a missing key was never the dangerous way a
+-- stored one goes wrong -- so it recomputes every row and reads them all
+-- regardless, while every write still paid to maintain these.
+DROP INDEX IF EXISTS stock_items_title_key_null_idx;
+DROP INDEX IF EXISTS stock_items_record_key_null_idx;
+
+-- The judgment path looks a live stock row's record up among the identities
+-- of everything ever judged. Indexed on this side only: measured at catalog
+-- scale the planner reads most of stock_items either way and hash-joins, so a
+-- matching index over *it* is maintenance on the hottest write path in the app
+-- (replace_stock_items rewrites a crawler's rows wholesale every sync, and the
+-- artist fold is three nested regexp calls a row) bought for a plan Postgres
+-- does not choose.
+--
+-- This one it does choose, and the difference is not marginal: it is the
+-- inner side of propagate_stock_judgments' correlated LATERAL. Keyed on
+-- `record_key` bare, matching what that query actually compares -- an earlier
+-- version indexed COALESCE(record_key, title) and kept it after the query
+-- dropped the fallback, which left the index unusable and propagation back to
+-- scanning every identity for the artist.
+--
+-- Not free: this table is upserted, not appended to, so every sync rewrites
+-- every identity row it sees and maintains this index along with them. On a
+-- 9,000-row catalog, propagation runs in 77 ms with it and 2,168 ms without,
+-- while a whole-catalog replace costs ~1,840 ms against ~1,700 ms.
+CREATE INDEX IF NOT EXISTS stock_item_identities_record_fold_idx
+    ON stock_item_identities ({_artist_sort_sql("artist", escape_percent=False)},
+                              record_key);
+-- Dropped rather than added: the identity half of backfill_stock_keys no
+-- longer asks only for a NULL key. It asks whether the key matches the one on
+-- the item's live stock row, and no index on this table answers that, so the
+-- partial index had no reader left while every upsert still maintained it.
+-- Back, with the query that wants it. The identity pass no longer walks
+-- every identity ever created: it drives the live half off stock_items and
+-- asks this table only for the unkeyed orphans, which is what this answers.
+CREATE INDEX IF NOT EXISTS stock_item_identities_record_key_null_idx
+    ON stock_item_identities (item_key) WHERE record_key IS NULL;
 """
 
 
@@ -823,6 +942,69 @@ CREATE TABLE IF NOT EXISTS stock_item_judgments (
     PRIMARY KEY (user_id, item_key)
 );
 
+-- Which record this verdict is about, as opposed to which listing it is
+-- filed under. The two are not the same question and the row cannot answer
+-- the first without this column: a verdict is keyed by item_key, item_key
+-- hashes artist|title|url and nothing else, and record_key folds the
+-- *listing* title -- so one key's live rows can fold to two records, and
+-- stock_item_identities can only ever hold one of them. Reading the record
+-- off the identity therefore attributes a verdict about one record to the
+-- other whenever the two disagree, which suppresses every genuine listing of
+-- that other record from the billable set and then hands it a verdict, with
+-- a reason written about a different album.
+--
+-- NULL means "not recorded": a verdict written before this column, or one
+-- that arrived by import, which carries no record attribution at all. Those
+-- fall back to the identity, and only where the item_key is unambiguous --
+-- see _judged_record_matches_sql. Deliberately not backfilled from the
+-- identity: for every key where the fallback is safe the two agree anyway,
+-- and for the keys where they do not the identity is exactly the guess this
+-- column exists to stop trusting.
+ALTER TABLE stock_item_judgments ADD COLUMN IF NOT EXISTS record_key TEXT;
+
+-- And the same rolling-deploy hole the fold keys have, for the same reason.
+-- An old binary keeps serving after the new one adds this column, and its
+-- ON CONFLICT DO UPDATE names the verdict fields and not a column it does not
+-- know about -- so Postgres *preserves* the old attribution while replacing
+-- the verdict it was about. A NULL is read as "not recorded" and consults the
+-- guard; a stale key skips it, which makes an unattributable verdict a
+-- confident record-level source and is the one thing worse than not knowing.
+--
+-- Keyed on a new verdict *occasion*, which is what judged_at records -- not
+-- on the verdict's text changing. Round 49 tested the text alone and an
+-- import walked through the gap: re-importing a CSV this app exported
+-- replaces a verdict with its own words, so only the date moves, and an old
+-- binary doing that kept the local run's attribution on a row that no longer
+-- had one. The same prose reached twice is not the same occasion, and only
+-- the writer of the second one can say which record it was about.
+--
+-- A writer naming a *different* record is believed, which is what the second
+-- condition exempts. One naming the same record loses the attribution to
+-- NULL, and that costs a fallback to the identity -- where the fallback is
+-- safe the two agree anyway, so the cost lands only on the ambiguous keys the
+-- guard already excludes. It is also rarer than it looks: the billable set
+-- excludes judged items, so the live writer almost always INSERTs, and an
+-- INSERT never reaches this trigger. That is the cheap side of a test the row
+-- cannot make for itself: record_key is not derivable from any column here,
+-- so unlike the fold keys there is no source to compare it against.
+-- (Copilot, PR #368, rounds 49 and 54.)
+CREATE OR REPLACE FUNCTION clear_verdict_attribution_left_behind() RETURNS trigger AS $$
+BEGIN
+    IF (NEW.recommended IS DISTINCT FROM OLD.recommended
+        OR NEW.reason IS DISTINCT FROM OLD.reason
+        OR NEW.judged_at IS DISTINCT FROM OLD.judged_at)
+       AND NEW.record_key IS NOT DISTINCT FROM OLD.record_key THEN
+        NEW.record_key := NULL;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS stock_item_judgments_clear_stale_attribution ON stock_item_judgments;
+CREATE TRIGGER stock_item_judgments_clear_stale_attribution
+    BEFORE UPDATE ON stock_item_judgments
+    FOR EACH ROW EXECUTE FUNCTION clear_verdict_attribution_left_behind();
+
 -- The current (or most recent) recommendation run for one user, as a row
 -- rather than as process memory. CrawlManager._judgment_tasks and the
 -- stock_judgment_* events that narrate a run are both in-process, and nothing
@@ -856,6 +1038,34 @@ CREATE TABLE IF NOT EXISTS stock_judgment_runs (
     finished_at TIMESTAMP,
     run_token TEXT
 );
+-- Listings that took a verdict their record already held, rather than being
+-- paid for. On the row and not only on the SSE event, because the event
+-- reaches subscribers of the Machine running the job and the deployment does
+-- not guarantee that is the one holding the browser's stream. A client on the
+-- other Machine follows the run by polling, and without this it is told a run
+-- that spent nothing checked nothing.
+ALTER TABLE stock_judgment_runs ADD COLUMN IF NOT EXISTS inherited INTEGER NOT NULL DEFAULT 0;
+
+-- Zeroed by the schema and not only by the claim, for the same rolling-deploy
+-- reason the fold-key triggers exist: an old binary's claim cannot name a
+-- column it does not know, so its ON CONFLICT resets `judged` and leaves
+-- `inherited` holding the *previous* run's count -- which a status request
+-- served by a new Machine then reports as this run's. A new run is exactly a
+-- new run_token, so that is what this watches. The claim still sets it too,
+-- and the two agree. (Copilot, PR #368, round 27.)
+CREATE OR REPLACE FUNCTION reset_run_counts_on_new_claim() RETURNS trigger AS $$
+BEGIN
+    IF NEW.run_token IS DISTINCT FROM OLD.run_token THEN
+        NEW.inherited := 0;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS stock_judgment_runs_reset_counts ON stock_judgment_runs;
+CREATE TRIGGER stock_judgment_runs_reset_counts
+    BEFORE UPDATE ON stock_judgment_runs
+    FOR EACH ROW EXECUTE FUNCTION reset_run_counts_on_new_claim();
 
 CREATE TABLE IF NOT EXISTS user_hidden_crawlers (
     user_id INTEGER NOT NULL REFERENCES users(id),
@@ -1014,40 +1224,256 @@ def _ensure_role(conn, role_name: str, password: str, bypass_rls: bool):
     )
 
 
-def backfill_title_keys(conn) -> int:
-    """Key every stock row without stock_items.title_key; returns how many.
+def backfill_stock_keys(conn) -> int:
+    """Make every stored fold key match the row it was folded from, and every
+    stock_item_identities row carry the record_key its live stock row does.
+    Returns how many rows that rewrote. Blocking and CPU-bound; call it off
+    the event loop. **Commits `conn` between its two passes** -- see the note
+    on the deadlock that buys.
 
-    Python-side rather than an UPDATE in TENANT_SCHEMA because the fold lives
-    in title_key.py, and one copy of it is the point. Rows still NULL would
-    not merely sit out the Cheapest filter: the grouping treats every NULL as
-    one key, so they would all compete as a single record (COALESCE in
-    _cheapest_clause is the second guard).
+    Python-side rather than an UPDATE in TENANT_SCHEMA because both folds live
+    in title_key.py, and one copy of them is the point.
 
-    Run at boot for the rows that predate the column, and again at the end of
-    every stock sync, because boot alone leaves a hole: the deployment is a
-    rolling one across two machines, so an old binary can still be writing
-    unkeyed rows -- a store snapshot, a marketplace match -- after a new
-    machine's boot sweep has already run, and the boot sweep never revisits
-    them. The sync-end sweep does, on the first sync any new machine runs.
-    Idempotent, and normally empty: the partial index on NULL keys makes the
-    empty case a lookup rather than a scan.
+    **It recomputes, rather than asking which keys are missing.** That is the
+    expensive choice and it is deliberate. A missing key is not the only way a
+    stored one goes wrong, and it is not the dangerous way. The deployment is
+    rolling, so an old binary keeps writing `stock_items` after a new one has
+    added this column, and its INSERT names neither key that it does not know
+    about -- so `ON CONFLICT DO UPDATE` *preserves* whatever is there while
+    `listing_title` and `title` move to a new name. The row ends up holding a
+    key folded from a title it no longer has, with nothing NULL anywhere to
+    mark it, and the identity beside it holding the same stale value, so the
+    identity pass below sees agreement and leaves them. Permanently invisible
+    to any test that asks about NULLs, and a false *merge*: that listing joins
+    a record it is not, and takes that record's verdict.
+
+    The rule it enforces instead has no such gap: the stored pair must equal
+    the fold of the row's own current artist/title/listing_title, which is
+    exactly what both live writers put there. Anything else is stale, however
+    it got that way.
+
+    Costs a fold per row: measured at 9,000 stock rows, ~850 ms, against the
+    ~1,840 ms whole-catalog replace it follows at the end of a sync and the
+    Anthropic round trips it precedes at the start of a judgment run. It was
+    ~23 ms while it only looked for NULLs, and that is what the cheap version
+    was buying -- a fast answer to a question that missed the case worth
+    asking about. Both callers hand it to a thread, since this is CPU-bound
+    Python. The partial indexes on stock_items' NULL keys went with the
+    NULL-only query: a scan reads every row regardless.
+
+    It grows with the *live catalog*, and only that. Reading the identities
+    table for the whole pass made it grow with every URL any shop had ever
+    used, since nothing prunes it: at 9,000 live rows, 855 ms with no dead
+    identities, 991 ms with 40,000 and 1,343 ms with 120,000. Driving the live
+    half off stock_items and asking the identities only for unkeyed orphans
+    holds it flat -- 826, 845, 840 ms across the same three -- and gives
+    stock_item_identities_record_key_null_idx a reader again.
 
     The same derivation as the two live writers: the name the site gave the
     item when it gave one (a release-crawler row's listing_title, which can
     name a different pressing than the target), else the title, with the
     artist along to strip a leading "Artist - ".
     """
+    # Stock rows first, identities second, because the identity pass below
+    # copies its answer from them.
     rows = conn.execute(
-        "SELECT id, artist, title, listing_title FROM stock_items WHERE title_key IS NULL"
+        "SELECT id, artist, title, listing_title, title_key, record_key FROM stock_items"
     ).fetchall()
-    if not rows:
-        return 0
-    with conn.cursor() as cur:
-        cur.executemany(
-            "UPDATE stock_items SET title_key = %s WHERE id = %s",
-            [(title_key(row["listing_title"] or row["title"], row["artist"]), row["id"]) for row in rows],
-        )
-    return len(rows)
+    stale = []
+    for row in rows:
+        source = row["listing_title"] or row["title"]
+        wanted_title = title_key(source, row["artist"])
+        wanted_record = record_key(source, row["artist"])
+        if row["title_key"] != wanted_title or row["record_key"] != wanted_record:
+            stale.append((wanted_title, wanted_record, row["id"],
+                          row["artist"], row["title"], row["listing_title"]))
+    keyed_rows = 0
+    if stale:
+        with conn.cursor() as cur:
+            # Both columns rewritten when either is wrong, rather than one
+            # UPDATE per column: the two derive from the same three fields, so
+            # a row needing one is no cheaper to fix than a row needing both,
+            # and the pair can never be left disagreeing about which title
+            # they read.
+            #
+            # Conditional on the three source fields still reading as they did
+            # in the SELECT above, because the fold in between happens in
+            # Python and the crawl worker pool takes no part in the stock-sync
+            # lock. One transaction is not isolation here: under READ
+            # COMMITTED a writer can change this row after the SELECT, and an
+            # unconditional UPDATE would put the fold of a title the row no
+            # longer has over a newer one -- which the identity pass would
+            # then copy across, leaving the two equal and both wrong.
+            #
+            # The source fields and not the key columns, because the writer
+            # this function exists for is precisely the one that does not
+            # touch them: an old binary changing `listing_title` leaves
+            # `record_key` exactly as it found it, so a predicate reading the
+            # keys would see nothing and overwrite the new title's row anyway.
+            # Nothing is lost by yielding -- the next sweep folds the newer
+            # title, which is the better answer.
+            cur.executemany(
+                "UPDATE stock_items SET title_key = %s, record_key = %s "
+                "WHERE id = %s AND artist IS NOT DISTINCT FROM %s "
+                "AND title IS NOT DISTINCT FROM %s "
+                "AND listing_title IS NOT DISTINCT FROM %s",
+                stale,
+            )
+            keyed_rows = cur.rowcount
+    # Committed before the identity pass starts, so this transaction never
+    # holds a stock_items row lock while waiting for a stock_item_identities
+    # one. That pairing is a deadlock against upsert_stock_item_from_release,
+    # which takes them the other way round -- identity first, then the stock
+    # row -- and Postgres resolves it by aborting somebody: either a crawl
+    # result is lost, or this sweep raises and takes a judgment run down with
+    # a "deadlock detected" the user sees.
+    #
+    # Committing rather than reordering the passes, because there is no order
+    # to agree on: the two live writers disagree with each other.
+    # upsert_stock_item_from_release goes identity then stock;
+    # replace_stock_items deletes the crawler's stock rows *first* and upserts
+    # identities after. Matching either one picks a fight with the other.
+    # Holding neither lock across the other pass conflicts with neither.
+    #
+    # The cost is a window where a stock row is keyed and its identity is not,
+    # and it is the affordable direction: the record match then fails to find
+    # a judged record for its siblings, which bills one of them a second time,
+    # where the pair being equal on a stale key bills a verdict to the wrong
+    # record entirely. The next sweep repairs it, since the identity pass
+    # below selects on exactly that disagreement.
+    conn.commit()
+    # Copied from the item's live stock row where it still has one, not folded
+    # again from this table's own artist/title. The two tables' names disagree
+    # on the release-crawler path: stock_items keys off `listing_title` (the
+    # marketplace's name for what it matched), while the identity stores the
+    # catalog target's name, and the live writers reconcile that by putting
+    # one computed value in both. So does this, by taking the stock row's.
+    #
+    # Compared rather than filled, for the reason the stock pass recomputes:
+    # an identity whose key is merely *wrong* is invisible to a NULL test, and
+    # the way it goes wrong is not rare. An item out of stock at boot is keyed
+    # from the identity's own name; restock it from an old Machine mid-deploy
+    # and the stock row arrives unkeyed, to be folded by the next sweep from a
+    # listing_title that may read differently. _judged_record_sql matches
+    # identity against stock row, so every sibling pressing of a judged record
+    # would stop finding it and be billed again.
+    #
+    # An item with no stock row left has no listing_title to recover, so its
+    # identity is folded from its own name -- but only when it has no key at
+    # all. A key already there is the better answer and must be kept; see the
+    # branch below.
+    # Two queries, both bounded by something that shrinks as well as grows.
+    # Driving the whole pass off stock_item_identities read every row ever
+    # created -- the table is never pruned, so every re-slug added one for
+    # good -- and then threw most of them away, since an orphan that already
+    # has a key is left alone. The work grew with all the URLs a shop had ever
+    # used rather than with the catalog it stocks today.
+    #
+    # The live half, driven from stock_items: one row per item_key.
+    #
+    # item_key hashes artist|title|url and nothing else, so two crawlers
+    # finding one record at one URL write two rows under one key -- which the
+    # schema allows deliberately. record_key folds the *listing* title, so
+    # those rows disagree whenever the sites name what they matched
+    # differently, and only one of them can supply the identity's single key.
+    # Both live writers upsert that identity, so the last one to run owns it,
+    # and a sweep that picks a different row re-points the identity while the
+    # next live write points it back -- the two taking it in turns, and a
+    # verdict written about one of the two records reaching listings of the
+    # other through whichever key the identity is holding.
+    #
+    # Ordering cannot settle that, because there is no column that says which
+    # write committed last. `last_seen` is CURRENT_TIMESTAMP, which is the
+    # *transaction start*, so a catalog replacement that began first, was
+    # overtaken, and committed last still carries the older stamp -- and
+    # `s.id DESC` only settles the timestamps-equal case. So this stops
+    # trying: an identity holding the key of *any* of its live rows is a
+    # legitimate winner and is left alone. Only one matching none is stale,
+    # and repairing that is what this pass is for. The `ORDER BY` picks which
+    # row to repair it from, one time, and the next sweep then agrees with
+    # itself. (Copilot, PR #368, rounds 26 and 27.)
+    live = conn.execute(
+        """
+        SELECT DISTINCT ON (s.item_key)
+               s.item_key, s.record_key AS stock_record_key,
+               i.record_key, i.artist, i.title,
+               bool_or(s.record_key IS NOT NULL
+                       AND s.record_key IS NOT DISTINCT FROM i.record_key)
+                   OVER (PARTITION BY s.item_key) AS identity_matches_a_row
+        FROM stock_items s
+        JOIN stock_item_identities i ON i.item_key = s.item_key
+        ORDER BY s.item_key, s.last_seen DESC, s.id DESC
+        """
+    ).fetchall()
+    # And the orphans worth reading: no live stock row and no key, which is
+    # the only orphan this pass acts on. A partial index answers it.
+    orphans = conn.execute(
+        """
+        SELECT i.item_key, i.artist, i.title, i.record_key
+        FROM stock_item_identities i
+        WHERE i.record_key IS NULL
+          AND NOT EXISTS (SELECT 1 FROM stock_items s WHERE s.item_key = i.item_key)
+        """
+    ).fetchall()
+    wrong = []
+    for row in live:
+        if row["identity_matches_a_row"]:
+            # Already the fold of one of this item's live rows, so whichever
+            # writer put it there won a tie this pass has no better answer to.
+            continue
+        wanted = row["stock_record_key"]
+        if wanted is None:
+            # The stock row is there but has no key yet -- the trigger cleared
+            # it when an old Machine moved its title after the pass above
+            # committed. There is nothing to copy, and copying the NULL would
+            # erase a key this identity still holds correctly; worse, if that
+            # stock row then goes out of stock, the orphan rule below would
+            # keep the wrong value for good. Leave it until the stock row is
+            # keyed, which is the next sweep.
+            continue
+        if row["record_key"] != wanted:
+            wrong.append((wanted, row["item_key"], row["record_key"],
+                          row["artist"], row["title"]))
+    # An orphan is only ever *filled*, never re-derived, which is why the
+    # query above asks for the unkeyed ones alone. A release-crawler identity
+    # holds the fold of the marketplace's name for what it matched, while its
+    # own `title` is the catalog target -- the two genuinely differ, and only
+    # the first matches the listing if it comes back. Re-folding an orphan's
+    # own title would overwrite a *valid* key, and the item returning at a new
+    # URL under the same marketplace name would find no judged identity and be
+    # billed again: the re-listing leak this table exists to close. Staleness
+    # there is the trigger's job, which leaves the key NULL -- and a NULL is
+    # what this branch is for.
+    for row in orphans:
+        wanted = record_key(row["title"], row["artist"])
+        if row["record_key"] != wanted:
+            wrong.append((wanted, row["item_key"], row["record_key"],
+                          row["artist"], row["title"]))
+    keyed_identities = 0
+    if wrong:
+        with conn.cursor() as cur:
+            # Compare-and-set on everything the SELECT read, not just the
+            # key. The key alone cannot stand in for "untouched" here: an old
+            # writer moving this identity's artist or title leaves the key
+            # exactly as it found it -- NULL stays NULL, and the trigger's own
+            # nulling is a no-op -- so a predicate reading only the key still
+            # matches and writes the fold of a title the row no longer has.
+            # Orphan that identity afterwards and the branch above preserves
+            # that wrong key for good, since it has nothing better to offer.
+            # The source fields close it, as the stock pass's predicate does.
+            #
+            # They fence the copied-from-the-stock-row case too, where they
+            # are not the value's source. That costs a run's delay on an
+            # identity whose title moved mid-sweep and buys one rule instead
+            # of two.
+            cur.executemany(
+                "UPDATE stock_item_identities SET record_key = %s "
+                "WHERE item_key = %s AND record_key IS NOT DISTINCT FROM %s "
+                "AND artist IS NOT DISTINCT FROM %s AND title IS NOT DISTINCT FROM %s",
+                wrong,
+            )
+            keyed_identities = cur.rowcount
+    return keyed_rows + keyed_identities
 
 
 # Granting BYPASSRLS to a role requires the executing role to be a Postgres
@@ -1067,7 +1493,7 @@ def init_tenant_schema():
         # stock_item_saves, and on this connection deliberately: the view's
         # owner is what lets app_user read through it -- see the view's comment.
         conn.execute(_library_stock_item_keys_view_sql())
-        backfill_title_keys(conn)
+        backfill_stock_keys(conn)
         _ensure_role(conn, "app_identity", config.IDENTITY_DB_PASSWORD, bypass_rls=True)
         _ensure_role(conn, "app_user", config.APP_DB_PASSWORD, bypass_rls=False)
 
@@ -1359,34 +1785,39 @@ def upsert_stock_item_from_release(conn, release_id: str, crawler_id: int, catal
     # legacy convention below, matching replace_stock_items, regardless of what
     # gets stored for display.
     item_key = compute_item_key(catalog_release["artist"].title(), catalog_release["title"], listing["url"])
+    # Keyed off the name the site gave what it found, exactly as title_key is
+    # below, and written to both tables from this one value -- see the same
+    # step in replace_stock_items.
+    item_record_key = record_key(listing.get("title") or title, artist)
     # Read before either write below, not after: the floor a drop has to beat
     # includes the price this call is about to overwrite. See _record_price_drops.
     floors = _price_floors(conn, [item_key])
     conn.execute(
         """
-        INSERT INTO stock_item_identities (item_key, artist, title, format, last_seen)
-        VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)
+        INSERT INTO stock_item_identities (item_key, artist, title, format, record_key, last_seen)
+        VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
         ON CONFLICT (item_key) DO UPDATE SET
             artist = EXCLUDED.artist, title = EXCLUDED.title, format = EXCLUDED.format,
-            last_seen = CURRENT_TIMESTAMP
+            record_key = EXCLUDED.record_key, last_seen = CURRENT_TIMESTAMP
         """,
-        [item_key, artist, title, catalog_release["format"]],
+        [item_key, artist, title, catalog_release["format"], item_record_key],
     )
     conn.execute(
         """
         INSERT INTO stock_items
             (crawler_id, release_id, artist, title, listing_title, listing_image_url, format, price, currency,
-             url, cover_image_url, item_key, title_key, last_seen)
+             url, cover_image_url, item_key, title_key, record_key, last_seen)
         VALUES (%(crawler_id)s, %(release_id)s, %(artist)s, %(title)s, %(listing_title)s, %(listing_image_url)s,
                 %(format)s, %(price)s, %(currency)s,
-                %(url)s, %(cover_image_url)s, %(item_key)s, %(title_key)s, CURRENT_TIMESTAMP)
+                %(url)s, %(cover_image_url)s, %(item_key)s, %(title_key)s, %(record_key)s, CURRENT_TIMESTAMP)
         ON CONFLICT (crawler_id, release_id) WHERE release_id IS NOT NULL DO UPDATE SET
             artist = EXCLUDED.artist, title = EXCLUDED.title, listing_title = EXCLUDED.listing_title,
             listing_image_url = EXCLUDED.listing_image_url,
             format = EXCLUDED.format,
             price = EXCLUDED.price, currency = EXCLUDED.currency, url = EXCLUDED.url,
             cover_image_url = EXCLUDED.cover_image_url, item_key = EXCLUDED.item_key,
-            title_key = EXCLUDED.title_key, last_seen = CURRENT_TIMESTAMP
+            title_key = EXCLUDED.title_key, record_key = EXCLUDED.record_key,
+            last_seen = CURRENT_TIMESTAMP
         """,
         {
             "crawler_id": crawler_id, "release_id": release_id, "artist": artist, "title": title,
@@ -1408,6 +1839,7 @@ def upsert_stock_item_from_release(conn, release_id: str, crawler_id: int, catal
             # have written for the bare record. The artist goes along so a
             # name written "Artist - Title [Variant]" keys as the title.
             "title_key": title_key(listing.get("title") or title, artist),
+            "record_key": item_record_key,
             "format": catalog_release["format"], "price": listing.get("price"), "currency": listing.get("currency"),
             "url": listing["url"], "cover_image_url": catalog_release["cover_image_url"], "item_key": item_key,
         },
@@ -2945,6 +3377,29 @@ def queue_next_for_crawler(conn, crawler_id: int, limit: int, library_only: bool
     ).fetchall()
 
 
+def advisory_lock_held(conn, key: int) -> bool:
+    """Whether *any* session on this database holds session-level advisory
+    lock `key` -- this process's or another Machine's.
+
+    Read out of pg_locks rather than probed with pg_try_advisory_lock: a probe
+    would have to take the lock to learn it was free, and the microsecond it
+    held one would make a genuine sync start report itself as running on
+    another instance. A single-bigint key is stored split across classid (high
+    32 bits) and objid (low 32), with objsubid 1; the two-int form uses 2.
+    """
+    return conn.execute(
+        """
+        SELECT EXISTS (
+            SELECT 1 FROM pg_locks
+            WHERE locktype = 'advisory' AND granted AND objsubid = 1
+              AND classid = %(classid)s AND objid = %(objid)s
+              AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+        ) AS held
+        """,
+        {"classid": (key >> 32) & 0xFFFFFFFF, "objid": key & 0xFFFFFFFF},
+    ).fetchone()["held"]
+
+
 def compute_item_key(artist: str, title: str, url: str) -> str:
     return hashlib.sha256(f"{artist}|{title}|{url}".encode()).hexdigest()
 
@@ -3210,11 +3665,15 @@ def replace_stock_items(conn, crawler_id: int, items: list[dict]) -> Optional[li
         # changed here.
         item_key = compute_item_key(item["artist"].title(), item["title"], item["url"])
         item_keys.append(item_key)
-        identity_rows.append((item_key, artist, title, item.get("format")))
+        # One computed value into both tables: the judgment path joins live
+        # stock rows against identities on it, so the two disagreeing would
+        # quietly stop a record recognising its own past verdict.
+        item_record_key = record_key(title, artist)
+        identity_rows.append((item_key, artist, title, item.get("format"), item_record_key))
         rows.append((
             crawler_id, artist, title, item.get("format"), item.get("price"),
             item.get("currency"), item["url"], item.get("cover_image_url"), item_key,
-            title_key(title, artist),
+            title_key(title, artist), item_record_key,
         ))
         candidates.append({
             "item_key": item_key, "url": item["url"],
@@ -3232,11 +3691,11 @@ def replace_stock_items(conn, crawler_id: int, items: list[dict]) -> Optional[li
     with conn.cursor() as cur:
         cur.executemany(
             """
-            INSERT INTO stock_item_identities (item_key, artist, title, format, last_seen)
-            VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)
+            INSERT INTO stock_item_identities (item_key, artist, title, format, record_key, last_seen)
+            VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
             ON CONFLICT (item_key) DO UPDATE SET
                 artist = EXCLUDED.artist, title = EXCLUDED.title, format = EXCLUDED.format,
-                last_seen = CURRENT_TIMESTAMP
+                record_key = EXCLUDED.record_key, last_seen = CURRENT_TIMESTAMP
             """,
             identity_rows,
         )
@@ -3244,8 +3703,8 @@ def replace_stock_items(conn, crawler_id: int, items: list[dict]) -> Optional[li
             """
             INSERT INTO stock_items
                 (crawler_id, artist, title, format, price, currency, url, cover_image_url, item_key,
-                 title_key, last_seen)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                 title_key, record_key, last_seen)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
             """,
             rows,
         )
@@ -3429,7 +3888,7 @@ def _cheapest_clause(view_conditions: list) -> str:
     correlated library fragments, is written against `s`, and the nearest
     scope wins.
 
-    COALESCE(title_key, title) is a belt beside backfill_title_keys' braces:
+    COALESCE(title_key, title) is a belt beside backfill_stock_keys' braces:
     the window would otherwise fold every NULL key into one group.
     """
     view_where = ("WHERE " + " AND ".join(view_conditions)) if view_conditions else ""
@@ -3726,17 +4185,222 @@ def get_stock_source_counts(
     return [dict(row) for row in rows]
 
 
+def _record_group_sql(alias: str = "s") -> str:
+    """What a taste judgment is billed per: the artist's bare key and
+    `record_key` (title_key.py).
+
+    Not the pair `_cheapest_clause` groups by, which uses `title_key` — that
+    one asks "is this the same pressing", and a red and a black copy of an
+    album are two pressings but one record, so one answer to the question the
+    model is being asked. Coarser than it on the fenced pressing variants, and
+    deliberately finer on word order, repeated words and the noise words a
+    record can be *named* with, which `title_key` folds away and this keeps.
+    Do not reach for one when a query wants the other.
+
+    `record_key` bare, with no COALESCE behind it, because every query that
+    reads it also requires it to be non-NULL. Three separate re-billing bugs
+    came out of falling back to something else when it was missing: the two
+    sides fell back to *different* things, and a folded key compared against a
+    raw title matches nothing, so a judged record's sibling looked new. An
+    unkeyed row is now simply not comparable, and the queries leave it alone
+    until `backfill_stock_keys` has keyed it.
+    """
+    return f"{_artist_sort_sql(f'{alias}.artist')}, {alias}.record_key"
+
+
+def _judged_record_matches_sql(stock: str = "s", identity: str = "i", judgment: str = "j") -> str:
+    """Whether a verdict was reached about the record a stock row folds to.
+
+    The verdict answers for itself where it can. `stock_item_judgments` is
+    keyed by `item_key`, and one item_key's live rows can fold to two records
+    -- it hashes artist|title|url, while `record_key` folds the *listing*
+    title, so two crawlers naming one URL's contents differently write two
+    rows under one key. `stock_item_identities` holds a single key per item,
+    so it can name at most one of those two records, chosen by whichever
+    writer ran last. Asking it which record a verdict was about therefore
+    gets the wrong answer exactly when the question is hard, and gets it
+    silently: the record the verdict was *not* about is then suppressed from
+    the billable set as already judged, and propagation hands it that verdict
+    with a reason written about a different album. (Copilot, PR #368,
+    round 33.)
+
+    The identity is still the answer for a verdict that has none of its own
+    -- one written before the column existed, or imported, since an import
+    carries no record attribution -- but only where the item_key is
+    unambiguous: no live row of it says anything but what the identity holds.
+    That covers the two cases this path exists for. A re-listing has no live
+    rows at all under its old key, so nothing contradicts the identity; a
+    record stocked by two shops has one key each, each with its own rows
+    agreeing with its own identity. Only a genuine collision is excluded, and
+    it costs that record a re-billing rather than a crossed verdict.
+
+    An *unkeyed* live row counts as disagreement, which is why the test is
+    IS DISTINCT FROM rather than an inequality between two present keys. A
+    row with no key yet has not said the identity is right; it is what the
+    trigger leaves behind when an old Machine moves a title mid-deploy, and
+    the sweep that follows may fold it to a different record entirely.
+    Reading that silence as agreement lets an unattributed verdict reach a
+    record on evidence that has not arrived, which is the same false merge in
+    slower motion -- and it costs only a run's delay to wait, the trade
+    _unjudged_record_where already makes for an unkeyed row. Absent rows are
+    not silence in that sense: NOT EXISTS over none of them is still true, so
+    the re-listing fallback survives. (Copilot, PR #368, round 35.)
+
+    Written as a disjunction rather than a COALESCE so both branches stay
+    equalities the planner can drive an index from --
+    stock_item_identities_record_fold_idx leads on the artist fold and
+    `record_key`, and a COALESCE over the two columns would give it nothing
+    to match on.
+    """
+    return f"""(
+                    {judgment}.record_key = {stock}.record_key
+                    OR ({judgment}.record_key IS NULL
+                        AND {identity}.record_key = {stock}.record_key
+                        AND NOT EXISTS (
+                            SELECT 1 FROM stock_items amb
+                            WHERE amb.item_key = {identity}.item_key
+                              AND amb.record_key IS DISTINCT FROM {identity}.record_key
+                        ))
+                )"""
+
+
+def _judged_record_sql(user_id_param: str) -> str:
+    """Whether stock row `s`'s record already has a verdict for this user.
+
+    Joined through `stock_item_identities`, not `stock_items`, and that is the
+    difference between fixing the re-listing leak and only appearing to. A
+    shop that changes a product slug leaves the judgment behind but takes the
+    stock row with it -- `replace_stock_items` deletes and re-inserts the
+    whole snapshot -- so a verdict reached through live stock rows would go
+    missing for exactly the case this is meant to catch, and the re-slugged
+    listing would be billed as new. Identities are only ever upserted, so an
+    item judged once is answerable for forever.
+
+    The `item_key` equality is not redundant beside the record match. It is
+    the floor: this exact listing having been judged must read as judged no
+    matter what the keys do, so that nothing -- a key not yet swept, a title
+    the two tables spell differently -- can put an item the user has already
+    paid for back in front of the model. It is also the branch that still
+    works when either side is unkeyed.
+
+    The record branch requires both keys to be present rather than falling
+    back to a raw title. A row the sweep has not reached yet is not
+    comparable, and pretending otherwise is what produced the re-billing this
+    whole path exists to prevent.
+
+    Which record the verdict was about comes from the verdict itself, not
+    from the identity beside it -- see _judged_record_matches_sql. The
+    identity is still what supplies the artist half and the `item_key` floor,
+    and the join stays on it for both.
+    """
+    return f"""EXISTS (
+            SELECT 1 FROM stock_item_identities i
+            JOIN stock_item_judgments j ON j.item_key = i.item_key AND j.user_id = {user_id_param}
+            WHERE i.item_key = s.item_key
+               OR (s.record_key IS NOT NULL
+                   AND {_artist_sort_sql('i.artist')} = {_artist_sort_sql('s.artist')}
+                   AND {_judged_record_matches_sql()})
+        )"""
+
+
+def _unjudged_record_where(user_id_param: str) -> str:
+    """Rows of records this user has no verdict on and does not own.
+
+    The anti-join is on the *record*, not the listing: a record judged through
+    any one of its listings is paid for, and its other listings are
+    propagate_stock_judgments' job rather than the model's. Writing it as
+    `j.item_key IS NULL` on a LEFT JOIN instead would be right only while
+    propagation had just run, which is a call-order assumption these two
+    readers cannot enforce on their callers.
+
+    An unkeyed row is excluded outright rather than compared on a fallback.
+    `backfill_stock_keys` runs at the top of a judgment run, but it cannot be
+    atomic with what follows: the crawl worker pool writes stock rows
+    continuously and takes no part in the stock-sync lock, so during a rolling
+    deploy an old Machine can insert a `record_key`-less row between the sweep
+    and these queries. Skipping it costs that row one run's delay and never
+    costs a duplicate charge; comparing it against a raw title is what did.
+    """
+    return f"""s.record_key IS NOT NULL
+        AND NOT {_judged_record_sql(user_id_param)}
+        AND {_not_owned_clause(user_id_param)}"""
+
+
 def get_unjudged_stock_items(conn, user_id: int, limit: int) -> list[dict]:
+    """One representative listing per record this user would be billed for.
+
+    Per record rather than per listing: the same record stocked by two shops,
+    re-listed at a new URL, or pressed in two colours is one taste question
+    with one answer, and billing it once is the whole point of keying on
+    `record_key`. The representative's artist/title is one shop's wording of
+    the record, which is what travelled to the model before this change too.
+
+    That wording is the title the group's key was folded from -- a
+    release-crawler row's `listing_title`, the name the marketplace gave what
+    it matched, else the row's own title -- and not the catalog target the
+    crawler was searching for. The two genuinely differ on that path: a
+    release crawler matches by artist and title, so what it finds can be a
+    different pressing, or a different record. Sending the target's name
+    instead asks the model about one record and files the answer under
+    another. Same expression as the two live writers and the sweep.
+    (Copilot, PR #368, round 33.)
+
+    `record_key` comes back with them so the verdict can record which record
+    it was reached about; see _judged_record_matches_sql for why nothing
+    downstream can recover that afterwards.
+
+    DISTINCT ON takes the lowest `item_key` in each group so a run over an
+    unchanged catalog batches it identically twice running. The ordering
+    *between* groups stays oldest-first on `last_seen`, so a
+    `recommendation_item_limit` that truncates the set drops the newest
+    arrivals rather than an arbitrary slice of it.
+
+    Both DISTINCT ONs order past the column they are distinct on, because
+    neither is unique on its own and an incomplete ORDER BY leaves the
+    representative to the planner. The inner one can see several rows of one
+    record under one `item_key` -- two crawlers at a URL whose names fold
+    together -- so it orders on the fold source too, and the title the model
+    is shown stops depending on the plan. The outer one deduplicates record
+    groups sharing an `item_key`, and those routinely tie on `first_seen`,
+    which is `CURRENT_TIMESTAMP` and therefore one value for everything a
+    catalog replacement writes; `record_key` breaks it, and is unique within
+    an `item_key` because that key hashes the artist, so every row under it
+    folds its artist the same way. A tie can still remain in the inner one,
+    between rows whose fold source is also equal -- and those produce the
+    same output row, so there is nothing left to choose.
+    (Copilot, PR #368, round 36.)
+
+    Then deduplicated by `item_key`, because a verdict is stored per item_key
+    and, undeduplicated, two record groups sharing one would buy a second
+    model call and nothing else: the same artist and title travelling twice,
+    the second answer overwriting the first on the same row. That second call
+    is what this step prevents. Groups share an item_key when two
+    crawlers find one record at one URL and name what they matched
+    differently -- the rows fold apart while the key that stores the verdict
+    does not. Whichever group is billed, the `item_key` floor in
+    `_judged_record_sql` reads the other as judged from the same row.
+    A no-op wherever the keys behave. (Copilot, PR #368, round 26.)
+    """
     limit_clause = "LIMIT %(limit)s" if limit > 0 else ""
+    group = _record_group_sql("s")
+    fold_source = "COALESCE(NULLIF(s.listing_title, ''), s.title)"
     rows = conn.execute(
         f"""
-        SELECT s.item_key, s.artist, s.title
-        FROM stock_items s
-        LEFT JOIN stock_item_judgments j ON j.item_key = s.item_key AND j.user_id = %(user_id)s
-        WHERE j.item_key IS NULL
-          AND {_not_owned_clause('%(user_id)s')}
-        GROUP BY s.item_key, s.artist, s.title
-        ORDER BY MIN(s.last_seen) ASC
+        SELECT g.item_key, g.artist, g.title, g.record_key FROM (
+            SELECT DISTINCT ON (r.item_key)
+                   r.item_key, r.artist, r.title, r.record_key, r.first_seen
+            FROM (
+                SELECT DISTINCT ON ({group})
+                       s.item_key, s.artist, s.record_key,
+                       {fold_source} AS title,
+                       MIN(s.last_seen) OVER (PARTITION BY {group}) AS first_seen
+                FROM stock_items s
+                WHERE {_unjudged_record_where('%(user_id)s')}
+                ORDER BY {group}, s.item_key, {fold_source}
+            ) r
+            ORDER BY r.item_key, r.first_seen ASC, r.record_key
+        ) g
+        ORDER BY g.first_seen ASC, g.item_key
         {limit_clause}
         """,
         {"user_id": user_id, "limit": limit},
@@ -3745,15 +4409,97 @@ def get_unjudged_stock_items(conn, user_id: int, limit: int) -> list[dict]:
 
 
 def count_unjudged_stock_items(conn, user_id: int) -> int:
+    """How many items a run would pay for, which is what
+    `get_unjudged_stock_items` would return and not how many record groups
+    exist. The two part when one `item_key` falls into two groups: the billed
+    set deduplicates those, so counting groups reports a backlog larger than
+    the set the model is ever sent, and the uncapped total and the `Found x/y`
+    log both overstate it. (Copilot, PR #368, round 28.)
+    """
+    group = _record_group_sql("s")
     return conn.execute(
         f"""
-        SELECT COUNT(DISTINCT s.item_key) FROM stock_items s
-        LEFT JOIN stock_item_judgments j ON j.item_key = s.item_key AND j.user_id = %(user_id)s
-        WHERE j.item_key IS NULL
-          AND {_not_owned_clause('%(user_id)s')}
+        SELECT COUNT(DISTINCT g.item_key) FROM (
+            SELECT DISTINCT ON ({group}) s.item_key
+            FROM stock_items s
+            WHERE {_unjudged_record_where('%(user_id)s')}
+            ORDER BY {group}, s.item_key
+        ) g
         """,
         {"user_id": user_id},
     ).fetchone()["count"]
+
+
+def propagate_stock_judgments(conn, user_id: int) -> int:
+    """Give every unjudged in-stock listing the verdict its record already
+    has. Returns how many rows that wrote — judgments obtained for free.
+
+    This is what keeps the per-listing `stock_item_judgments` table whole
+    while the model is only ever asked once per record. Every reader — the
+    Recommended filter's `s.item_key IN (SELECT item_key FROM
+    stock_item_judgments ...)`, get_recommended_stock_items, the CSV export —
+    goes on matching listing for listing, with no idea the verdict was
+    reasoned about at a coarser grain.
+
+    It is also what closes the re-listing leak. A shop that changes a product
+    slug mints a new `item_key` for a record already paid for; so does a
+    second shop stocking it, and so does a different pressing. Each arrives
+    here and inherits, instead of arriving in the next batch and being billed.
+
+    Scoped to exactly the rows `get_unjudged_stock_items` would otherwise
+    bill — in stock, unjudged, not owned — rather than every listing of a
+    judged record. Propagating to owned listings would write rows the user
+    was never going to be charged for, inflating both the table and the CSV
+    export with records they already have.
+
+    Where a record's listings disagree (billed separately before this change,
+    or an imported file that contradicts itself), the newest `judged_at`
+    wins, ties broken on `item_key` so two runs agree.
+    """
+    cursor = conn.execute(
+        f"""
+        INSERT INTO stock_item_judgments
+            (user_id, item_key, recommended, reason, judged_at, record_key)
+        SELECT DISTINCT ON (s.item_key)
+               %(user_id)s, s.item_key, v.recommended, v.reason, v.judged_at, s.record_key
+        FROM stock_items s
+        JOIN LATERAL (
+            SELECT j.recommended, j.reason, j.judged_at
+            FROM stock_item_identities i
+            JOIN stock_item_judgments j ON j.item_key = i.item_key AND j.user_id = %(user_id)s
+            WHERE {_artist_sort_sql('i.artist')} = {_artist_sort_sql('s.artist')}
+              AND {_judged_record_matches_sql()}
+            ORDER BY j.judged_at DESC, j.item_key
+            LIMIT 1
+        ) v ON TRUE
+        WHERE s.record_key IS NOT NULL
+          -- The destination's own identity has to agree with the row the
+          -- verdict is being matched on. The match is per row, the write is
+          -- per item_key, and one item_key can carry live rows that fold
+          -- apart -- so without this a row keyed to record A can draw A's
+          -- verdict while its identity advertises record B. The record_key
+          -- written above now says which record the inherited verdict is
+          -- about, so that alone no longer crosses anything; what this still
+          -- buys is that the *other* record goes on being billed instead of
+          -- being quietly covered by a verdict about its neighbour, and that
+          -- every row surviving this gate folds the same way, which is what
+          -- makes the written record_key single-valued per item_key.
+          -- (Copilot, PR #368, rounds 31 and 33.)
+          AND EXISTS (
+            SELECT 1 FROM stock_item_identities di
+            WHERE di.item_key = s.item_key AND di.record_key = s.record_key
+        )
+          AND NOT EXISTS (
+            SELECT 1 FROM stock_item_judgments j2
+            WHERE j2.user_id = %(user_id)s AND j2.item_key = s.item_key
+        )
+          AND {_not_owned_clause('%(user_id)s')}
+        ORDER BY s.item_key
+        ON CONFLICT (user_id, item_key) DO NOTHING
+        """,
+        {"user_id": user_id},
+    )
+    return cursor.rowcount
 
 
 def get_taste_listing(conn, user_id: int) -> list[str]:
@@ -3771,15 +4517,26 @@ def get_taste_listing(conn, user_id: int) -> list[str]:
 
 
 def upsert_stock_judgments(conn, user_id: int, judgments: list[dict]):
+    """Write a batch of model verdicts, each carrying the record it is about.
+
+    `record_key` comes from the same row of `get_unjudged_stock_items` that
+    supplied the artist and title the model was shown, so the verdict records
+    the record the question was actually asked about rather than leaving a
+    later reader to infer it from whatever key the identity is holding by
+    then. See _judged_record_matches_sql for what that inference costs.
+    """
     with conn.cursor() as cur:
         cur.executemany(
             """
-            INSERT INTO stock_item_judgments (user_id, item_key, recommended, reason, judged_at)
-            VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)
+            INSERT INTO stock_item_judgments
+                (user_id, item_key, recommended, reason, judged_at, record_key)
+            VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP, %s)
             ON CONFLICT (user_id, item_key) DO UPDATE SET
-                recommended = EXCLUDED.recommended, reason = EXCLUDED.reason, judged_at = CURRENT_TIMESTAMP
+                recommended = EXCLUDED.recommended, reason = EXCLUDED.reason,
+                judged_at = CURRENT_TIMESTAMP, record_key = EXCLUDED.record_key
             """,
-            [(user_id, j["item_key"], j["recommended"], j.get("reason")) for j in judgments],
+            [(user_id, j["item_key"], j["recommended"], j.get("reason"), j.get("record_key"))
+             for j in judgments],
         )
 
 
@@ -4026,7 +4783,7 @@ def claim_stock_judgment_run(conn, user_id: int) -> Optional[str]:
         VALUES (%(user_id)s, 'running', %(run_token)s)
         ON CONFLICT (user_id) DO UPDATE SET
             status = 'running', run_token = EXCLUDED.run_token,
-            judged = 0, total = NULL, error = NULL, stop_requested = FALSE,
+            judged = 0, inherited = 0, total = NULL, error = NULL, stop_requested = FALSE,
             started_at = CURRENT_TIMESTAMP,
             heartbeat_at = clock_timestamp(), finished_at = NULL
         WHERE stock_judgment_runs.status <> 'running' OR {_JUDGMENT_RUN_STALE_SQL}
@@ -4043,6 +4800,7 @@ def record_stock_judgment_progress(
     run_token: Optional[str],
     judged: Optional[int] = None,
     total: Optional[int] = None,
+    inherited: Optional[int] = None,
 ) -> Optional[dict]:
     """Advance the run's counters and its heartbeat, and read back whether a
     stop has been asked for. COALESCE so a caller can move one field without
@@ -4070,6 +4828,7 @@ def record_stock_judgment_progress(
         """
         UPDATE stock_judgment_runs SET
             judged = COALESCE(%(judged)s, judged),
+            inherited = COALESCE(%(inherited)s, inherited),
             total = COALESCE(%(total)s, total),
             heartbeat_at = clock_timestamp()
         WHERE user_id = %(user_id)s AND status = 'running'
@@ -4077,7 +4836,8 @@ def record_stock_judgment_progress(
               AND NOT ({stale})
         RETURNING stop_requested
         """.format(stale=_JUDGMENT_RUN_STALE_SQL),
-        {"user_id": user_id, "run_token": run_token, "judged": judged, "total": total},
+        {"user_id": user_id, "run_token": run_token, "judged": judged,
+         "total": total, "inherited": inherited},
     ).fetchone()
     return {"stop_requested": row["stop_requested"]} if row else None
 
@@ -4089,6 +4849,7 @@ def finish_stock_judgment_run(
     status: str,
     judged: Optional[int] = None,
     error: Optional[str] = None,
+    inherited: Optional[int] = None,
 ) -> bool:
     """Close the run. Returns whether this call is the one that closed it.
 
@@ -4105,6 +4866,7 @@ def finish_stock_judgment_run(
         UPDATE stock_judgment_runs SET
             status = %(status)s,
             judged = COALESCE(%(judged)s, judged),
+            inherited = COALESCE(%(inherited)s, inherited),
             error = %(error)s,
             heartbeat_at = clock_timestamp(),
             finished_at = CURRENT_TIMESTAMP
@@ -4114,7 +4876,7 @@ def finish_stock_judgment_run(
         """.format(stale=_JUDGMENT_RUN_STALE_SQL),
         {
             "user_id": user_id, "run_token": run_token, "status": status,
-            "judged": judged, "error": error,
+            "judged": judged, "error": error, "inherited": inherited,
         },
     )
     return cursor.rowcount > 0
@@ -4268,6 +5030,19 @@ def import_stock_judgments(conn, user_id: int, judgments: list[dict]) -> tuple[i
 
     Callers must have collapsed duplicate item_keys first -- Postgres rejects
     a statement whose ON CONFLICT target appears twice.
+
+    `record_key` is never written here and is *cleared* on an update. An
+    imported verdict carries no record attribution -- the CSV has no such
+    column -- so the row this leaves behind must not claim one. Keeping what
+    the local run recorded looks like the better answer and is the worse one:
+    it names a record the replaced verdict was about, which the imported
+    verdict need not be, and because the fallback in
+    _judged_record_matches_sql applies only to a NULL, a stale key makes an
+    unattributable verdict a *confident* record-level source and skips the
+    ambiguity guard altogether. Clearing it costs nothing wherever the guard
+    would have answered the same -- an unambiguous item_key folds to the key
+    the old verdict held -- and hands it the cases where it would not.
+    (Copilot, PR #368, round 35.)
     """
     if not judgments:
         return (0, 0, [])
@@ -4282,7 +5057,8 @@ def import_stock_judgments(conn, user_id: int, judgments: list[dict]) -> tuple[i
         ON CONFLICT (user_id, item_key) DO UPDATE SET
             recommended = EXCLUDED.recommended,
             reason      = EXCLUDED.reason,
-            judged_at   = EXCLUDED.judged_at
+            judged_at   = EXCLUDED.judged_at,
+            record_key  = NULL
         WHERE EXCLUDED.judged_at > stock_item_judgments.judged_at
         RETURNING (xmax = 0) AS inserted, item_key
         """,
