@@ -764,6 +764,59 @@ describe('stopping a recommendation run from the profile page', () => {
     await waitFor(() => expect(within(row).getByRole('button')).toHaveTextContent('Stop'))
   })
 
+  // The start-in-flight guard covered the run flags and not the presentation,
+  // so a replayed ending still turned the spinner off and wrote "Finished…"
+  // over a run the reply was about to confirm as live. On the Machine not
+  // running the job nothing else arrives, so that reads as finished for the
+  // whole run. (Copilot, PR #368, round 34.)
+  it('shows the run as live when the start reply contradicts a replayed ending', async () => {
+    getJudgmentStatus.mockResolvedValue({ any_judged: true, run: null })
+    const row = await openProfile()
+    await waitFor(() => expect(within(row).getByRole('button')).toHaveTextContent('Refresh'))
+
+    let acceptStart: (v: unknown) => void = () => {}
+    postJudgmentStart.mockImplementationOnce(() => new Promise((resolve) => { acceptStart = resolve }))
+    fireEvent.click(within(row).getByRole('button'))
+
+    await act(async () => {
+      SilentEventSource.instances[0].emit({
+        status: 'stock_judgment_complete', judged: 12, total: 300, id: 9,
+      })
+    })
+    expect(screen.getByText(/Finished finding recommendations — 12 items checked/)).toBeInTheDocument()
+
+    getJudgmentStatus.mockResolvedValue({ any_judged: true, run: run() })
+    await act(async () => {
+      acceptStart({ started: true, running: true, run: run() })
+    })
+
+    await waitFor(() =>
+      expect(screen.getByText(/Finding recommendations for Store items…/)).toBeInTheDocument(),
+    )
+    expect(screen.queryByText(/Finished finding recommendations/)).not.toBeInTheDocument()
+  })
+
+  // And the same ending replayed with no start in flight. The row already
+  // gets the last word on the flags; it has to get it on the spinner and the
+  // banner too, or the button says Stop beside a message saying it finished.
+  // (Copilot, PR #368, round 34.)
+  it('restores the running banner when a terminal event is contradicted by the row', async () => {
+    getJudgmentStatus.mockResolvedValue({ any_judged: true, run: run() })
+    const row = await openProfile()
+    await waitFor(() => expect(within(row).getByRole('button')).toHaveTextContent('Stop'))
+
+    await act(async () => {
+      SilentEventSource.instances[0].emit({
+        status: 'stock_judgment_complete', judged: 300, total: 300, id: 3,
+      })
+    })
+
+    await waitFor(() =>
+      expect(screen.getByText(/Finding recommendations for Store items…/)).toBeInTheDocument(),
+    )
+    expect(screen.queryByText(/Finished finding recommendations/)).not.toBeInTheDocument()
+  })
+
   it('does not poll the run once nothing is running', async () => {
     await openProfile()
     const atRest = getJudgmentStatus.mock.calls.length

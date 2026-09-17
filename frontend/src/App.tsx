@@ -550,6 +550,20 @@ export default function App() {
   // Refresh. A newer action is newer truth and drives its own reads, so this
   // one stops. Read rather than bumped: callers that own an action take it
   // first and must not fence themselves out. (Copilot, PR #368, round 25.)
+  // The run flags are not the whole of "a run is under way" -- the spinner and
+  // the banner say it too, and nothing reconciles *those* against the row. An
+  // ending replayed onto a live run keeps its hands off the flags, by the
+  // start-in-flight guard while a start owns them and by the read that follows
+  // otherwise, but still turns the spinner off and writes "Finished…". On the
+  // Machine not running the job no later event corrects that, so a run that is
+  // still spending the user's key reads as finished for the whole of its
+  // length. So whoever restores the flags restores these with them.
+  // (Copilot, PR #368, round 34.)
+  const showJudgmentRunning = useCallback(() => {
+    setSyncing(true)
+    setSyncStatus('Finding recommendations for Store items…')
+  }, [setSyncStatus])
+
   const discoverJudgmentRun = useCallback(async (waitForRun = false): Promise<boolean> => {
     const action = latestJudgmentActionSeq.current
     for (let attempt = 0; attempt < POLL_READ_ATTEMPTS; attempt++) {
@@ -842,7 +856,17 @@ export default function App() {
         // so one dropped request leaves the optimistic write above standing
         // for good, which is the empty-table state the reordering was for.
         // (Copilot, PR #368, round 24.)
-        if (!startInFlight) discoverJudgmentRun()
+        if (!startInFlight) {
+          // And when that read finds the run still going, the presentation
+          // this handler has just written is as wrong as the flags were.
+          // Fenced on the action counter for the same reason the read itself
+          // is: it spans seconds, and a Stop or a Refresh inside them is
+          // newer truth than anything this ending can say.
+          const action = latestJudgmentActionSeq.current
+          discoverJudgmentRun().then(running => {
+            if (running && action === latestJudgmentActionSeq.current) showJudgmentRunning()
+          })
+        }
         setStockSyncGeneration(g => g + 1)
         setStockJudgmentGeneration(g => g + 1)
         // Inherited listings are reported on either ending: a run stopped
@@ -928,7 +952,8 @@ export default function App() {
       source?.close()
       clearTimeout(reconnectTimer)
     }
-  }, [authState, setSyncStatus, fetchPriceStatus, refreshJudgmentStatus, discoverJudgmentRun])
+  }, [authState, setSyncStatus, fetchPriceStatus, refreshJudgmentStatus, discoverJudgmentRun,
+      showJudgmentRunning])
 
   // Rides priceGeneration rather than a notification-specific SSE event: a
   // per-user event would have to be tagged with an owner, and the crawl worker
@@ -1382,6 +1407,13 @@ export default function App() {
       // Refresh for the whole of a run whose events went to the other Machine.
       setRecommendationRunning(r.running)
       setRecommendationStopping(Boolean(r.run?.running && r.run.stop_requested))
+      // The reply knows a run is live, so it restores the spinner and the
+      // banner as well as the flags -- an ending replayed while this POST was
+      // in flight deferred the flags to this start and left the presentation
+      // saying "Finished…". Before the refusal branches below, so the one that
+      // explains *why* a start was refused still gets the last word.
+      // (Copilot, PR #368, round 34.)
+      if (r.running) showJudgmentRunning()
       // An ending that arrived while this POST was in flight deferred its
       // reconciliation rather than doing it, so the start owes that read
       // whenever no run follows to do it instead. A running start is already
@@ -1444,7 +1476,7 @@ export default function App() {
           : `Refresh recommendations failed to start: ${e.message}`,
       )
     }
-  }, [setSyncStatus, discoverJudgmentRun])
+  }, [setSyncStatus, discoverJudgmentRun, showJudgmentRunning])
 
   const handleStopRecommendations = useCallback(async () => {
     // Optimistic, and corrected by the reply a moment later: the click has to

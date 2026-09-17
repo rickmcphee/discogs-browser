@@ -131,6 +131,21 @@ Four changes, all in `frontend/src/App.tsx`, no new endpoints.
    already carried that reasoning for the discovery read ("A single attempt is
    not enough anywhere this is called"); it applies here for the same reason.
 
+   **Amendment (2026-09-17, PR #368):** the sequence protocol governs the run
+   *flags*, and the spinner and the banner were left outside it — reconciled
+   by nothing, since no read writes them. A terminal judgment event writes all
+   three, so an ending replayed onto a live run had its flags deferred (to a
+   start in flight) or corrected (by the read above) while its `setSyncing
+   (false)` and its "Finished…" banner stood, and on the Machine not running
+   the job no later event replaces them: a run still spending the user's key
+   reads as finished for its whole length, Stop button beside a completion
+   message. The rule is now that whoever restores the flags restores these
+   with them — `showJudgmentRunning()`, called from the start reply when it
+   reports a run under way, and from the terminal handler's own reconciliation
+   read when that finds one. The read's call is fenced on
+   `latestJudgmentActionSeq` for the reason the read itself is: it spans
+   seconds, and a Stop or a Refresh inside them is newer truth than any ending.
+
 No change needed to `StockBrowser.tsx` itself: the effect that resets the
 filter away from "recommended" (`:118-122`) only fires when
 `recommendedAvailable` goes false, which after change 1 no longer happens
