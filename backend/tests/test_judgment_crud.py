@@ -892,6 +892,48 @@ def test_one_item_key_is_billed_once_even_when_its_rows_fold_apart(pg_test_db):
     )
 
 
+def test_a_collision_does_not_carry_one_records_verdict_onto_the_other(pg_test_db):
+    """Propagation matches the destination row's own `record_key` but writes
+    the verdict under its `item_key`, and that key's identity may hold the
+    *other* record's key. The verdict is then advertised as that record's, and
+    the next pass hands it — with a reason written about a different album —
+    to real listings of it. A collision must cost a re-billing, never a
+    crossed verdict. (Copilot, PR #368, round 31.)
+    """
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        # One item_key, two rows: 'album a deluxe' and 'album a live at leeds'.
+        collision = _seed_two_crawlers_on_one_url(
+            conn, "Album A Deluxe Reissue", "Album A Live At Leeds")
+        # A judged listing of the first record, and a plain listing of the
+        # second, each with an item_key of its own.
+        deluxe = _seed_release_crawler_item(
+            conn, "ShopDeluxe", "https://deluxe/a", "Album A Deluxe Reissue")
+        leeds = _seed_release_crawler_item(
+            conn, "ShopLeeds", "https://leeds/a", "Album A Live At Leeds")
+        conn.commit()
+
+    assert len({collision, deluxe, leeds}) == 3
+
+    with db.user_scope(alice["id"]) as conn:
+        db.import_stock_judgments(conn, alice["id"], [{
+            "item_key": deluxe, "recommended": True,
+            "reason": "the deluxe reissue is worth it",
+            "judged_at": datetime(2026, 1, 2, 3, 4, 5),
+        }])
+        # Twice: the first pass is what would mislabel the collision, the
+        # second is what would pass that verdict on to the other record.
+        db.propagate_stock_judgments(conn, alice["id"])
+        db.propagate_stock_judgments(conn, alice["id"])
+        conn.commit()
+        rows = {r["item_key"]: r for r in db.get_all_stock_judgments(conn, alice["id"])}
+
+    assert rows[deluxe]["reason"] == "the deluxe reissue is worth it"
+    assert leeds not in rows or rows[leeds]["reason"] != "the deluxe reissue is worth it", (
+        "a listing of one record inherited a verdict written about the other"
+    )
+
+
 def test_the_backlog_count_matches_the_set_the_model_is_sent(pg_test_db):
     """The billed set deduplicates two record groups sharing one `item_key`;
     a count of groups therefore reports a backlog larger than anything a run

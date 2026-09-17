@@ -399,7 +399,11 @@ CREATE TABLE IF NOT EXISTS stock_item_identities (
 );
 
 -- The same record_key the item's stock_items row carries, written by the same
--- two paths from the same computed value so the pair can never disagree.
+-- two paths from the same computed value, so each write aligns the pair for
+-- the observation it is writing. Not a promise that the two always match:
+-- one item_key can carry several live stock rows whose keys differ (see
+-- backfill_stock_keys), and this row is valid when it holds the key of any
+-- one of them.
 -- Here as well as there because this table is the durable one: a judged
 -- listing that goes out of stock, or is re-listed at a new URL, loses its
 -- stock_items row but keeps this one, and the judgment path has to be able to
@@ -4312,6 +4316,19 @@ def propagate_stock_judgments(conn, user_id: int) -> int:
             LIMIT 1
         ) v ON TRUE
         WHERE s.record_key IS NOT NULL
+          -- The destination's own identity has to agree with the row the
+          -- verdict is being matched on. The match is per row, the write is
+          -- per item_key, and one item_key can carry live rows that fold
+          -- apart -- so without this a row keyed to record A can draw A's
+          -- verdict while its identity advertises record B, and the next pass
+          -- hands that verdict, with a reason written about A, to real
+          -- listings of B. A collision has to cost a re-billing, never a
+          -- crossed verdict: a row whose identity disagrees inherits nothing
+          -- and is billed on its own. (Copilot, PR #368, round 31.)
+          AND EXISTS (
+            SELECT 1 FROM stock_item_identities di
+            WHERE di.item_key = s.item_key AND di.record_key = s.record_key
+        )
           AND NOT EXISTS (
             SELECT 1 FROM stock_item_judgments j2
             WHERE j2.user_id = %(user_id)s AND j2.item_key = s.item_key

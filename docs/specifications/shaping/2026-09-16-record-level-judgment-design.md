@@ -290,12 +290,14 @@ only ever upserted, one row per `item_key` ever seen, and
 are matched to records through it.
 
 Both write paths compute the key once and put the identical value in both
-tables, so no single write can leave them disagreeing about which record an
-`item_key` belongs to. That is a guarantee about each write, not about the
-pair: one `item_key` may carry several live `stock_items` rows whose keys
+tables, so each write aligns the pair for the one observation it is writing.
+The standing invariant is the weaker, positive one: **the identity holds the
+key of at least one of its live stock rows.** It is not that the two always
+match. One `item_key` may carry several live `stock_items` rows whose keys
 differ — see the collision section below — and the identity can then equal
-only one of them. What is ruled out is a *write* that puts two derivations of
-the same title in the two tables.
+only one of them, which is a legitimate resting state and not damage to
+repair. What is ruled out is a *write* that puts two derivations of the same
+title in the two tables.
 
 The backfill has to reconcile them too, and this is easy to get wrong twice.
 
