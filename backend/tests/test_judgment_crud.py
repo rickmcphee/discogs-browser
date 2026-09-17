@@ -892,6 +892,27 @@ def test_one_item_key_is_billed_once_even_when_its_rows_fold_apart(pg_test_db):
     )
 
 
+def test_the_backlog_count_matches_the_set_the_model_is_sent(pg_test_db):
+    """The billed set deduplicates two record groups sharing one `item_key`;
+    a count of groups therefore reports a backlog larger than anything a run
+    can bill, and the uncapped total and the `Found x/y` log overstate it.
+    (Copilot, PR #368, round 28.)
+    """
+    with db.get_admin_pool().connection() as conn:
+        _seed_two_crawlers_on_one_url(
+            conn, "Album A Deluxe Reissue", "Album A Live At Leeds")
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        billable = db.get_unjudged_stock_items(conn, alice["id"], 0)
+        counted = db.count_unjudged_stock_items(conn, alice["id"])
+
+    assert counted == len(billable), (
+        f"the backlog says {counted} and the run would be sent {len(billable)}"
+    )
+
+
 def test_the_sweep_leaves_an_identity_that_matches_any_of_its_rows(pg_test_db):
     """Both writers upsert the identity, so the last one to run owns its key,
     and a sweep that prefers a different row re-points it while the next live

@@ -338,6 +338,37 @@ describe('stopping a recommendation run from the profile page', () => {
     await screen.findByText('Recommendations did not start — try Refresh again.')
   })
 
+  // A replayed ending can land while a Refresh POST is still short of its
+  // claim commit. The ending clears the run flags and bumps the run sequence,
+  // so the start's own reply -- the only thing that can flip the button, and
+  // authoritative about the claim it just made -- fails its sequence check and
+  // is thrown away. Where this browser's SSE is served by the other Machine no
+  // event ever corrects it, and a paid run hides behind Refresh.
+  // (Copilot, PR #368, round 28.)
+  it('does not let a replayed ending cancel a start that is still in flight', async () => {
+    getJudgmentStatus.mockResolvedValue({ any_judged: true, run: null })
+    const row = await openProfile()
+    await waitFor(() => expect(within(row).getByRole('button')).toHaveTextContent('Refresh'))
+
+    let acceptStart: (v: unknown) => void = () => {}
+    postJudgmentStart.mockImplementationOnce(() => new Promise((resolve) => { acceptStart = resolve }))
+    fireEvent.click(within(row).getByRole('button'))
+
+    // Replayed while the claim is uncommitted, so every read still says idle.
+    await act(async () => {
+      SilentEventSource.instances[0].emit({
+        status: 'stock_judgment_complete', judged: 12, total: 300, id: 9,
+      })
+    })
+
+    getJudgmentStatus.mockResolvedValue({ any_judged: true, run: run() })
+    await act(async () => {
+      acceptStart({ started: true, running: true, run: run() })
+    })
+
+    await waitFor(() => expect(within(row).getByRole('button')).toHaveTextContent('Stop'))
+  })
+
   it('keeps Stopping… when a started event is delivered after the stop click', async () => {
     getJudgmentStatus.mockResolvedValue({ any_judged: true, run: run() })
     const row = await openProfile()

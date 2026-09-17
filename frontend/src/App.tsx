@@ -249,6 +249,15 @@ export default function App() {
   // these two flags. Without this the poll re-enables the button mid-request
   // and the stop's own reply, being older than that read, is then discarded.
   const judgmentStopPending = useRef(false)
+  // The same for a start. A run's ending says nothing about a run being
+  // created: an ending can be replayed while a Refresh POST is still short of
+  // its claim commit, and clearing the flags on it bumps the run sequence, so
+  // the start's own reply -- authoritative about the claim it just made --
+  // fails its sequence check and is discarded. Where this browser's SSE is
+  // served by the other Machine nothing corrects that, and a paid run hides
+  // behind a Refresh button. While a start is in flight it owns the run state
+  // and an ending defers to it. (Copilot, PR #368, round 28.)
+  const judgmentStartPending = useRef(false)
   // The last (status, judged) the poll saw, so it can tell a run that has
   // advanced from one it has merely been asked about again. Null means "no
   // read yet", and only that very first read is exempt from the bump -- it is
@@ -787,9 +796,12 @@ export default function App() {
         setSyncing(false)
         const judged = event.judged ?? 0
         const inherited = event.inherited ?? 0
-        latestJudgmentRunSeq.current++
-        setRecommendationRunning(false)
-        setRecommendationStopping(false)
+        const startInFlight = judgmentStartPending.current
+        if (!startInFlight) {
+          latestJudgmentRunSeq.current++
+          setRecommendationRunning(false)
+          setRecommendationStopping(false)
+        }
         // Either count proves judgments now exist. A run that judged nothing
         // but inherited something still wrote rows, and gating on `judged`
         // alone left Recommended and Export disabled in any client whose
@@ -821,7 +833,7 @@ export default function App() {
         // so one dropped request leaves the optimistic write above standing
         // for good, which is the empty-table state the reordering was for.
         // (Copilot, PR #368, round 24.)
-        discoverJudgmentRun()
+        if (!startInFlight) discoverJudgmentRun()
         setStockSyncGeneration(g => g + 1)
         setStockJudgmentGeneration(g => g + 1)
         // Inherited listings are reported on either ending: a run stopped
@@ -841,12 +853,15 @@ export default function App() {
       }
       if (event.status === 'stock_judgment_error') {
         setSyncing(false)
-        latestJudgmentRunSeq.current++
-        setRecommendationRunning(false)
-        setRecommendationStopping(false)
-        // Confirmed against the row, same as the two endings above, and
-        // retried for the same reason.
-        discoverJudgmentRun()
+        // Defers to a start in flight, as the two endings above do.
+        if (!judgmentStartPending.current) {
+          latestJudgmentRunSeq.current++
+          setRecommendationRunning(false)
+          setRecommendationStopping(false)
+          // Confirmed against the row, same as the two endings above, and
+          // retried for the same reason.
+          discoverJudgmentRun()
+        }
         setSyncStatus(`Finding recommendations failed: ${event.error}`, event.id ?? null)
         return
       }
@@ -1344,8 +1359,14 @@ export default function App() {
     // newest writer and turn a disabled "Stopping…" back into "Stop".
     const action = ++latestJudgmentActionSeq.current
     const seq = ++latestJudgmentRunSeq.current
+    judgmentStartPending.current = true
     try {
       const r = await postJudgmentStart()
+      // Lowered the moment the POST is no longer in flight, and only by the
+      // newest start, exactly as the stop's suppression is released. The
+      // recovery in the catch below reads the row itself, so it needs the
+      // window shut before it runs.
+      if (action === latestJudgmentActionSeq.current) judgmentStartPending.current = false
       if (action !== latestJudgmentActionSeq.current) return
       if (seq !== latestJudgmentRunSeq.current) return
       // The reply carries the row, so the button flips to Stop on the response
@@ -1383,6 +1404,7 @@ export default function App() {
       // both the message and the recovery read below would then talk over that
       // newer state -- the read especially, since its snapshot can predate the
       // stop commit and would turn the disabled "Stopping…" back into "Stop".
+      if (action === latestJudgmentActionSeq.current) judgmentStartPending.current = false
       if (action !== latestJudgmentActionSeq.current) return
       // A failed request is not a failed start. The server may have claimed
       // the run and created the task before the connection dropped, in which

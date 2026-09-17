@@ -4246,12 +4246,21 @@ def get_unjudged_stock_items(conn, user_id: int, limit: int) -> list[dict]:
 
 
 def count_unjudged_stock_items(conn, user_id: int) -> int:
+    """How many items a run would pay for, which is what
+    `get_unjudged_stock_items` would return and not how many record groups
+    exist. The two part when one `item_key` falls into two groups: the billed
+    set deduplicates those, so counting groups reports a backlog larger than
+    the set the model is ever sent, and the uncapped total and the `Found x/y`
+    log both overstate it. (Copilot, PR #368, round 28.)
+    """
+    group = _record_group_sql("s")
     return conn.execute(
         f"""
-        SELECT COUNT(*) FROM (
-            SELECT DISTINCT {_record_group_sql('s')}
+        SELECT COUNT(DISTINCT g.item_key) FROM (
+            SELECT DISTINCT ON ({group}) s.item_key
             FROM stock_items s
             WHERE {_unjudged_record_where('%(user_id)s')}
+            ORDER BY {group}, s.item_key
         ) g
         """,
         {"user_id": user_id},
