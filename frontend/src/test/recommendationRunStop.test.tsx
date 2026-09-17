@@ -853,6 +853,34 @@ describe('stopping a recommendation run from the profile page', () => {
     )
   })
 
+  // The restore is fenced on the action counter, which only user *actions*
+  // advance. A judgment event is already covered without it, since every one
+  // of them bumps latestJudgmentRunSeq and refreshJudgmentStatus discards a
+  // read that lost that race -- but a **stock sync** writes the same shared
+  // banner and touches no judgment counter at all, so its progress line was
+  // replaced by a generic judgment banner the read had no newer knowledge
+  // than. (Copilot, PR #368, round 38.)
+  it('does not replace an overlapping stock sync banner when its read lands', async () => {
+    let settleRead: (v: unknown) => void = () => {}
+    getJudgmentStatus.mockImplementationOnce(() => new Promise((resolve) => { settleRead = resolve }))
+    getJudgmentStatus.mockResolvedValue({ any_judged: true, run: run() })
+    await openProfile()
+
+    await act(async () => {
+      SilentEventSource.instances[0].emit({
+        status: 'stock_sync_progress', synced: 300, source: 'Amazon', id: 7,
+      })
+    })
+    expect(screen.getByText(/Syncing in-stock catalog… 300 items/)).toBeInTheDocument()
+
+    await act(async () => {
+      settleRead({ any_judged: true, run: run() })
+    })
+
+    expect(screen.getByText(/Syncing in-stock catalog… 300 items/)).toBeInTheDocument()
+    expect(screen.queryByText(/^Finding recommendations for Store items…$/)).not.toBeInTheDocument()
+  })
+
   it('does not poll the run once nothing is running', async () => {
     await openProfile()
     const atRest = getJudgmentStatus.mock.calls.length

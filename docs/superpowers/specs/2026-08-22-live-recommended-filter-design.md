@@ -158,6 +158,21 @@ Four changes, all in `frontend/src/App.tsx`, no new endpoints.
    `refreshJudgmentStatus` already applies that condition to the flags it
    writes beside it.
 
+   **And on `statusWrites`, because neither of those fences can see the
+   banner.** `latestJudgmentActionSeq` moves on user actions only; no SSE
+   handler advances it. A *judgment* event is covered anyway, since every one
+   of them bumps `latestJudgmentRunSeq` and `refreshJudgmentStatus` discards a
+   read that lost that race — but a **stock sync** writes the same shared
+   banner and touches no judgment counter at all, so a discovery read landing
+   mid-sync replaced its progress line with a generic judgment one it had no
+   newer knowledge than. The read therefore records `statusWrites` at entry
+   and restores only if nothing has written the banner since, the same measure
+   the price-refresh claim uses. The ordering that makes this work is the one
+   that measure already documents: **a caller writes the message it wants the
+   read to be allowed to replace, and issues the read after it**, so its own
+   write is part of the baseline rather than news. Both endings, the error
+   ending and the start handler's post-refusal read were reordered to match.
+
 No change needed to `StockBrowser.tsx` itself: the effect that resets the
 filter away from "recommended" (`:118-122`) only fires when
 `recommendedAvailable` goes false, which after change 1 no longer happens

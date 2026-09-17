@@ -566,6 +566,16 @@ export default function App() {
 
   const discoverJudgmentRun = useCallback(async (waitForRun = false): Promise<boolean> => {
     const action = latestJudgmentActionSeq.current
+    // The banner as this read found it. `latestJudgmentActionSeq` fences user
+    // actions and nothing else -- no SSE handler advances it -- so it cannot
+    // see a `stock_judgment_progress` rendering "40/120", or an overlapping
+    // stock sync rendering its own progress, landing while this read is in
+    // flight. Restoring over either would replace a newer, more specific
+    // message with a generic one. Same measure the price-refresh claim uses,
+    // and read at entry for the same reason its own comment gives: a caller
+    // that wants its message replaced writes it *before* asking, so its write
+    // is part of the baseline rather than news. (Copilot, PR #368, round 38.)
+    const writes = statusWrites.current
     for (let attempt = 0; attempt < POLL_READ_ATTEMPTS; attempt++) {
       const status = await refreshJudgmentStatus()
       if (status?.run?.running) {
@@ -582,7 +592,8 @@ export default function App() {
         // seconds, so a newer action is newer truth, and a Stop in flight owns
         // the presentation exactly as it owns the flags -- refreshJudgmentStatus
         // skips them under judgmentStopPending for the same reason.
-        if (action === latestJudgmentActionSeq.current && !judgmentStopPending.current) {
+        if (action === latestJudgmentActionSeq.current && !judgmentStopPending.current
+            && statusWrites.current === writes) {
           showJudgmentRunning()
         }
         return true
@@ -874,11 +885,6 @@ export default function App() {
         // so one dropped request leaves the optimistic write above standing
         // for good, which is the empty-table state the reordering was for.
         // (Copilot, PR #368, round 24.)
-        // And when that read finds the run still going it restores the
-        // spinner and the banner too, since the presentation this handler
-        // has just written is as wrong as the flags were. That lives in
-        // discoverJudgmentRun, which every caller needs it from.
-        if (!startInFlight) discoverJudgmentRun()
         setStockSyncGeneration(g => g + 1)
         setStockJudgmentGeneration(g => g + 1)
         // Inherited listings are reported on either ending: a run stopped
@@ -894,12 +900,21 @@ export default function App() {
             : `Finished finding recommendations — ${judged} items checked${inheritedPart}`,
           event.id ?? null,
         )
+        // Asked last, after the message above, because the read restores the
+        // spinner and the banner when it finds the run still going -- the
+        // presentation this handler has just written is as wrong as the flags
+        // were -- and it only replaces a banner nothing has touched since it
+        // was issued. Writing first is what puts *this* ending's message
+        // inside that baseline, so the read may overrule it while a newer
+        // event still cannot be overruled. (Copilot, PR #368, round 38.)
+        if (!startInFlight) discoverJudgmentRun()
         return
       }
       if (event.status === 'stock_judgment_error') {
         setSyncing(false)
         // Defers to a start in flight, as the two endings above do.
-        if (judgmentStartPending.current === 0) {
+        const reconcile = judgmentStartPending.current === 0
+        if (reconcile) {
           latestJudgmentRunSeq.current++
           setRecommendationRunning(false)
           setRecommendationStopping(false)
@@ -911,9 +926,10 @@ export default function App() {
           // failure a *previous* run's, and leaving "Finding recommendations
           // failed" up with the spinner off then describes the wrong run for
           // the length of the right one. (Copilot, PR #368, round 35.)
-          discoverJudgmentRun()
         }
         setSyncStatus(`Finding recommendations failed: ${event.error}`, event.id ?? null)
+        // After the message, for the reason the two endings above give.
+        if (reconcile) discoverJudgmentRun()
         return
       }
       if (event.type === 'listing_changed') {
@@ -1431,16 +1447,6 @@ export default function App() {
       // explains *why* a start was refused still gets the last word.
       // (Copilot, PR #368, round 34.)
       if (r.running) showJudgmentRunning()
-      // An ending that arrived while this POST was in flight deferred its
-      // reconciliation rather than doing it, so the start owes that read
-      // whenever no run follows to do it instead. A running start is already
-      // covered, since its poll reads the row every few seconds; a refused or
-      // idle one is not, and if the ending was a replay after a Clear it has
-      // left hasJudgedItems optimistically true over an empty table -- rounds
-      // 23 and 24, reopened by deferring. (Copilot, PR #368, round 29.)
-      if (!r.running) {
-        discoverJudgmentRun()
-      }
       // A refused start used to pass in silence, which is the same
       // "did that do anything?" the button's own faces exist to answer. Two
       // refusals reach here and they need different words: a sync in progress
@@ -1465,6 +1471,18 @@ export default function App() {
         // (Copilot, PR #368, round 27.)
         setSyncStatus('Recommendations did not start — try Refresh again.')
       }
+      // An ending that arrived while this POST was in flight deferred its
+      // reconciliation rather than doing it, so the start owes that read
+      // whenever no run follows to do it instead. A running start is already
+      // covered, since its poll reads the row every few seconds; a refused or
+      // idle one is not, and if the ending was a replay after a Clear it has
+      // left hasJudgedItems optimistically true over an empty table -- rounds
+      // 23 and 24, reopened by deferring. (Copilot, PR #368, round 29.)
+      //
+      // Last, after the refusal messages above, so the read may overrule one
+      // of them if the row turns out to hold a live run after all, while a
+      // newer event still cannot be overruled. (Copilot, PR #368, round 38.)
+      if (!r.running) discoverJudgmentRun()
     } catch (e: any) {
       // Fenced exactly like the success path above. A rejection can arrive
       // after a started event has enabled Stop and the user has clicked it, and
