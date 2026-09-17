@@ -201,7 +201,17 @@ Four changes, all in `frontend/src/App.tsx`, no new endpoints.
 
    **Every writer of a running banner renews that claim**, not just the read:
    `showJudgmentRunning`, `stock_judgment_started` and
-   `stock_judgment_progress` all call `claimJudgmentBanner()`. Taken once and
+   `stock_judgment_progress` all call `claimJudgmentPresentation()`, which
+   raises the spinner as part of claiming rather than leaving each writer to
+   remember. That is not tidiness: the fence protecting a claimed banner also
+   blocks the read that would otherwise have raised the spinner, and a
+   progress event is the first judgment event a client sees whenever the page
+   loads mid-run or the stream reconnects past the replay buffer. It wrote
+   "…40/120", correctly kept the mount-time read from replacing that with a
+   generic line, and — being the one writer that raised nothing — left an
+   active run with a progress line and no spinner beside it for the rest of
+   its length. Every claimer wants both halves, so holding one without the
+   other is not a state the code can express any more. Taken once and
    never renewed, it is broken by the run's *own* next progress line — and
    then nothing can close the run out at all, because the write count no
    longer matches, so the poll declines the take-down and drops the claim,

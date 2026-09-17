@@ -669,18 +669,28 @@ export default function App() {
   // Recorded after the write, so the claim measures silence from the point
   // the message landed rather than counting it as news -- the same shape the
   // price-refresh claim uses.
-  const claimJudgmentBanner = useCallback(() => {
+  //
+  // The raise lives here rather than at each writer, because the fence that
+  // protects a claimed banner also blocks the read that would otherwise have
+  // raised the spinner. `stock_judgment_progress` can be the first judgment
+  // event a client sees -- a page loaded mid-run, or a stream reconnecting
+  // past the replay buffer -- and it wrote "…40/120", correctly kept the
+  // mount-time read from replacing that with a generic line, and left the run
+  // turning nothing for the rest of its length. Every claimer wants both
+  // halves, so taking one without the other is not a state worth being able
+  // to express. (Copilot, PR #368, round 43.)
+  const claimJudgmentPresentation = useCallback(() => {
+    beginSyncing()
     judgmentPresentation.current = {
       writes: statusWrites.current,
       raises: syncingRaises.current,
     }
-  }, [])
+  }, [beginSyncing])
 
   const showJudgmentRunning = useCallback(() => {
-    beginSyncing()
     setSyncStatus('Finding recommendations for Store items…')
-    claimJudgmentBanner()
-  }, [setSyncStatus, claimJudgmentBanner, beginSyncing])
+    claimJudgmentPresentation()
+  }, [setSyncStatus, claimJudgmentPresentation])
 
   const discoverJudgmentRun = useCallback(async (waitForRun = false): Promise<boolean> => {
     const action = latestJudgmentActionSeq.current
@@ -933,7 +943,6 @@ export default function App() {
         return
       }
       if (event.status === 'stock_judgment_started') {
-        beginSyncing()
         // The same-Machine fast path for the button: this browser heard the
         // run start, so it need not wait for the poll's first tick. A run
         // whose events go to the other Machine's subscribers reaches the same
@@ -947,7 +956,7 @@ export default function App() {
         latestJudgmentRunSeq.current++
         setRecommendationRunning(true)
         setSyncStatus('Finding recommendations for Store items…', event.id ?? null)
-        claimJudgmentBanner()
+        claimJudgmentPresentation()
         return
       }
       if (event.status === 'stock_judgment_progress') {
@@ -960,7 +969,7 @@ export default function App() {
         setStockSyncGeneration(g => g + 1)
         setStockJudgmentGeneration(g => g + 1)
         setSyncStatus(`Finding recommendations for Store items… ${event.judged}/${event.total}`, event.id ?? null)
-        claimJudgmentBanner()
+        claimJudgmentPresentation()
         return
       }
       if (event.status === 'stock_judgment_complete' || event.status === 'stock_judgment_stopped') {
@@ -1100,7 +1109,7 @@ export default function App() {
       clearTimeout(reconnectTimer)
     }
   }, [authState, setSyncStatus, fetchPriceStatus, refreshJudgmentStatus, discoverJudgmentRun,
-      claimJudgmentBanner, beginSyncing])
+      claimJudgmentPresentation, beginSyncing])
 
   // Rides priceGeneration rather than a notification-specific SSE event: a
   // per-user event would have to be tagged with an owner, and the crawl worker

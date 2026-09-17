@@ -987,6 +987,33 @@ describe('stopping a recommendation run from the profile page', () => {
     await waitFor(() => expect(screen.queryAllByText('⟳')).toHaveLength(0))
   })
 
+  // The claim covers the spinner as well as the banner, so every writer of a
+  // running banner has to raise both -- and the one that did not was the one
+  // that could arrive first. A progress event is the first judgment event a
+  // client sees whenever the page loads mid-run or the stream reconnects past
+  // the replay buffer. It writes "…40/120" and, by moving the write count,
+  // correctly stops the mount-time read from replacing that with a generic
+  // line. The spinner used to ride on that restore, so declining it left an
+  // active run with a progress line and nothing turning beside it, for the
+  // rest of the run. (Copilot, PR #368, round 43.)
+  it('shows a run whose first event is progress as busy, not just running', async () => {
+    let settleRead: (v: unknown) => void = () => {}
+    getJudgmentStatus.mockImplementationOnce(() => new Promise((resolve) => { settleRead = resolve }))
+    getJudgmentStatus.mockResolvedValue({ any_judged: true, run: run() })
+    const row = await openProfile()
+
+    await act(async () => {
+      SilentEventSource.instances[0].emit({
+        status: 'stock_judgment_progress', judged: 40, total: 120, id: 11,
+      })
+    })
+    await act(async () => { settleRead({ any_judged: true, run: run() }) })
+
+    await waitFor(() => expect(within(row).getByRole('button')).toHaveTextContent('Stop'))
+    expect(screen.getByText(/Finding recommendations for Store items… 40\/120/)).toBeInTheDocument()
+    expect(screen.getAllByText('⟳').length).toBeGreaterThan(0)
+  })
+
   it('does not poll the run once nothing is running', async () => {
     await openProfile()
     const atRest = getJudgmentStatus.mock.calls.length
