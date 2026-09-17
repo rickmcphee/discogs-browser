@@ -152,6 +152,17 @@ def discogs_callback(oauth_token: str, oauth_verifier: str, request: Request):
     with db.get_identity_pool().connection() as conn:
         user = db.get_user_by_discogs_id(conn, discogs_user_id)
         if user is not None:
+            # This handshake just minted a token Discogs accepts for the
+            # account, so it is the one worth keeping. Written on every
+            # sign-in rather than only at signup, because nothing else ever
+            # replaces the stored pair and the collection sync is what uses
+            # it: a token revoked on Discogs leaves every sync failing on a
+            # credential the user cannot replace by any route the app offers.
+            db.update_user_discogs_credentials(
+                conn, user["id"], discogs_username,
+                token_encryption.encrypt(access["oauth_token"]),
+                token_encryption.encrypt(access["oauth_token_secret"]),
+            )
             redirect = RedirectResponse(config.FRONTEND_BASE_URL or "/")
             _create_session_for_user(conn, request, redirect, user["id"])
             conn.commit()

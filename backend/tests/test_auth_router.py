@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 import config
 import db
 import session_tokens
+import token_encryption
 from auth_middleware import AuthMiddleware
 from rate_limit import RateLimiter
 from routers import session as session_router
@@ -136,6 +137,88 @@ def test_callback_for_existing_user_creates_session_and_redirects(client):
             conn, session_tokens.hash_token(r.cookies[config.COOKIE_NAME])
         )
     assert session["user_id"] == user["id"]
+
+
+@respx.mock
+def test_callback_refreshes_a_returning_users_discogs_credentials(client):
+    """Signing in again is the only route a user has to a working Discogs
+    token, and it used to mint one and drop it on the floor: the stored pair
+    was written at signup and never again. A token revoked on Discogs
+    therefore failed every collection sync for good, with re-authorising -- the
+    obvious remedy, and the one the sync's own error message now names --
+    changing nothing."""
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=777, discogs_username="alice")
+        conn.execute(
+            "UPDATE users SET discogs_oauth_token_encrypted = %s, discogs_oauth_secret_encrypted = %s WHERE id = %s",
+            [
+                token_encryption.encrypt("revoked-token"),
+                token_encryption.encrypt("revoked-secret"),
+                user["id"],
+            ],
+        )
+        db.create_oauth_request_state(conn, "req-token-refresh", "req-secret-refresh")
+        conn.commit()
+
+    respx.post("https://api.discogs.com/oauth/access_token").mock(
+        return_value=httpx.Response(
+            200,
+            text="oauth_token=fresh-token&oauth_token_secret=fresh-secret",
+            headers={"content-type": "application/x-www-form-urlencoded"},
+        )
+    )
+    respx.get("https://api.discogs.com/oauth/identity").mock(
+        return_value=httpx.Response(200, json={"id": 777, "username": "alice"})
+    )
+
+    r = client.get(
+        "/api/auth/discogs/callback",
+        params={"oauth_token": "req-token-refresh", "oauth_verifier": "verifier-refresh"},
+        follow_redirects=False,
+    )
+    assert r.status_code in (302, 307)
+
+    with db.get_admin_pool().connection() as conn:
+        row = conn.execute(
+            "SELECT discogs_oauth_token_encrypted, discogs_oauth_secret_encrypted FROM users WHERE id = %s",
+            [user["id"]],
+        ).fetchone()
+    assert token_encryption.decrypt(row["discogs_oauth_token_encrypted"]) == "fresh-token"
+    assert token_encryption.decrypt(row["discogs_oauth_secret_encrypted"]) == "fresh-secret"
+
+
+@respx.mock
+def test_callback_follows_a_discogs_rename(client):
+    """discogs_username is not a display name: every Discogs URL the sync
+    builds is keyed on it, so a stale one addresses a name the API no longer
+    resolves. The account itself is matched on discogs_user_id, which a rename
+    leaves alone."""
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=777, discogs_username="old-name")
+        db.create_oauth_request_state(conn, "req-token-rename", "req-secret-rename")
+        conn.commit()
+
+    respx.post("https://api.discogs.com/oauth/access_token").mock(
+        return_value=httpx.Response(
+            200,
+            text="oauth_token=access-r&oauth_token_secret=access-secret-r",
+            headers={"content-type": "application/x-www-form-urlencoded"},
+        )
+    )
+    respx.get("https://api.discogs.com/oauth/identity").mock(
+        return_value=httpx.Response(200, json={"id": 777, "username": "new-name"})
+    )
+
+    r = client.get(
+        "/api/auth/discogs/callback",
+        params={"oauth_token": "req-token-rename", "oauth_verifier": "verifier-rename"},
+        follow_redirects=False,
+    )
+    assert r.status_code in (302, 307)
+
+    with db.get_admin_pool().connection() as conn:
+        row = conn.execute("SELECT discogs_username FROM users WHERE id = %s", [user["id"]]).fetchone()
+    assert row["discogs_username"] == "new-name"
 
 
 @respx.mock
