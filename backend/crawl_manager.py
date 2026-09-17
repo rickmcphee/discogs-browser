@@ -1143,10 +1143,12 @@ class CrawlManager:
             Logged here rather than at the call sites, because the call sites
             are where it was forgotten. Three of the early returns below
             reported a failure to the run row and the event stream and wrote
-            nothing to the log at all -- and the two that end a sync before it
-            reaches Discogs are precisely the ones a user cannot diagnose from
-            the outside, since the tab they are watching shows a collection
-            that simply never gains anything. "Collection sync started for X"
+            nothing to the log at all -- and the two that end a sync before the
+            collection page walk are precisely the ones a user cannot diagnose
+            from the outside, since the tab they are watching shows a collection
+            that simply never gains anything. (One of those two never contacts
+            Discogs; the other is the collection-fields request answering with
+            an error status, which reaches it and gets a refusal.) "Collection sync started for X"
             with no line after it was the whole record of a sync failing on a
             refused token, every time it was clicked. Logging it in the one
             place every failure passes through is what makes that structural

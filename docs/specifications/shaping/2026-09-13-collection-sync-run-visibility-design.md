@@ -324,7 +324,9 @@ overwrite an outcome a path already recorded.
 **Amendment (2026-09-16, branch `claude/sleepy-dijkstra-dlsrbx`):** the log
 line is new, and it is in the helper rather than at the call sites because
 the call sites are where it was missing. Two of those three early returns end
-a sync *before* it has reached Discogs at all, and neither wrote anything to
+a sync *before* the collection page walk — one before it has contacted Discogs
+at all, the other on the collection-fields request itself, which does reach
+Discogs and is refused — and neither wrote anything to
 the log — so a user whose stored OAuth token had been refused saw a
 Collection tab that simply never gained a record, and the entire log record of
 each attempt was the "Collection sync started for X" line with nothing after

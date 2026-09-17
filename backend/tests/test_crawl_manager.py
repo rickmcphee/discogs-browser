@@ -1850,8 +1850,9 @@ async def test_sync_collection_keeps_the_traceback_for_an_unclassified_failure(
 async def test_sync_collection_logs_when_the_account_has_no_stored_token(
     pg_schema, monkeypatch, caplog
 ):
-    """The other failure that ends a sync before it reaches Discogs, and the
-    other one that used to be silent."""
+    """The other failure that ends a sync before the collection page walk, and
+    the other one that used to be silent. This one really does stop before
+    contacting Discogs -- unlike the refused token, which is Discogs answering."""
     _discogs_config(monkeypatch)
     with db.get_admin_pool().connection() as conn:
         user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
