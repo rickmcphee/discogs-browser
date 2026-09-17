@@ -128,7 +128,7 @@ def unsave_stock_item(item_key: str, request: Request):
 # abandoned run still says 'running' -- see db.get_stock_judgment_run), and the
 # row also carries a heartbeat and a claim token that are bookkeeping, not news.
 _JUDGMENT_RUN_FIELDS = (
-    "status", "running", "stale", "judged", "total", "error",
+    "status", "running", "stale", "judged", "inherited", "total", "error",
     "stop_requested", "started_at", "finished_at",
 )
 
@@ -205,16 +205,26 @@ async def start_stock_sync(body: Optional[StockSyncStartRequest] = None):
 @router.post("/stock/judge/start")
 async def start_stock_judgment(request: Request):
     user_id = request.state.user_id
-    started = await crawl_manager.start_judgment_only(user_id)
+    result = await crawl_manager.start_judgment_only(user_id)
     # `running` and the run itself come from the row, not from this process:
     # a start refused here was refused because a run is genuinely under way
     # somewhere, and the caller needs to see that run to show a Stop button for
     # it. Carrying it on the response is also what lets the button flip without
     # waiting for a stock_judgment_started event that may be going to the other
     # Machine's subscribers.
+    #
+    # `stock_sync_running` is the one field the row cannot answer: that refusal
+    # writes no run, and crawl_manager's own flag reads false for a sync on the
+    # other Machine. Only start_judgment_only knows, so it is passed through
+    # rather than re-derived here.
     with db.user_scope(user_id) as conn:
         run = _judgment_run(conn, user_id)
-    return {"started": started, "running": bool(run and run["running"]), "run": run}
+    return {
+        "started": result["started"],
+        "running": bool(run and run["running"]),
+        "run": run,
+        "stock_sync_running": result["stock_sync_running"],
+    }
 
 
 @router.post("/stock/judge/stop")

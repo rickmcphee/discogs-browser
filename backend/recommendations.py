@@ -99,6 +99,11 @@ def _resolve_entries(parsed, batch: list[dict], label: str) -> list[dict]:
         seen.add(n)
         results.append({
             "item_key": batch[n - 1]["item_key"],
+            # Carried through rather than re-derived: this is the record the
+            # batch entry's artist/title named, and it is what the verdict is
+            # stored against so no later reader has to guess it back. See
+            # db._judged_record_matches_sql.
+            "record_key": batch[n - 1].get("record_key"),
             "recommended": bool(entry["recommended"]),
             "reason": entry.get("reason"),
         })

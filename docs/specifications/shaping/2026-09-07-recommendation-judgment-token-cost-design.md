@@ -86,6 +86,15 @@ than the caching saves.
 downstream of them are unaffected. The only change to the caller is the extra
 argument on the call itself.
 
+**Amendment (2026-09-17, branch `claude/wizardly-goldberg-mxvey2`):** that
+return shape gained a fourth field, `record_key` — the record the batch
+entry's artist and title named — copied through from `batch[n - 1]` beside
+the `item_key` the paragraph above describes, and stored on the verdict so
+nothing downstream has to infer afterwards which record was judged. Nothing
+about the ordinal mapping, the wire format or the caching changes; the
+resolver reads one more key off the same batch entry. See
+[`2026-09-16-record-level-judgment-design.md`](2026-09-16-record-level-judgment-design.md).
+
 ## Design
 
 ### Ordinal index on the wire
@@ -182,17 +191,22 @@ Both are real and neither belongs in this change:
 - **Structured outputs** (`output_config.format`) would retire the
   markdown-fence stripping and most of the `json.loads` failure path, where
   a malformed response costs the whole batch. Larger change, own branch.
-- **Judging a record once rather than once per listing.** `item_key` is
-  `sha256(artist|title|url)`, so one record stocked by two shops is two paid
-  judgments for the same user on near-identical input, and a re-listing at a
-  new URL is another. Judging `(artist, title)` and fanning the verdict out
-  to matching keys could cut the item count materially, but it changes the
-  judgment's identity and its interaction with `_not_owned_clause`, so it
-  needs its own design. Measure the ceiling first with
-  `SELECT COUNT(*), COUNT(DISTINCT (artist, title)) FROM stock_items;`.
+- ~~**Judging a record once rather than once per listing.**~~ **Done
+  2026-09-16**, and it did need its own design:
+  [`2026-09-16-record-level-judgment-design.md`](2026-09-16-record-level-judgment-design.md).
+  The shape it took is close to what this section guessed, with one
+  correction worth recording. Fanning a verdict out over `(artist, title)`
+  would not have been enough: stores word one record differently
+  ("Kid A (Black Vinyl)" vs "Kid A"), so the fan-out needs a *fold* of the
+  title, not the title. It reuses `title_key.py`, as `record_key` — coarser
+  than `title_key` on the fenced variant words and finer on word order and
+  on the noise words a record can be named with — rather than a raw pair. The interaction with
+  `_not_owned_clause` this section flagged turned out to be the easy half:
+  propagation simply runs under the same predicate the billable set does.
 
-Separately, Amendment 7 of the store-recommended-filter design records an
-open cost bug this change does not address: `start_judgment_only` lost its
+~~Separately, Amendment 7 of the store-recommended-filter design records an
+open cost bug this change does not address:~~ **Also fixed 2026-09-16:**
+`start_judgment_only` lost its
 `stock_sync_running` guard in the crawl-queue refactor, so a run started
 during a stock sync pays to judge items about to be deleted and reinserted.
 

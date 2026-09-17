@@ -89,6 +89,10 @@ export interface CrawlEvent {
   source?: string
   sources?: string[]
   judged?: number
+  // Listings that got a verdict without a model call, because another
+  // listing of the same record already had one. Evidence that judgments
+  // exist just as much as `judged` is — a run can inherit without judging.
+  inherited?: number
   done?: number
   label?: string
   matched?: number
@@ -127,6 +131,16 @@ export interface StockJudgmentRun {
   running: boolean
   stale: boolean
   judged: number
+  // Listings that took a verdict their record already held, rather than being
+  // paid for. Carried on the row and not only on the SSE event: that event
+  // reaches subscribers of the Machine running the job, and a client polling
+  // from the other one would otherwise be told a run that spent nothing
+  // checked nothing.
+  //
+  // Optional, like the deployment it has to survive: during a rolling deploy
+  // the Machine answering this request may be running the binary that added
+  // the column and may not, so every read of it goes through `?? 0`.
+  inherited?: number
   // Null until the run has counted the items it is going to judge, which it
   // does before the first Anthropic call.
   total: number | null
