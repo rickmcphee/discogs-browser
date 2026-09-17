@@ -646,6 +646,20 @@ def test_totals_resolve_eligibility_once_not_per_queue_row(admin_conn):
         db.enqueue_crawl_queue_for_stock_item(admin_conn, _stock_identity(admin_conn, f"k{i}"))
     admin_conn.commit()
 
+    # The planner chooses between a hash join over the whole relation and a
+    # nested loop per row from its statistics, and that is exactly the
+    # distinction this asserts on -- so the statistics have to describe the
+    # rows just inserted rather than whatever the run database happened to
+    # carry. Nothing keeps them current here: pg_statistic is shared across the
+    # whole pytest session, autoanalyze does not run inside it, and the
+    # fixture's TRUNCATE leaves the previous test's numbers in place. Without
+    # this the assertion reports on the plan for someone else's data, which is
+    # how it came to fail in a full-suite run while passing alone.
+    admin_conn.execute(
+        "ANALYZE crawl_queue, crawlers, stock_items, stock_item_identities, "
+        "stock_item_saves, library_items, catalog"
+    )
+
     row = admin_conn.execute(
         f"EXPLAIN (ANALYZE, FORMAT JSON) WITH q AS ({db._queue_row_state_sql()}) "
         f"SELECT count(*) FILTER (WHERE live AND actionable) FROM q"
@@ -742,6 +756,20 @@ def test_totals_under_library_only_resolve_interest_once_not_per_queue_row(admin
         if i % 2:
             db.save_stock_item(admin_conn, alice["id"], f"k{i}")
     admin_conn.commit()
+
+    # The planner chooses between a hash join over the whole relation and a
+    # nested loop per row from its statistics, and that is exactly the
+    # distinction this asserts on -- so the statistics have to describe the
+    # rows just inserted rather than whatever the run database happened to
+    # carry. Nothing keeps them current here: pg_statistic is shared across the
+    # whole pytest session, autoanalyze does not run inside it, and the
+    # fixture's TRUNCATE leaves the previous test's numbers in place. Without
+    # this the assertion reports on the plan for someone else's data, which is
+    # how it came to fail in a full-suite run while passing alone.
+    admin_conn.execute(
+        "ANALYZE crawl_queue, crawlers, stock_items, stock_item_identities, "
+        "stock_item_saves, library_items, catalog"
+    )
 
     row = admin_conn.execute(
         f"EXPLAIN (ANALYZE, FORMAT JSON) WITH q AS ({db._queue_row_state_sql(library_only=True)}) "
