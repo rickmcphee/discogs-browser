@@ -227,6 +227,22 @@ Four changes, all in `frontend/src/App.tsx`, no new endpoints.
    sync on the same shared banner — protected, which is the reason for
    measuring writes rather than simply flagging ownership.
 
+   **Ending a run releases the claim rather than clearing the state**, and
+   `releaseJudgmentPresentation()` is the one way to do it: the HTTP take-down
+   and both terminal SSE handlers call it, and it lowers the spinner only if
+   nothing has raised it since the claim was taken. The events used to lower it
+   outright, which the poll had stopped doing, so a stock sync that raised the
+   spinner after a judgment run claimed it lost its busy indicator the moment
+   that run ended — and nothing raised it again, because only
+   `stock_sync_started` raises, not its progress lines. The sync then ran to
+   completion with no sign of it.
+
+   The *message* is not released the same way: a terminal event is
+   authoritative about its own run's ending and writes it regardless, which is
+   what puts it inside the baseline the read that follows measures against.
+   Only the spinner is arbitrated, because "something is busy" is a claim about
+   the whole page and lowering it on someone else's behalf is never right.
+
    **The start and stop replies read the run row too**, which is what the
    list above is really recording: for ten rounds the poll was the only reader
    being audited, and every message those two write about a live run had the

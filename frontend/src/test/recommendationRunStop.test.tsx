@@ -1115,6 +1115,60 @@ describe('stopping a recommendation run from the profile page', () => {
     )
   })
 
+  // The spinner is shared, and the HTTP take-down has asked whose it is since
+  // round 41 -- the terminal SSE handlers never did. A stock sync that raised
+  // it after this run claimed it lost its busy indicator the moment the
+  // judgment ended, and nothing raised it again: only `stock_sync_started`
+  // raises, not its progress lines, so the sync ran to completion with no sign
+  // of it. (Copilot, PR #368, round 46.)
+  it('leaves a stock sync its spinner when a judgment ending arrives', async () => {
+    getJudgmentStatus.mockResolvedValue({ any_judged: true, run: run() })
+    await openProfile()
+    await waitFor(() =>
+      expect(screen.getByText(/Finding recommendations for Store items…/)).toBeInTheDocument(),
+    )
+
+    await act(async () => {
+      SilentEventSource.instances[0].emit({ status: 'stock_sync_started', id: 20 })
+    })
+    expect(screen.getByText(/Syncing in-stock catalog…/)).toBeInTheDocument()
+
+    getJudgmentStatus.mockResolvedValue({ any_judged: true, run: null })
+    await act(async () => {
+      SilentEventSource.instances[0].emit({
+        status: 'stock_judgment_complete', judged: 40, total: 40, inherited: 3, id: 21,
+      })
+    })
+
+    // The run is over and said so, but the sync it overlapped is not.
+    expect(screen.getByText(/Finished finding recommendations/)).toBeInTheDocument()
+    expect(screen.getAllByText('⟳').length).toBeGreaterThan(0)
+  })
+
+  // Same call at the error ending, pinned separately because a shared helper
+  // is only shared while both sites still call it.
+  it('leaves a stock sync its spinner when a judgment failure arrives', async () => {
+    getJudgmentStatus.mockResolvedValue({ any_judged: true, run: run() })
+    await openProfile()
+    await waitFor(() =>
+      expect(screen.getByText(/Finding recommendations for Store items…/)).toBeInTheDocument(),
+    )
+
+    await act(async () => {
+      SilentEventSource.instances[0].emit({ status: 'stock_sync_started', id: 22 })
+    })
+
+    getJudgmentStatus.mockResolvedValue({ any_judged: true, run: null })
+    await act(async () => {
+      SilentEventSource.instances[0].emit({
+        status: 'stock_judgment_error', error: 'rate limited', id: 23,
+      })
+    })
+
+    expect(screen.getByText(/Finding recommendations failed: rate limited/)).toBeInTheDocument()
+    expect(screen.getAllByText('⟳').length).toBeGreaterThan(0)
+  })
+
   it('does not poll the run once nothing is running', async () => {
     await openProfile()
     const atRest = getJudgmentStatus.mock.calls.length

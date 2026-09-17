@@ -530,6 +530,25 @@ export default function App() {
     }).catch(() => {})
   }, [fetchUnreadNotifications])
 
+  // The other end of that claim, shared by everything that ends a judgment
+  // run: the HTTP take-down and both terminal SSE handlers. It lowers the
+  // spinner only if nothing has raised it since we did, and hands the claim
+  // back so a caller that also owns the banner can decide about the message.
+  //
+  // The events used to lower it unconditionally, which the HTTP path has not
+  // done since round 41 -- so a stock sync that raised the spinner after this
+  // run claimed it lost its busy indicator the moment the judgment ended, and
+  // nothing raised it again: `stock_sync_progress` does not, only
+  // `stock_sync_started` does. The sync then ran to completion with no sign
+  // of it. (Copilot, PR #368, round 46.)
+  const releaseJudgmentPresentation = useCallback(() => {
+    const claimed = judgmentPresentation.current
+    if (claimed === null) return null
+    judgmentPresentation.current = null
+    if (syncingRaises.current === claimed.raises) setSyncing(false)
+    return claimed
+  }, [])
+
   // Same race, same fix, for hasJudgedItems: the bootstrap fetch below and
   // handleImportRecommendations's post-import refresh can both have a
   // getJudgmentStatus() request in flight, and the judgment SSE handlers and
@@ -573,16 +592,14 @@ export default function App() {
       // bumped the counter, so this stays quiet rather than saying it twice.
       // The claim is dropped either way: the run is over, so it is no longer
       // ours to take down.
-      const claimed = judgmentPresentation.current
-      if (claimed !== null && !s.run?.running && !judgmentStopPending.current) {
-        judgmentPresentation.current = null
-        // Asked separately, because they are separate claims. Nothing has
-        // raised the spinner since we did, so it is still ours to lower even
-        // where the banner has moved on to someone else's message -- and that
-        // is exactly when leaving it up is worst, since it would then be
-        // spinning beside a message that has nothing to do with a run.
-        if (syncingRaises.current === claimed.raises) setSyncing(false)
-        if (statusWrites.current === claimed.writes) {
+      if (judgmentPresentation.current !== null && !s.run?.running && !judgmentStopPending.current) {
+        // Two separate claims, so two separate questions. The spinner is
+        // released only if nothing has raised it since we did -- still ours to
+        // lower even where the banner has moved on to someone else's message,
+        // and that is exactly when leaving it up is worst, since it would then
+        // be spinning beside a message that has nothing to do with a run.
+        const claimed = releaseJudgmentPresentation()
+        if (claimed !== null && statusWrites.current === claimed.writes) {
           // A row that has gone entirely -- cleared out from under us -- can
           // still end the spinner, but has nothing to report, and inventing
           // "Finished, 0 items" for it would be worse than leaving the last
@@ -624,7 +641,7 @@ export default function App() {
       // say", and the poll below decides for itself whether to keep trying.
       return null
     }
-  }, [setSyncStatus])
+  }, [setSyncStatus, releaseJudgmentPresentation])
 
   // The discovery read, retried a bounded number of times, in the shape the
   // collection sync's own discovery poll already uses.
@@ -987,7 +1004,7 @@ export default function App() {
       }
       if (event.status === 'stock_judgment_complete' || event.status === 'stock_judgment_stopped') {
         const stopped = event.status === 'stock_judgment_stopped'
-        setSyncing(false)
+        releaseJudgmentPresentation()
         const judged = event.judged ?? 0
         const inherited = event.inherited ?? 0
         const startInFlight = judgmentStartPending.current !== 0
@@ -1046,7 +1063,7 @@ export default function App() {
         return
       }
       if (event.status === 'stock_judgment_error') {
-        setSyncing(false)
+        releaseJudgmentPresentation()
         // Defers to a start in flight, as the two endings above do.
         const reconcile = judgmentStartPending.current === 0
         if (reconcile) {
@@ -1122,7 +1139,7 @@ export default function App() {
       clearTimeout(reconnectTimer)
     }
   }, [authState, setSyncStatus, fetchPriceStatus, refreshJudgmentStatus, discoverJudgmentRun,
-      showJudgmentRunning, beginSyncing])
+      showJudgmentRunning, releaseJudgmentPresentation, beginSyncing])
 
   // Rides priceGeneration rather than a notification-specific SSE event: a
   // per-user event would have to be tagged with an owner, and the crawl worker
