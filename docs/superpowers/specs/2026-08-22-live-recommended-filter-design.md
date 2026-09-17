@@ -220,9 +220,27 @@ Four changes, all in `frontend/src/App.tsx`, no new endpoints.
    sync on the same shared banner — protected, which is the reason for
    measuring writes rather than simply flagging ownership.
 
+   **The start reply is a third reader of the run row, and it owes the same
+   two things.** A refusal by a run already under way writes a message *about
+   that live run*, after `showJudgmentRunning` has claimed the banner — so it
+   renews the claim like any other running-banner writer, or the poll that
+   eventually sees the run end lowers the spinner and then declines to say so,
+   leaving "already under way — use Stop" beside a button gone back to
+   Refresh. And an *accepted* run can be over before the router reads its row:
+   the start returns once the task exists, and a run with nothing to bill —
+   every record already judged, so the whole of it is propagation — finishes
+   inside that gap. The reply then carries `started: true`, `running: false`
+   and a terminal row, no claim was ever taken because nothing was running to
+   claim for, and the read that follows has nothing to reconcile against. That
+   ending is reported from the row the reply handed over, before the read is
+   issued so the read may still overrule it.
+
    A single `judgmentEndingMessage` builds that message for both the event
    path and the row path, so the two cannot drift into describing one ending
-   two ways — and a **stale** row is not one of its endings. A stale row still
+   two ways — and `judgmentRowEndingMessage` wraps it for the two readers
+   handed a *row* rather than an event, the poll and that start reply, so the
+   stale distinction below is drawn once rather than at each of them. A stale
+   row still
    reads `status: 'running'` while `running` is false, since that is what
    staleness is: a claim whose heartbeat stopped. Reporting it as a completion
    would invent a finish for a worker that died, so the poll says it stopped

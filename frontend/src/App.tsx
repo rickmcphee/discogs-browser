@@ -17,7 +17,7 @@ import { useIsMobile } from './hooks/useMediaQuery'
 import { navButtonClass, primaryButtonClass, secondaryButtonClass, dismissButtonClass } from './styles/buttons'
 import { refreshCollection, getCollectionStatus, openCrawlStream, getCrawlStatus, postCrawlStart, postStockSyncStart, postJudgmentStart, postJudgmentStop, clearJudgments, exportRecommendationsCsv, importRecommendationsCsv, getCrawlers, getUserSettings, getUserHiddenCrawlers, postUserHiddenCrawlers, getJudgmentStatus, getPriceStatus, getNotificationsUnread, markNotificationsRead, checkHealth, getAuthStatus, setUnauthorizedHandler, hasAvatar } from './api/client'
 import type { StockSyncStartResult } from './api/client'
-import type { CrawlEvent, CrawlStatus, CollectionStatus, CollectionSyncRun, Crawler, AuthStatus, JudgmentStatus } from './api/types'
+import type { CrawlEvent, CrawlStatus, CollectionStatus, CollectionSyncRun, Crawler, AuthStatus, JudgmentStatus, StockJudgmentRun } from './api/types'
 
 type View = 'collection' | 'wantlist' | 'store' | 'settings' | 'logs' | 'queue' | 'account' | 'notifications'
 type LibraryView = Extract<View, 'collection' | 'wantlist' | 'store'>
@@ -166,6 +166,23 @@ function judgmentEndingMessage(
     // still unjudged for the next run to pick up.
     ? `Recommendation run stopped — ${judged} of ${total} items checked${inheritedPart}`
     : `Finished finding recommendations — ${judged} items checked${inheritedPart}`
+}
+
+// The same ending read off a run *row* rather than an event, for the two
+// readers that are handed one: the poll, and a start whose accepted run had
+// already finished by the time the router read the row. Shared for the reason
+// judgmentEndingMessage is shared, and so the stale distinction is drawn once
+// rather than at each reader. (Copilot, PR #368, round 44.)
+function judgmentRowEndingMessage(run: StockJudgmentRun): string {
+  // A stale row still says `status: 'running'` while `running` is false --
+  // that is what staleness *is*, a claim whose heartbeat stopped. Mapping it
+  // to 'complete' would report a finish that never happened for a worker that
+  // died mid-run. (Copilot, PR #368, round 40.)
+  if (run.stale) return STALE_JUDGMENT_RUN_MESSAGE
+  return judgmentEndingMessage(
+    run.status === 'running' ? 'complete' : run.status,
+    run.judged, run.total ?? 0, run.inherited ?? 0, run.error,
+  )
 }
 
 function formatElapsed(seconds: number | null): string {
@@ -570,20 +587,7 @@ export default function App() {
           // still end the spinner, but has nothing to report, and inventing
           // "Finished, 0 items" for it would be worse than leaving the last
           // true thing on screen.
-          if (s.run) {
-            // A stale row still says `status: 'running'` while `running` is
-            // false -- that is what staleness *is*, a claim whose heartbeat
-            // stopped. Mapping it to 'complete' would report a finish that
-            // never happened for a worker that died mid-run. The Stop path
-            // already draws that distinction; so does this one.
-            // (Copilot, PR #368, round 40.)
-            setSyncStatus(s.run.stale
-              ? STALE_JUDGMENT_RUN_MESSAGE
-              : judgmentEndingMessage(
-                s.run.status === 'running' ? 'complete' : s.run.status,
-                s.run.judged, s.run.total ?? 0, s.run.inherited ?? 0, s.run.error,
-              ))
-          }
+          if (s.run) setSyncStatus(judgmentRowEndingMessage(s.run))
         }
       }
       // The judgments this run has written are invisible to an already-open
@@ -1583,6 +1587,15 @@ export default function App() {
       // them next; their own run is, and Stop is the thing that ends it.
       if (!r.started && r.running) {
         setSyncStatus('A recommendation run is already under way — use Stop to end it.')
+        // This message is about the live run too, so it takes the claim over
+        // from the generic one showJudgmentRunning has just written. Left
+        // unrenewed, the claim still named that earlier write, so when the
+        // poll finally saw the run end it lowered the spinner and then
+        // declined to say so -- leaving "already under way — use Stop" beside
+        // a button that had gone back to Refresh. Same renewal rule every
+        // other writer of a running banner follows.
+        // (Copilot, PR #368, round 44.)
+        claimJudgmentPresentation()
       } else if (!r.started && r.stock_sync_running) {
         setSyncStatus('In-stock sync running — try Refresh again once it finishes.')
       } else if (!r.started) {
@@ -1593,6 +1606,17 @@ export default function App() {
         // exist to end, so the last one says the only thing still true.
         // (Copilot, PR #368, round 27.)
         setSyncStatus('Recommendations did not start — try Refresh again.')
+      } else if (!r.running && r.run) {
+        // An accepted run can be over before the router reads its row: the
+        // start returns once the task exists, and a run with nothing to bill
+        // -- every record already judged, so the whole of it is propagation --
+        // finishes inside that gap. The reply then carries started: true,
+        // running: false and a terminal row; nothing was running to claim for,
+        // so the read below has no claim to reconcile against and says
+        // nothing, and on the Machine not running the job no event says it
+        // either. The click reported a run that did happen as nothing at all.
+        // Report the row it handed us. (Copilot, PR #368, round 44.)
+        setSyncStatus(judgmentRowEndingMessage(r.run))
       }
       // An ending that arrived while this POST was in flight deferred its
       // reconciliation rather than doing it, so the start owes that read
@@ -1634,7 +1658,7 @@ export default function App() {
           : `Refresh recommendations failed to start: ${e.message}`,
       )
     }
-  }, [setSyncStatus, discoverJudgmentRun, showJudgmentRunning])
+  }, [setSyncStatus, discoverJudgmentRun, showJudgmentRunning, claimJudgmentPresentation])
 
   const handleStopRecommendations = useCallback(async () => {
     // Optimistic, and corrected by the reply a moment later: the click has to

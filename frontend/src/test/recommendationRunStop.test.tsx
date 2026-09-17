@@ -1014,6 +1014,57 @@ describe('stopping a recommendation run from the profile page', () => {
     expect(screen.getAllByText('⟳').length).toBeGreaterThan(0)
   })
 
+  // The refusal message is about the live run too, so it has to renew the
+  // claim the generic banner just took -- the same rule every other writer of
+  // a running banner follows. Left unrenewed, the poll that finally saw the
+  // run end lowered the spinner and then declined to say so, because the write
+  // count no longer matched: "already under way — use Stop" sat beside a
+  // button that had gone back to Refresh. (Copilot, PR #368, round 44.)
+  it('closes out a run behind the refusal message it wrote', async () => {
+    const row = await openProfile()
+    await waitFor(() => expect(within(row).getByRole('button')).toHaveTextContent('Refresh'))
+
+    postJudgmentStart.mockResolvedValue({
+      started: false, running: true, stock_sync_running: false, run: run(),
+    })
+    getJudgmentStatus.mockResolvedValue({ any_judged: true, run: run() })
+    fireEvent.click(within(row).getByRole('button'))
+    await screen.findByText(/A recommendation run is already under way/)
+
+    getJudgmentStatus.mockResolvedValue({
+      any_judged: true,
+      run: run({ status: 'complete', running: false, judged: 40, total: 40, inherited: 3 }),
+    })
+    await act(async () => { await vi.advanceTimersByTimeAsync(PAST_ONE_POLL) })
+
+    await waitFor(() =>
+      expect(screen.getByText(/Finished finding recommendations — 40 items checked/)).toBeInTheDocument(),
+    )
+    expect(screen.queryByText(/A recommendation run is already under way/)).not.toBeInTheDocument()
+  })
+
+  // An accepted run can be over before the router reads its row: the start
+  // returns once the task exists, and a run with nothing to bill -- every
+  // record already judged, so the whole of it is propagation -- finishes
+  // inside that gap. Nothing was running to claim for, so the read that
+  // follows has no claim to reconcile against and says nothing, and on the
+  // Machine not running the job no event says it either. A run that did happen
+  // reported as nothing at all. (Copilot, PR #368, round 44.)
+  it('reports an accepted run that had already finished by the time the row was read', async () => {
+    const row = await openProfile()
+    await waitFor(() => expect(within(row).getByRole('button')).toHaveTextContent('Refresh'))
+
+    postJudgmentStart.mockResolvedValueOnce({
+      started: true, running: false, stock_sync_running: false,
+      run: run({ status: 'complete', running: false, judged: 0, total: 0, inherited: 12 }),
+    })
+    fireEvent.click(within(row).getByRole('button'))
+
+    await screen.findByText(
+      /Finished finding recommendations — 0 items checked, 12 matched to records already judged/,
+    )
+  })
+
   it('does not poll the run once nothing is running', async () => {
     await openProfile()
     const atRest = getJudgmentStatus.mock.calls.length
