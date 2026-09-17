@@ -1135,9 +1135,9 @@ describe('stopping a recommendation run from the profile page', () => {
   // it after this run claimed it lost its busy indicator the moment the
   // judgment ended, and at the time nothing raised it again -- only
   // `stock_sync_started` did, not its progress lines, so the sync ran to
-  // completion with no sign of it. Round 50 made every non-terminal sync event
-  // take the owner as well, which narrows the window; the ownership rule this
-  // pins is what makes either of them enough. (Copilot, PR #368, round 46.)
+  // completion with no sign of it. Round 50 made every sync event take the
+  // owner as well, which narrows the window; the ownership rule this pins is
+  // what makes either of them enough. (Copilot, PR #368, round 46.)
   it('leaves a stock sync its spinner when a judgment ending arrives', async () => {
     getJudgmentStatus.mockResolvedValue({ any_judged: true, run: run() })
     await openProfile()

@@ -602,16 +602,21 @@ export default function App() {
   }, [setSyncStatus, beginSyncing])
 
   // The other end of that claim, shared by everything that ends a judgment
-  // run: the HTTP take-down and both terminal SSE handlers. It gives up this
-  // run's share of the spinner -- which lowers it only if nothing else still
-  // wants it -- and hands the claim back so a caller that also owns the
-  // banner can decide about the message.
+  // run: the HTTP take-down, both terminal SSE handlers, and the Stop reply's
+  // own two endings -- the run had already finished, or its Machine is gone
+  // and the row is stale. That last pair turns the run poll off as it writes,
+  // so it is the last reader there will be. It gives up this run's share of
+  // the spinner -- which lowers it only if nothing else still wants it -- and
+  // hands the claim back so a caller that also owns the banner can decide
+  // about the message.
   //
   // The events used to lower the spinner outright, which the HTTP path had
   // stopped doing, so a stock sync that raised it after this run claimed it
-  // lost its busy indicator the moment the judgment ended, and nothing raised
-  // it again: `stock_sync_progress` does not, only `stock_sync_started` does.
-  // (Copilot, PR #368, round 46.)
+  // lost its busy indicator the moment the judgment ended, and at the time
+  // nothing raised it again -- a sync took its share from `*_started` alone,
+  // never from the progress lines that followed. That half is history:
+  // spinnerOwnerOf takes the share from any sync event now. This release is
+  // what fixed the other half. (Copilot, PR #368, rounds 46, 50 and 52.)
   const releaseJudgmentPresentation = useCallback(() => {
     const claimed = judgmentPresentation.current
     if (claimed === null) return null
