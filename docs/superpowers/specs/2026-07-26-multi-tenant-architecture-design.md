@@ -156,7 +156,9 @@ provider available; Discogs OAuth replaces that need entirely for a multi-user a
 
 **Account resolution:** call `GET /oauth/identity` with the new token pair to obtain
 the Discogs `id`/`username`. `discogs_user_id` is the account key.
-- Known `discogs_user_id` → log in, create a session.
+- Known `discogs_user_id` → log in, create a session, and write the token pair
+  and username this handshake just returned onto the row (see the amendment
+  below).
 - Unknown `discogs_user_id` → requires a valid, unredeemed `invites.code` to
   provision a new `users` row; the code is consumed atomically as part of account
   creation.
@@ -180,6 +182,29 @@ There is no app-side token refresh to build (Discogs tokens are long-lived by
 design). "Logout" only tears down the session cookie; revocation of Discogs access
 happens on discogs.com and is only discovered when a subsequent Discogs API call
 starts failing.
+
+**Amendment (2026-09-16, branch `claude/sleepy-dijkstra-dlsrbx`):** both
+paragraphs above still describe Discogs' side correctly — the tokens are
+long-lived, there is no refresh-token flow to implement, and nothing tells the
+app when one has been revoked. What was wrong is the implied consequence: that
+the app therefore has nothing to do about it. Signing in again exchanges a
+working pair, and the callback discarded it, writing those columns only at
+`redeem-invite` and never again. A revoked pair was therefore permanent, and
+the one action a user can take against it did nothing. The callback now writes
+what the handshake returned, so re-authorising is the remedy, and
+`discogs_username` goes with it because it is the key in every Discogs URL a
+sync builds rather than a display name (`discogs_user_id`, which resolves the
+account, is unaffected by a rename).
+
+"Only discovered when a subsequent Discogs API call starts failing" also
+remains true of *when* it is discovered, and is no longer true of what happens
+then: that failure was silent — the collection sync's own first call reported
+it with neither a log line nor a message naming the fault — and now names the
+status and the remedy. See
+[`2026-06-27-discogs-browser-design.md`](2026-06-27-discogs-browser-design.md)'s
+Refresh Collection flow and
+[`2026-07-26-discogs-oauth-auth-design.md`](2026-07-26-discogs-oauth-auth-design.md)'s
+callback steps.
 
 ---
 
