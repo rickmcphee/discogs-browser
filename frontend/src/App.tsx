@@ -674,27 +674,37 @@ export default function App() {
   // the message landed rather than counting it as news -- the same shape the
   // price-refresh claim uses.
   //
-  // The raise lives here rather than at each writer, because the fence that
-  // protects a claimed banner also blocks the read that would otherwise have
-  // raised the spinner. `stock_judgment_progress` can be the first judgment
-  // event a client sees -- a page loaded mid-run, or a stream reconnecting
-  // past the replay buffer -- and it wrote "…40/120", correctly kept the
-  // mount-time read from replacing that with a generic line, and left the run
-  // turning nothing for the rest of its length. Every claimer wants both
-  // halves, so taking one without the other is not a state worth being able
-  // to express. (Copilot, PR #368, round 43.)
-  const claimJudgmentPresentation = useCallback(() => {
+  // Writing a live-run banner, raising the spinner and claiming both are one
+  // act, and this is the only way to perform any of them. They were three
+  // calls a writer had to remember, and three consecutive rounds found one
+  // that forgot: `stock_judgment_progress` claimed without raising, and then
+  // the start refusal, the start's failure recovery and the Stop reply each
+  // wrote without claiming. The failure is the same every time -- the claim
+  // still names an older write, so when the poll sees the run end it lowers
+  // the spinner and then declines to say so, leaving a message about a live
+  // run beside a Refresh button for as long as the page stays open. A caller
+  // cannot forget a step it has no way to take separately.
+  // (Copilot, PR #368, rounds 43-45.)
+  //
+  // The raise cannot be left to the reads, either: the fence protecting a
+  // claimed banner also blocks the read that would otherwise have raised the
+  // spinner, so a progress line arriving first left an active run turning
+  // nothing at all.
+  //
+  // Recorded after the write, so the claim measures silence from the point
+  // the message landed rather than counting it as news -- the same shape the
+  // price-refresh claim uses.
+  const showJudgmentRunning = useCallback((
+    message = 'Finding recommendations for Store items…',
+    eventId: number | null = null,
+  ) => {
     beginSyncing()
+    setSyncStatus(message, eventId)
     judgmentPresentation.current = {
       writes: statusWrites.current,
       raises: syncingRaises.current,
     }
-  }, [beginSyncing])
-
-  const showJudgmentRunning = useCallback(() => {
-    setSyncStatus('Finding recommendations for Store items…')
-    claimJudgmentPresentation()
-  }, [setSyncStatus, claimJudgmentPresentation])
+  }, [setSyncStatus, beginSyncing])
 
   const discoverJudgmentRun = useCallback(async (waitForRun = false): Promise<boolean> => {
     const action = latestJudgmentActionSeq.current
@@ -959,8 +969,7 @@ export default function App() {
         // nothing. The row clears it, through the poll or a terminal event.
         latestJudgmentRunSeq.current++
         setRecommendationRunning(true)
-        setSyncStatus('Finding recommendations for Store items…', event.id ?? null)
-        claimJudgmentPresentation()
+        showJudgmentRunning(undefined, event.id ?? null)
         return
       }
       if (event.status === 'stock_judgment_progress') {
@@ -972,8 +981,8 @@ export default function App() {
         setRecommendationRunning(true)
         setStockSyncGeneration(g => g + 1)
         setStockJudgmentGeneration(g => g + 1)
-        setSyncStatus(`Finding recommendations for Store items… ${event.judged}/${event.total}`, event.id ?? null)
-        claimJudgmentPresentation()
+        showJudgmentRunning(
+          `Finding recommendations for Store items… ${event.judged}/${event.total}`, event.id ?? null)
         return
       }
       if (event.status === 'stock_judgment_complete' || event.status === 'stock_judgment_stopped') {
@@ -1113,7 +1122,7 @@ export default function App() {
       clearTimeout(reconnectTimer)
     }
   }, [authState, setSyncStatus, fetchPriceStatus, refreshJudgmentStatus, discoverJudgmentRun,
-      claimJudgmentPresentation, beginSyncing])
+      showJudgmentRunning, beginSyncing])
 
   // Rides priceGeneration rather than a notification-specific SSE event: a
   // per-user event would have to be tagged with an owner, and the crawl worker
@@ -1586,16 +1595,7 @@ export default function App() {
       // sends the user to wait out something that is not what will refuse
       // them next; their own run is, and Stop is the thing that ends it.
       if (!r.started && r.running) {
-        setSyncStatus('A recommendation run is already under way — use Stop to end it.')
-        // This message is about the live run too, so it takes the claim over
-        // from the generic one showJudgmentRunning has just written. Left
-        // unrenewed, the claim still named that earlier write, so when the
-        // poll finally saw the run end it lowered the spinner and then
-        // declined to say so -- leaving "already under way — use Stop" beside
-        // a button that had gone back to Refresh. Same renewal rule every
-        // other writer of a running banner follows.
-        // (Copilot, PR #368, round 44.)
-        claimJudgmentPresentation()
+        showJudgmentRunning('A recommendation run is already under way — use Stop to end it.')
       } else if (!r.started && r.stock_sync_running) {
         setSyncStatus('In-stock sync running — try Refresh again once it finishes.')
       } else if (!r.started) {
@@ -1652,13 +1652,13 @@ export default function App() {
       // above bumps the latter itself, so comparing against it here would
       // discard this verdict every time.
       if (action !== latestJudgmentActionSeq.current) return
-      setSyncStatus(
-        running
-          ? 'That request failed, but the recommendation run did start — use Stop to end it.'
-          : `Refresh recommendations failed to start: ${e.message}`,
-      )
+      if (running) {
+        showJudgmentRunning('That request failed, but the recommendation run did start — use Stop to end it.')
+      } else {
+        setSyncStatus(`Refresh recommendations failed to start: ${e.message}`)
+      }
     }
-  }, [setSyncStatus, discoverJudgmentRun, showJudgmentRunning, claimJudgmentPresentation])
+  }, [setSyncStatus, discoverJudgmentRun, showJudgmentRunning])
 
   const handleStopRecommendations = useCallback(async () => {
     // Optimistic, and corrected by the reply a moment later: the click has to
@@ -1687,13 +1687,17 @@ export default function App() {
       // it stopped responding. Saying so names the state the staleness window
       // exists to recover from, rather than reporting a completion that never
       // happened.
-      setSyncStatus(
-        r.stopping
-          ? 'Stopping the recommendation run — finishing the batch already paid for…'
-          : r.run?.stale
-            ? STALE_JUDGMENT_RUN_MESSAGE
-            : 'No recommendation run to stop — it had already finished.',
-      )
+      if (r.stopping) {
+        // A run finishing the batch it has already paid for is still a live
+        // run, so this is a running banner like any other -- and claiming it
+        // is what lets the poll close it out. The two endings below are not:
+        // claiming one would put a spinner over a run that has stopped.
+        showJudgmentRunning('Stopping the recommendation run — finishing the batch already paid for…')
+      } else {
+        setSyncStatus(r.run?.stale
+          ? STALE_JUDGMENT_RUN_MESSAGE
+          : 'No recommendation run to stop — it had already finished.')
+      }
     } catch (e: any) {
       if (action !== latestJudgmentActionSeq.current) return
       latestJudgmentRunSeq.current++
@@ -1704,7 +1708,7 @@ export default function App() {
       // race must not re-open the window its successor is still inside.
       if (action === latestJudgmentActionSeq.current) judgmentStopPending.current = false
     }
-  }, [setSyncStatus])
+  }, [setSyncStatus, showJudgmentRunning])
 
   const handleExportRecommendations = useCallback(async () => {
     try {

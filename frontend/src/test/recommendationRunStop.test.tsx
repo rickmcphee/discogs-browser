@@ -1065,6 +1065,56 @@ describe('stopping a recommendation run from the profile page', () => {
     )
   })
 
+  // Every message that says a run is live has to claim the presentation, or
+  // the poll that sees the run end lowers the spinner and then declines to
+  // say so. The failure-recovery verdict is one of those messages: the read
+  // before it found a live run and claimed the generic banner, and this write
+  // moved past that claim. (Copilot, PR #368, round 45.)
+  it('closes out a run behind the failed-start recovery message', async () => {
+    postJudgmentStart.mockRejectedValue(new Error('network'))
+    getJudgmentStatus.mockResolvedValueOnce({ any_judged: false, run: null })
+      .mockResolvedValue({ any_judged: false, run: run({ judged: 0 }) })
+    const row = await openProfile()
+    fireEvent.click(within(row).getByRole('button'))
+
+    await screen.findByText(/the recommendation run did start/)
+    expect(screen.getAllByText('⟳').length).toBeGreaterThan(0)
+
+    getJudgmentStatus.mockResolvedValue({
+      any_judged: true,
+      run: run({ status: 'complete', running: false, judged: 40, total: 40 }),
+    })
+    await act(async () => { await vi.advanceTimersByTimeAsync(PAST_ONE_POLL) })
+
+    await waitFor(() =>
+      expect(screen.getByText(/Finished finding recommendations — 40 items checked/)).toBeInTheDocument(),
+    )
+  })
+
+  // And so is "Stopping…": a run finishing the batch it has already paid for
+  // is still live, so that message is a running banner and has to be claimed
+  // like one. Unclaimed, it outlived the run it described.
+  // (Copilot, PR #368, round 45.)
+  it('closes out a run behind the stopping message', async () => {
+    getJudgmentStatus.mockResolvedValue({ any_judged: true, run: run() })
+    postJudgmentStop.mockResolvedValue({ stopping: true, run: run({ stop_requested: true }) })
+    const row = await openProfile()
+    await waitFor(() => expect(within(row).getByRole('button')).toHaveTextContent('Stop'))
+
+    fireEvent.click(within(row).getByRole('button'))
+    await screen.findByText(/Stopping the recommendation run/)
+
+    getJudgmentStatus.mockResolvedValue({
+      any_judged: true,
+      run: run({ status: 'stopped', running: false, judged: 12, total: 300 }),
+    })
+    await act(async () => { await vi.advanceTimersByTimeAsync(PAST_ONE_POLL) })
+
+    await waitFor(() =>
+      expect(screen.getByText(/Recommendation run stopped — 12 of 300 items checked/)).toBeInTheDocument(),
+    )
+  })
+
   it('does not poll the run once nothing is running', async () => {
     await openProfile()
     const atRest = getJudgmentStatus.mock.calls.length

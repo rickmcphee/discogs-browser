@@ -199,35 +199,40 @@ Four changes, all in `frontend/src/App.tsx`, no new endpoints.
    asks the two separately: lower the spinner if nothing has raised it since
    we did, write the ending if nothing has written the banner since.
 
-   **Every writer of a running banner renews that claim**, not just the read:
-   `showJudgmentRunning`, `stock_judgment_started` and
-   `stock_judgment_progress` all call `claimJudgmentPresentation()`, which
-   raises the spinner as part of claiming rather than leaving each writer to
-   remember. That is not tidiness: the fence protecting a claimed banner also
-   blocks the read that would otherwise have raised the spinner, and a
-   progress event is the first judgment event a client sees whenever the page
-   loads mid-run or the stream reconnects past the replay buffer. It wrote
-   "…40/120", correctly kept the mount-time read from replacing that with a
-   generic line, and — being the one writer that raised nothing — left an
-   active run with a progress line and no spinner beside it for the rest of
-   its length. Every claimer wants both halves, so holding one without the
-   other is not a state the code can express any more. Taken once and
-   never renewed, it is broken by the run's *own* next progress line — and
-   then nothing can close the run out at all, because the write count no
-   longer matches, so the poll declines the take-down and drops the claim,
-   leaving "…40/120" and its spinner up for good once the stream disconnects.
+   **Writing a live-run banner, raising the spinner and claiming both are one
+   act**, and `showJudgmentRunning(message?, eventId?)` is the only way to
+   perform any of them. Every message that says a run is live goes through it:
+   the generic line the reads write, `stock_judgment_started`,
+   `stock_judgment_progress`, the start's "already under way — use Stop", its
+   failure recovery's "the run did start — use Stop", and the Stop reply's
+   "Stopping — finishing the batch already paid for". A run finishing a batch
+   it has paid for is still a live run; the two *endings* beside that one are
+   not, and claiming one would put a spinner over a run that has stopped.
+
+   They were three separate steps a writer had to remember, and three
+   consecutive rounds found one that forgot — first a claim without a raise,
+   then three writes without a claim. Both failures are the same underneath.
+   A claim that names an older write is a claim the poll will not honour, so
+   when it sees the run end it lowers the spinner and then declines to write
+   the ending, leaving a live-run message beside a Refresh button for as long
+   as the page stays open; and a claim taken once and never renewed is broken
+   by the run's *own* next progress line, after which nothing can close the
+   run out at all. The raise cannot be left to the reads either, because the
+   fence protecting a claimed banner also blocks the read that would otherwise
+   have raised the spinner — a progress line arriving first left an active run
+   turning nothing. A caller cannot forget a step it has no way to take
+   separately.
+
    Renewing on our own writes is what keeps an *unrelated* writer — a stock
    sync on the same shared banner — protected, which is the reason for
    measuring writes rather than simply flagging ownership.
 
-   **The start reply is a third reader of the run row, and it owes the same
-   two things.** A refusal by a run already under way writes a message *about
-   that live run*, after `showJudgmentRunning` has claimed the banner — so it
-   renews the claim like any other running-banner writer, or the poll that
-   eventually sees the run end lowers the spinner and then declines to say so,
-   leaving "already under way — use Stop" beside a button gone back to
-   Refresh. And an *accepted* run can be over before the router reads its row:
-   the start returns once the task exists, and a run with nothing to bill —
+   **The start and stop replies read the run row too**, which is what the
+   list above is really recording: for ten rounds the poll was the only reader
+   being audited, and every message those two write about a live run had the
+   same omission. An *accepted* run can also be over before the router reads
+   its row: the start returns once the task exists, and a run with nothing to
+   bill —
    every record already judged, so the whole of it is propagation — finishes
    inside that gap. The reply then carries `started: true`, `running: false`
    and a terminal row, no claim was ever taken because nothing was running to
@@ -240,8 +245,8 @@ Four changes, all in `frontend/src/App.tsx`, no new endpoints.
    two ways — and `judgmentRowEndingMessage` wraps it for the two readers
    handed a *row* rather than an event, the poll and that start reply, so the
    stale distinction below is drawn once rather than at each of them. A stale
-   row still
-   reads `status: 'running'` while `running` is false, since that is what
+   row still reads `status: 'running'` while `running` is false, since that is
+   what
    staleness is: a claim whose heartbeat stopped. Reporting it as a completion
    would invent a finish for a worker that died, so the poll says it stopped
    responding, in the same words the Stop reply already uses
