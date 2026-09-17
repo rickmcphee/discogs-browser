@@ -1306,6 +1306,37 @@ describe('stopping a recommendation run from the profile page', () => {
     expect(screen.getAllByText('⟳').length).toBeGreaterThan(0)
   })
 
+  // `stock_sync_error` is an ending only when it carries no `source`: with one
+  // it reports a single catalog site failing inside a run that goes on to the
+  // next, which the handler has always known and the owner rule did not. A
+  // reconnect landing on that event took no share, so the sync it went on
+  // narrating lost the indicator to the next operation that ended.
+  // (Copilot, PR #368, round 51.)
+  it('gives a stock sync the spinner when its first event is one source failing', async () => {
+    getJudgmentStatus.mockResolvedValue({ any_judged: true, run: run() })
+    await openProfile()
+    await waitFor(() =>
+      expect(screen.getByText(/Finding recommendations for Store items…/)).toBeInTheDocument(),
+    )
+
+    // No `stock_sync_started` -- it was evicted before this stream connected.
+    await act(async () => {
+      SilentEventSource.instances[0].emit({
+        status: 'stock_sync_error', error: 'Amazon timed out', source: 'Amazon', id: 53,
+      })
+    })
+    expect(screen.getByText(/In-stock sync failed: Amazon timed out/)).toBeInTheDocument()
+
+    getJudgmentStatus.mockResolvedValue({ any_judged: true, run: null })
+    await act(async () => {
+      SilentEventSource.instances[0].emit({
+        status: 'stock_judgment_complete', judged: 40, total: 40, id: 54,
+      })
+    })
+
+    expect(screen.getAllByText('⟳').length).toBeGreaterThan(0)
+  })
+
   it('does not poll the run once nothing is running', async () => {
     await openProfile()
     const atRest = getJudgmentStatus.mock.calls.length

@@ -185,25 +185,32 @@ function judgmentRowEndingMessage(run: StockJudgmentRun): string {
   )
 }
 
-// Which share of the shared spinner an SSE status is evidence for, or null
-// for a terminal one and for anything that is not a sync. Any event narrating
-// work *in progress* proves that work is live, whether or not this client saw
-// it start: a stream reconnecting after the start event has left the replay
-// buffer gets a progress line first. Taking the owner only on `*_started` left
-// such a sync writing a live banner while owning no share of the spinner, so
-// it showed progress with nothing turning beside it -- and a judgment run
-// ending alongside it removed the last owner and hid the indicator while the
-// sync went on. Derived here rather than repeated in a dozen handlers, so one
-// added later cannot forget it. A judgment run has its own way in, through
-// showJudgmentRunning. (Copilot, PR #368, round 50.)
-const SYNC_ENDINGS = ['complete', 'error', 'aborted']
-
+// Which share of the shared spinner an SSE status belongs to, or null for
+// anything that is not a sync. Any event of a sync's own is evidence that sync
+// exists, whether or not this client saw it start: a stream reconnecting after
+// the start event has left the replay buffer gets a progress line first.
+// Taking the owner only on `*_started` left such a sync writing a live banner
+// while owning no share of the spinner, so it showed progress with nothing
+// turning beside it -- and a judgment run ending alongside it removed the last
+// owner and hid the indicator while the sync went on. Derived here rather than
+// repeated in a dozen handlers, so one added later cannot forget it. A
+// judgment run has its own way in, through showJudgmentRunning.
+// (Copilot, PR #368, round 50.)
+//
+// Endings are deliberately not excluded here, so that what ends a sync is
+// decided in one place: the handler for the ending, which takes the share
+// back through endSyncing before this pass returns. A list of terminal
+// statuses here is a second answer to that question, free to disagree with
+// the first -- and it did. `stock_sync_error` is terminal only when it
+// carries no `source`; with one it reports a single catalog site failing
+// inside a run that goes on to the next, and a reconnect landing on that
+// event owned nothing. Taking a share back the same tick costs one state
+// write inside a batch that renders nothing between the two.
+// (Copilot, PR #368, round 51.)
 function spinnerOwnerOf(status: string | undefined): string | null {
   if (!status) return null
-  const live = (prefix: string) =>
-    status.startsWith(prefix) && !SYNC_ENDINGS.some(end => status === `${prefix}${end}`)
-  if (live('stock_sync_')) return 'stock'
-  if (live('sync_')) return 'collection'
+  if (status.startsWith('stock_sync_')) return 'stock'
+  if (status.startsWith('sync_')) return 'collection'
   return null
 }
 

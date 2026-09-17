@@ -257,14 +257,21 @@ Four changes, all in `frontend/src/App.tsx`, no new endpoints.
    the spinner up when a judgment run ended lost its busy indicator on the
    spot, and at the time nothing put it back.
 
-   **And every non-terminal sync event takes its owner, not only `*_started`.**
-   A progress line proves the work is live whether or not this client saw it
-   begin: a stream reconnecting after the start event has left the replay
-   buffer receives one first. `spinnerOwnerOf` derives the owner from the
-   status, in one place rather than in a dozen handlers, so a handler added
-   later cannot forget it — and a sync that has only ever sent progress still
-   holds a share, which is what keeps a judgment ending beside it from
-   removing the last one.
+   **And every sync event takes its owner, not only `*_started`.** A progress
+   line proves the work is live whether or not this client saw it begin: a
+   stream reconnecting after the start event has left the replay buffer
+   receives one first. `spinnerOwnerOf` derives the owner from the status, in
+   one place rather than in a dozen handlers, so a handler added later cannot
+   forget it — and a sync that has only ever sent progress still holds a
+   share, which is what keeps a judgment ending beside it from removing the
+   last one. It does not exclude the endings, so that what ends a sync is
+   decided in one place: the handler for that ending, which gives the share
+   back through `endSyncing` in the same pass. A list of terminal statuses
+   beside it is a second answer to the same question, free to disagree — and
+   it did. `stock_sync_error` ends the sync only when it names no `source`;
+   with one it reports a single catalog site failing inside a run that goes on
+   to the next, and a client whose first event was that one held no share for
+   the sync it went on narrating.
 
    The *message* is not released the same way: a terminal event is
    authoritative about its own run's ending and writes it regardless, which is
