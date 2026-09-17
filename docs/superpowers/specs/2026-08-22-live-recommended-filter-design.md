@@ -173,6 +173,20 @@ Four changes, all in `frontend/src/App.tsx`, no new endpoints.
    write is part of the baseline rather than news. Both endings, the error
    ending and the start handler's post-refusal read were reordered to match.
 
+   **And the read takes the banner down as well as putting it up**, which only
+   became necessary once it started putting it up. A run this client heard
+   about *only* over HTTP has no terminal event coming on this Machine, so
+   nothing else would ever end the presentation: "Finding recommendations for
+   Store items…" spun past a run that had completed, stopped or failed, for as
+   long as the page stayed open. `refreshJudgmentStatus` already reconciled the
+   flags from the row and now reconciles these with them, using the same claim
+   in both directions — `showJudgmentRunning` records `statusWrites` after its
+   own write, and the ending is written only if that value still stands, so a
+   terminal event that did arrive (and wrote the same ending already) is not
+   echoed. The claim is dropped either way, since the run is over. A single
+   `judgmentEndingMessage` builds that message for both the event path and the
+   row path, so the two cannot drift into describing one ending two ways.
+
 No change needed to `StockBrowser.tsx` itself: the effect that resets the
 filter away from "recommended" (`:118-122`) only fires when
 `recommendedAvailable` goes false, which after change 1 no longer happens

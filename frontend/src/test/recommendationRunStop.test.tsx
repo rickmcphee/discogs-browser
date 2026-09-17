@@ -881,6 +881,30 @@ describe('stopping a recommendation run from the profile page', () => {
     expect(screen.queryByText(/^Finding recommendations for Store items…$/)).not.toBeInTheDocument()
   })
 
+  // The other half of the mount-time restore. A run this client only ever
+  // heard about over HTTP gets no terminal event on this Machine, so once a
+  // read turned the spinner on, nothing was ever going to turn it off: the
+  // running banner outlived the run for as long as the page stayed open.
+  // (Copilot, PR #368, round 39.)
+  it('takes the banner down when the row says a discovered run has ended', async () => {
+    getJudgmentStatus.mockResolvedValue({ any_judged: true, run: run() })
+    const row = await openProfile()
+    await waitFor(() =>
+      expect(screen.getByText(/Finding recommendations for Store items…/)).toBeInTheDocument(),
+    )
+
+    getJudgmentStatus.mockResolvedValue({
+      any_judged: true,
+      run: run({ status: 'complete', running: false, judged: 40, total: 120, inherited: 3 }),
+    })
+    await act(async () => { await vi.advanceTimersByTimeAsync(PAST_ONE_POLL) })
+
+    await waitFor(() => expect(within(row).getByRole('button')).toHaveTextContent('Refresh'))
+    expect(
+      screen.getByText(/Finished finding recommendations — 40 items checked, 3 matched to records already judged/),
+    ).toBeInTheDocument()
+  })
+
   it('does not poll the run once nothing is running', async () => {
     await openProfile()
     const atRest = getJudgmentStatus.mock.calls.length

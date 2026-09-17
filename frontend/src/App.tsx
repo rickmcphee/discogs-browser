@@ -139,6 +139,29 @@ function collectionSyncOutcomeMessage(run: CollectionSyncRun): string {
   return `Synced ${run.synced} records${wantlistPart}`
 }
 
+// Written from an event on the Machine running the job, and from the run row
+// on the Machine that hears nothing -- one function, so the two cannot drift
+// into describing the same ending differently. (Copilot, PR #368, round 39.)
+function judgmentEndingMessage(
+  status: 'complete' | 'stopped' | 'error',
+  judged: number,
+  total: number,
+  inherited: number,
+  error: string | null,
+): string {
+  if (status === 'error') return `Finding recommendations failed: ${error}`
+  // Inherited listings are reported on either ending: a run stopped halfway
+  // still fanned out everything it judged before the stop, and those listings
+  // are as much "not paid for again" as the judged ones.
+  const inheritedPart = inherited > 0 ? `, ${inherited} matched to records already judged` : ''
+  return status === 'stopped'
+    // Says what was kept, not just that it ended: the items judged before the
+    // stop stay judged and are not paid for again, and the rest are simply
+    // still unjudged for the next run to pick up.
+    ? `Recommendation run stopped — ${judged} of ${total} items checked${inheritedPart}`
+    : `Finished finding recommendations — ${judged} items checked${inheritedPart}`
+}
+
 function formatElapsed(seconds: number | null): string {
   if (seconds === null) return 'unknown'
   if (seconds < 60) return `${seconds}s`
@@ -267,6 +290,12 @@ export default function App() {
   // window it opened, which an older start losing to a newer *start* still
   // cannot do. Zero means no start in flight. (Copilot, PR #368, round 30.)
   const judgmentStartPending = useRef(0)
+  // The `statusWrites` value left behind by showJudgmentRunning's own write,
+  // or null when this client is not presenting a run. It answers both halves
+  // of "may I take this banner down": whether the running banner is ours at
+  // all, and whether anything has written over it since. (Copilot, PR #368,
+  // round 39.)
+  const judgmentBannerWrites = useRef<number | null>(null)
   // The last (status, judged) the poll saw, so it can tell a run that has
   // advanced from one it has merely been asked about again. Null means "no
   // read yet", and only that very first read is exempt from the bump -- it is
@@ -489,6 +518,37 @@ export default function App() {
         setRecommendationRunning(Boolean(s.run?.running))
         setRecommendationStopping(Boolean(s.run?.running && s.run.stop_requested))
       }
+      // The other half of showJudgmentRunning, and the half a read had no
+      // reason to do until a read started turning the presentation *on*. A run
+      // this client only ever heard about over HTTP gets no terminal event on
+      // this Machine, so nothing else would ever take the spinner down:
+      // "Finding recommendations for Store items…" would go on spinning past
+      // a run that had completed, stopped or failed, for as long as the page
+      // stayed open. The flags were already reconciled here; the presentation
+      // was not. (Copilot, PR #368, round 39.)
+      //
+      // Only a banner this client put up and nobody has written over since --
+      // if a terminal event did arrive it wrote the same ending already and
+      // bumped the counter, so this stays quiet rather than saying it twice.
+      // The claim is dropped either way: the run is over, so it is no longer
+      // ours to take down.
+      const claimed = judgmentBannerWrites.current
+      if (claimed !== null && !s.run?.running && !judgmentStopPending.current) {
+        judgmentBannerWrites.current = null
+        if (statusWrites.current === claimed) {
+          setSyncing(false)
+          // A row that has gone entirely -- cleared out from under us -- can
+          // still end the spinner, but has nothing to report, and inventing
+          // "Finished, 0 items" for it would be worse than leaving the last
+          // true thing on screen.
+          if (s.run) {
+            setSyncStatus(judgmentEndingMessage(
+              s.run.status === 'running' ? 'complete' : s.run.status,
+              s.run.judged, s.run.total ?? 0, s.run.inherited ?? 0, s.run.error,
+            ))
+          }
+        }
+      }
       // The judgments this run has written are invisible to an already-open
       // Store tab unless something tells it to refetch, and on the Machine
       // that is not running the job nothing does: the generation bumps live on
@@ -523,7 +583,7 @@ export default function App() {
       // say", and the poll below decides for itself whether to keep trying.
       return null
     }
-  }, [])
+  }, [setSyncStatus])
 
   // The discovery read, retried a bounded number of times, in the shape the
   // collection sync's own discovery poll already uses.
@@ -562,6 +622,10 @@ export default function App() {
   const showJudgmentRunning = useCallback(() => {
     setSyncing(true)
     setSyncStatus('Finding recommendations for Store items…')
+    // Recorded after its own write, so the claim measures silence from the
+    // point this message landed rather than counting it as news -- the same
+    // shape the price-refresh claim uses.
+    judgmentBannerWrites.current = statusWrites.current
   }, [setSyncStatus])
 
   const discoverJudgmentRun = useCallback(async (waitForRun = false): Promise<boolean> => {
@@ -887,17 +951,10 @@ export default function App() {
         // (Copilot, PR #368, round 24.)
         setStockSyncGeneration(g => g + 1)
         setStockJudgmentGeneration(g => g + 1)
-        // Inherited listings are reported on either ending: a run stopped
-        // halfway still fanned out everything it judged before the stop, and
-        // those listings are as much "not paid for again" as the judged ones.
-        const inheritedPart = inherited > 0 ? `, ${inherited} matched to records already judged` : ''
         setSyncStatus(
-          stopped
-            // Says what was kept, not just that it ended: the items judged
-            // before the stop stay judged and are not paid for again, and the
-            // rest are simply still unjudged for the next run to pick up.
-            ? `Recommendation run stopped — ${judged} of ${event.total} items checked${inheritedPart}`
-            : `Finished finding recommendations — ${judged} items checked${inheritedPart}`,
+          judgmentEndingMessage(
+            stopped ? 'stopped' : 'complete', judged, event.total ?? 0, inherited, null,
+          ),
           event.id ?? null,
         )
         // Asked last, after the message above, because the read restores the
@@ -927,7 +984,7 @@ export default function App() {
           // failed" up with the spinner off then describes the wrong run for
           // the length of the right one. (Copilot, PR #368, round 35.)
         }
-        setSyncStatus(`Finding recommendations failed: ${event.error}`, event.id ?? null)
+        setSyncStatus(judgmentEndingMessage('error', 0, 0, 0, event.error ?? null), event.id ?? null)
         // After the message, for the reason the two endings above give.
         if (reconcile) discoverJudgmentRun()
         return
