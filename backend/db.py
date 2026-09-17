@@ -942,6 +942,26 @@ CREATE TABLE IF NOT EXISTS stock_item_judgments (
     PRIMARY KEY (user_id, item_key)
 );
 
+-- Which record this verdict is about, as opposed to which listing it is
+-- filed under. The two are not the same question and the row cannot answer
+-- the first without this column: a verdict is keyed by item_key, item_key
+-- hashes artist|title|url and nothing else, and record_key folds the
+-- *listing* title -- so one key's live rows can fold to two records, and
+-- stock_item_identities can only ever hold one of them. Reading the record
+-- off the identity therefore attributes a verdict about one record to the
+-- other whenever the two disagree, which suppresses every genuine listing of
+-- that other record from the billable set and then hands it a verdict, with
+-- a reason written about a different album.
+--
+-- NULL means "not recorded": a verdict written before this column, or one
+-- that arrived by import, which carries no record attribution at all. Those
+-- fall back to the identity, and only where the item_key is unambiguous --
+-- see _judged_record_matches_sql. Deliberately not backfilled from the
+-- identity: for every key where the fallback is safe the two agree anyway,
+-- and for the keys where they do not the identity is exactly the guess this
+-- column exists to stop trusting.
+ALTER TABLE stock_item_judgments ADD COLUMN IF NOT EXISTS record_key TEXT;
+
 -- The current (or most recent) recommendation run for one user, as a row
 -- rather than as process memory. CrawlManager._judgment_tasks and the
 -- stock_judgment_* events that narrate a run are both in-process, and nothing
@@ -4145,6 +4165,52 @@ def _record_group_sql(alias: str = "s") -> str:
     return f"{_artist_sort_sql(f'{alias}.artist')}, {alias}.record_key"
 
 
+def _judged_record_matches_sql(stock: str = "s", identity: str = "i", judgment: str = "j") -> str:
+    """Whether a verdict was reached about the record a stock row folds to.
+
+    The verdict answers for itself where it can. `stock_item_judgments` is
+    keyed by `item_key`, and one item_key's live rows can fold to two records
+    -- it hashes artist|title|url, while `record_key` folds the *listing*
+    title, so two crawlers naming one URL's contents differently write two
+    rows under one key. `stock_item_identities` holds a single key per item,
+    so it can name at most one of those two records, chosen by whichever
+    writer ran last. Asking it which record a verdict was about therefore
+    gets the wrong answer exactly when the question is hard, and gets it
+    silently: the record the verdict was *not* about is then suppressed from
+    the billable set as already judged, and propagation hands it that verdict
+    with a reason written about a different album. (Copilot, PR #368,
+    round 33.)
+
+    The identity is still the answer for a verdict that has none of its own
+    -- one written before the column existed, or imported, since an import
+    carries no record attribution -- but only where the item_key is
+    unambiguous: no live row of it folds to anything but what the identity
+    holds. That covers the two cases this path exists for. A re-listing has
+    no live rows at all under its old key, so nothing contradicts the
+    identity; a record stocked by two shops has one key each, each with its
+    own rows agreeing with its own identity. Only a genuine collision is
+    excluded, and it costs that record a re-billing rather than a crossed
+    verdict.
+
+    Written as a disjunction rather than a COALESCE so both branches stay
+    equalities the planner can drive an index from --
+    stock_item_identities_record_fold_idx leads on the artist fold and
+    `record_key`, and a COALESCE over the two columns would give it nothing
+    to match on.
+    """
+    return f"""(
+                    {judgment}.record_key = {stock}.record_key
+                    OR ({judgment}.record_key IS NULL
+                        AND {identity}.record_key = {stock}.record_key
+                        AND NOT EXISTS (
+                            SELECT 1 FROM stock_items amb
+                            WHERE amb.item_key = {identity}.item_key
+                              AND amb.record_key IS NOT NULL
+                              AND amb.record_key <> {identity}.record_key
+                        ))
+                )"""
+
+
 def _judged_record_sql(user_id_param: str) -> str:
     """Whether stock row `s`'s record already has a verdict for this user.
 
@@ -4168,14 +4234,19 @@ def _judged_record_sql(user_id_param: str) -> str:
     back to a raw title. A row the sweep has not reached yet is not
     comparable, and pretending otherwise is what produced the re-billing this
     whole path exists to prevent.
+
+    Which record the verdict was about comes from the verdict itself, not
+    from the identity beside it -- see _judged_record_matches_sql. The
+    identity is still what supplies the artist half and the `item_key` floor,
+    and the join stays on it for both.
     """
     return f"""EXISTS (
             SELECT 1 FROM stock_item_identities i
             JOIN stock_item_judgments j ON j.item_key = i.item_key AND j.user_id = {user_id_param}
             WHERE i.item_key = s.item_key
-               OR (i.record_key IS NOT NULL AND s.record_key IS NOT NULL
+               OR (s.record_key IS NOT NULL
                    AND {_artist_sort_sql('i.artist')} = {_artist_sort_sql('s.artist')}
-                   AND i.record_key = s.record_key)
+                   AND {_judged_record_matches_sql()})
         )"""
 
 
@@ -4211,6 +4282,20 @@ def get_unjudged_stock_items(conn, user_id: int, limit: int) -> list[dict]:
     `record_key`. The representative's artist/title is one shop's wording of
     the record, which is what travelled to the model before this change too.
 
+    That wording is the title the group's key was folded from -- a
+    release-crawler row's `listing_title`, the name the marketplace gave what
+    it matched, else the row's own title -- and not the catalog target the
+    crawler was searching for. The two genuinely differ on that path: a
+    release crawler matches by artist and title, so what it finds can be a
+    different pressing, or a different record. Sending the target's name
+    instead asks the model about one record and files the answer under
+    another. Same expression as the two live writers and the sweep.
+    (Copilot, PR #368, round 33.)
+
+    `record_key` comes back with them so the verdict can record which record
+    it was reached about; see _judged_record_matches_sql for why nothing
+    downstream can recover that afterwards.
+
     DISTINCT ON takes the lowest `item_key` in each group so a run over an
     unchanged catalog batches it identically twice running. The ordering
     *between* groups stays oldest-first on `last_seen`, so a
@@ -4218,9 +4303,10 @@ def get_unjudged_stock_items(conn, user_id: int, limit: int) -> list[dict]:
     arrivals rather than an arbitrary slice of it.
 
     Then deduplicated by `item_key`, because a verdict is stored per item_key
-    and two record groups sharing one buy a second model call and nothing
-    else: the same artist and title travel twice and the second answer
-    overwrites the first on the same row. Groups share an item_key when two
+    and, undeduplicated, two record groups sharing one would buy a second
+    model call and nothing else: the same artist and title travelling twice,
+    the second answer overwriting the first on the same row. That second call
+    is what this step prevents. Groups share an item_key when two
     crawlers find one record at one URL and name what they matched
     differently -- the rows fold apart while the key that stores the verdict
     does not. Whichever group is billed, the `item_key` floor in
@@ -4231,11 +4317,13 @@ def get_unjudged_stock_items(conn, user_id: int, limit: int) -> list[dict]:
     group = _record_group_sql("s")
     rows = conn.execute(
         f"""
-        SELECT g.item_key, g.artist, g.title FROM (
-            SELECT DISTINCT ON (r.item_key) r.item_key, r.artist, r.title, r.first_seen
+        SELECT g.item_key, g.artist, g.title, g.record_key FROM (
+            SELECT DISTINCT ON (r.item_key)
+                   r.item_key, r.artist, r.title, r.record_key, r.first_seen
             FROM (
                 SELECT DISTINCT ON ({group})
-                       s.item_key, s.artist, s.title,
+                       s.item_key, s.artist, s.record_key,
+                       COALESCE(NULLIF(s.listing_title, ''), s.title) AS title,
                        MIN(s.last_seen) OVER (PARTITION BY {group}) AS first_seen
                 FROM stock_items s
                 WHERE {_unjudged_record_where('%(user_id)s')}
@@ -4301,17 +4389,17 @@ def propagate_stock_judgments(conn, user_id: int) -> int:
     """
     cursor = conn.execute(
         f"""
-        INSERT INTO stock_item_judgments (user_id, item_key, recommended, reason, judged_at)
+        INSERT INTO stock_item_judgments
+            (user_id, item_key, recommended, reason, judged_at, record_key)
         SELECT DISTINCT ON (s.item_key)
-               %(user_id)s, s.item_key, v.recommended, v.reason, v.judged_at
+               %(user_id)s, s.item_key, v.recommended, v.reason, v.judged_at, s.record_key
         FROM stock_items s
         JOIN LATERAL (
             SELECT j.recommended, j.reason, j.judged_at
             FROM stock_item_identities i
             JOIN stock_item_judgments j ON j.item_key = i.item_key AND j.user_id = %(user_id)s
-            WHERE i.record_key IS NOT NULL
-              AND {_artist_sort_sql('i.artist')} = {_artist_sort_sql('s.artist')}
-              AND i.record_key = s.record_key
+            WHERE {_artist_sort_sql('i.artist')} = {_artist_sort_sql('s.artist')}
+              AND {_judged_record_matches_sql()}
             ORDER BY j.judged_at DESC, j.item_key
             LIMIT 1
         ) v ON TRUE
@@ -4320,11 +4408,14 @@ def propagate_stock_judgments(conn, user_id: int) -> int:
           -- verdict is being matched on. The match is per row, the write is
           -- per item_key, and one item_key can carry live rows that fold
           -- apart -- so without this a row keyed to record A can draw A's
-          -- verdict while its identity advertises record B, and the next pass
-          -- hands that verdict, with a reason written about A, to real
-          -- listings of B. A collision has to cost a re-billing, never a
-          -- crossed verdict: a row whose identity disagrees inherits nothing
-          -- and is billed on its own. (Copilot, PR #368, round 31.)
+          -- verdict while its identity advertises record B. The record_key
+          -- written above now says which record the inherited verdict is
+          -- about, so that alone no longer crosses anything; what this still
+          -- buys is that the *other* record goes on being billed instead of
+          -- being quietly covered by a verdict about its neighbour, and that
+          -- every row surviving this gate folds the same way, which is what
+          -- makes the written record_key single-valued per item_key.
+          -- (Copilot, PR #368, rounds 31 and 33.)
           AND EXISTS (
             SELECT 1 FROM stock_item_identities di
             WHERE di.item_key = s.item_key AND di.record_key = s.record_key
@@ -4357,15 +4448,26 @@ def get_taste_listing(conn, user_id: int) -> list[str]:
 
 
 def upsert_stock_judgments(conn, user_id: int, judgments: list[dict]):
+    """Write a batch of model verdicts, each carrying the record it is about.
+
+    `record_key` comes from the same row of `get_unjudged_stock_items` that
+    supplied the artist and title the model was shown, so the verdict records
+    the record the question was actually asked about rather than leaving a
+    later reader to infer it from whatever key the identity is holding by
+    then. See _judged_record_matches_sql for what that inference costs.
+    """
     with conn.cursor() as cur:
         cur.executemany(
             """
-            INSERT INTO stock_item_judgments (user_id, item_key, recommended, reason, judged_at)
-            VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)
+            INSERT INTO stock_item_judgments
+                (user_id, item_key, recommended, reason, judged_at, record_key)
+            VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP, %s)
             ON CONFLICT (user_id, item_key) DO UPDATE SET
-                recommended = EXCLUDED.recommended, reason = EXCLUDED.reason, judged_at = CURRENT_TIMESTAMP
+                recommended = EXCLUDED.recommended, reason = EXCLUDED.reason,
+                judged_at = CURRENT_TIMESTAMP, record_key = EXCLUDED.record_key
             """,
-            [(user_id, j["item_key"], j["recommended"], j.get("reason")) for j in judgments],
+            [(user_id, j["item_key"], j["recommended"], j.get("reason"), j.get("record_key"))
+             for j in judgments],
         )
 
 
@@ -4859,6 +4961,14 @@ def import_stock_judgments(conn, user_id: int, judgments: list[dict]) -> tuple[i
 
     Callers must have collapsed duplicate item_keys first -- Postgres rejects
     a statement whose ON CONFLICT target appears twice.
+
+    `record_key` is neither written nor cleared here. An imported verdict
+    carries no record attribution -- the CSV has no such column -- so a row
+    this creates has none, and falls back to the identity where the item_key
+    is unambiguous. A row it *updates* keeps whatever the local run recorded,
+    because that names the record of the same item the import is replacing
+    the verdict on, which is a better answer than the identity's and strictly
+    better than NULL.
     """
     if not judgments:
         return (0, 0, [])

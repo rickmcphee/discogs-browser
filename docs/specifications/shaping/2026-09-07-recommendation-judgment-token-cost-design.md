@@ -86,6 +86,15 @@ than the caching saves.
 downstream of them are unaffected. The only change to the caller is the extra
 argument on the call itself.
 
+**Amendment (2026-09-17, branch `claude/wizardly-goldberg-mxvey2`):** that
+return shape gained a fourth field, `record_key` — the record the batch
+entry's artist and title named — copied through from `batch[n - 1]` beside
+the `item_key` the paragraph above describes, and stored on the verdict so
+nothing downstream has to infer afterwards which record was judged. Nothing
+about the ordinal mapping, the wire format or the caching changes; the
+resolver reads one more key off the same batch entry. See
+[`2026-09-16-record-level-judgment-design.md`](2026-09-16-record-level-judgment-design.md).
+
 ## Design
 
 ### Ordinal index on the wire

@@ -870,9 +870,10 @@ def _seed_two_crawlers_on_one_url(conn, first_listing, second_listing):
 
 
 def test_one_item_key_is_billed_once_even_when_its_rows_fold_apart(pg_test_db):
-    """A judgment is stored per item_key, so two record groups sharing one buy
-    a second model call and nothing else: the same artist and title travel
-    twice and the second verdict overwrites the first on the same row.
+    """A judgment is stored per item_key, so two record groups sharing one
+    would buy a second model call and nothing else -- the same artist and
+    title travelling twice, the second verdict overwriting the first on the
+    same row -- which is the call the billable set's deduplication prevents.
     (Copilot, PR #368, round 26.)
     """
     with db.get_admin_pool().connection() as conn:
@@ -931,6 +932,176 @@ def test_a_collision_does_not_carry_one_records_verdict_onto_the_other(pg_test_d
     assert rows[deluxe]["reason"] == "the deluxe reissue is worth it"
     assert leeds not in rows or rows[leeds]["reason"] != "the deluxe reissue is worth it", (
         "a listing of one record inherited a verdict written about the other"
+    )
+
+
+# The record a verdict is about, and the two ways an item_key stops being able
+# to answer that question on its own. (Copilot, PR #368, round 33.)
+
+def _seed_collision_and_a_genuine_listing(conn):
+    """A colliding key whose identity holds the *second* record, plus a
+    listing of that second record under an item_key of its own."""
+    collision = _seed_two_crawlers_on_one_url(
+        conn, "Album A Deluxe Reissue", "Album A Live At Leeds")
+    leeds = _seed_release_crawler_item(
+        conn, "ShopLeeds", "https://leeds/a", "Album A Live At Leeds")
+    return collision, leeds
+
+
+def test_a_verdict_is_stored_for_the_record_it_was_actually_about(pg_test_db):
+    """A verdict is stored per `item_key`, and one item_key's live rows can
+    fold to two records. Which of the two the model answered about is not
+    recoverable from the identity -- it holds one of them, chosen by whichever
+    writer ran last -- so a verdict reached about the other is advertised
+    under a record it was never about, and every genuine listing of that
+    record reads as already judged and is never sent.
+    (Copilot, PR #368, round 33.)
+    """
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        collision, leeds = _seed_collision_and_a_genuine_listing(conn)
+        conn.commit()
+        held = conn.execute(
+            "SELECT record_key FROM stock_item_identities WHERE item_key = %s",
+            [collision],
+        ).fetchone()["record_key"]
+
+    deluxe_record = record_key("Album A Deluxe Reissue", "Artist A")
+    leeds_record = record_key("Album A Live At Leeds", "Artist A")
+    assert held == leeds_record, "the identity does not hold the other record's key"
+
+    with db.user_scope(alice["id"]) as conn:
+        db.upsert_stock_judgments(conn, alice["id"], [{
+            "item_key": collision, "recommended": True,
+            "reason": "the deluxe reissue is worth it",
+            "record_key": deluxe_record,
+        }])
+        conn.commit()
+        billable = {b["item_key"] for b in db.get_unjudged_stock_items(conn, alice["id"], 0)}
+
+    assert leeds in billable, (
+        "a verdict about one record was read as the other's, so that record's "
+        "own listing was suppressed and never sent to the model"
+    )
+
+
+def test_a_verdict_does_not_propagate_to_the_record_it_was_not_about(pg_test_db):
+    """The same mis-attribution on the write side. Round 31 stopped a
+    *destination* drawing a verdict its own identity disagrees with; this is
+    the source half -- the verdict's own record, which the identity of a
+    colliding key cannot supply.
+    (Copilot, PR #368, round 33.)
+    """
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        collision, leeds = _seed_collision_and_a_genuine_listing(conn)
+        conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        db.upsert_stock_judgments(conn, alice["id"], [{
+            "item_key": collision, "recommended": True,
+            "reason": "the deluxe reissue is worth it",
+            "record_key": record_key("Album A Deluxe Reissue", "Artist A"),
+        }])
+        db.propagate_stock_judgments(conn, alice["id"])
+        db.propagate_stock_judgments(conn, alice["id"])
+        conn.commit()
+        rows = {r["item_key"]: r for r in db.get_all_stock_judgments(conn, alice["id"])}
+
+    assert leeds not in rows or rows[leeds]["reason"] != "the deluxe reissue is worth it", (
+        "a listing of one record inherited a verdict written about the other"
+    )
+
+
+def test_an_unattributed_verdict_on_a_colliding_key_is_not_a_record_source(pg_test_db):
+    """A verdict written before this column existed, or imported -- an import
+    carries no record attribution at all -- has only the identity to say what
+    it was about. For a colliding key that answer is one of two, so inferring
+    from it is the same crossing. The inference is allowed only where the
+    item_key's live rows agree with the identity.
+    (Copilot, PR #368, round 33.)
+    """
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        collision, leeds = _seed_collision_and_a_genuine_listing(conn)
+        conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        db.import_stock_judgments(conn, alice["id"], [{
+            "item_key": collision, "recommended": True,
+            "reason": "imported, record unknown",
+            "judged_at": datetime(2026, 1, 2, 3, 4, 5),
+        }])
+        db.propagate_stock_judgments(conn, alice["id"])
+        conn.commit()
+        billable = {b["item_key"] for b in db.get_unjudged_stock_items(conn, alice["id"], 0)}
+        rows = {r["item_key"]: r for r in db.get_all_stock_judgments(conn, alice["id"])}
+
+    assert leeds in billable, (
+        "an unattributed verdict on a colliding key suppressed a record it "
+        "may never have been about"
+    )
+    assert leeds not in rows, (
+        "an unattributed verdict on a colliding key was inherited by a record "
+        "it may never have been about"
+    )
+
+
+def test_an_unattributed_verdict_still_covers_an_unambiguous_keys_record(pg_test_db):
+    """The other side of that guard: an item_key whose live rows all fold the
+    same way -- or which has none left, the re-listing case this whole path
+    exists for -- still lends its verdict to the record's other listings. The
+    guard costs a re-billing only where the key is genuinely ambiguous.
+    (Copilot, PR #368, round 33.)
+    """
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        judged = _seed_release_crawler_item(
+            conn, "ShopLeeds", "https://leeds/a", "Album A Live At Leeds")
+        sibling = _seed_release_crawler_item(
+            conn, "ShopOther", "https://other/a", "Album A Live At Leeds")
+        conn.commit()
+
+    assert judged != sibling
+
+    with db.user_scope(alice["id"]) as conn:
+        db.import_stock_judgments(conn, alice["id"], [{
+            "item_key": judged, "recommended": True, "reason": "worth it",
+            "judged_at": datetime(2026, 1, 2, 3, 4, 5),
+        }])
+        db.propagate_stock_judgments(conn, alice["id"])
+        conn.commit()
+        billable = {b["item_key"] for b in db.get_unjudged_stock_items(conn, alice["id"], 0)}
+        rows = {r["item_key"]: r for r in db.get_all_stock_judgments(conn, alice["id"])}
+
+    assert sibling not in billable, "the record's other listing was billed again"
+    assert rows[sibling]["reason"] == "worth it"
+
+
+def test_the_model_is_sent_the_title_the_record_key_was_folded_from(pg_test_db):
+    """A release-crawler row is grouped on the fold of `listing_title` -- the
+    name the marketplace gave what it matched, which can be a different record
+    from the catalog target it was searching for. Sending the target's own
+    title instead asks the model about one record and files the answer under
+    another. (Copilot, PR #368, round 33.)
+    """
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        item = _seed_release_crawler_item(
+            conn, "ShopLeeds", "https://leeds/a", "Album A Live At Leeds")
+        conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        offered = next(
+            b for b in db.get_unjudged_stock_items(conn, alice["id"], 0)
+            if b["item_key"] == item
+        )
+
+    wanted = record_key("Album A Live At Leeds", "Artist A")
+    assert offered["record_key"] == wanted
+    assert record_key(offered["title"], offered["artist"]) == wanted, (
+        f"the model is sent {offered['title']!r}, which is not the record "
+        "its verdict will be filed under"
     )
 
 

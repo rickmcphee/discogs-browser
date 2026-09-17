@@ -433,8 +433,9 @@ makes the sweep and the live writers take the identity in turns, and once a
 colliding item holds a verdict, a flip lets listings of the *other* record
 inherit one written about the first. And the billable set is
 deduplicated by `item_key` after grouping by record, because a verdict is
-stored per `item_key`: two groups sharing one buy a second model call and
-nothing else, the same artist and title travelling twice for one row. The
+stored per `item_key`: without that step two groups sharing one would buy a
+second model call and nothing else, the same artist and title travelling
+twice for one row. That second call is what the deduplication prevents. The
 `item_key` floor in `_judged_record_sql` then reads the group that was not
 billed as judged from that same row.
 
@@ -464,6 +465,39 @@ sweep's job becomes letting it inherit rather than preventing a charge.
 the record, and that branch needs no key at all. It is the floor: this exact
 listing having been judged reads as judged regardless, so nothing about the
 keys can put an item already paid for back in front of the model.
+
+#### The verdict carries its own record
+
+`record_key` is a column on `stock_item_judgments` too, and that one is not a
+third copy of the same value — it answers a different question. The other two
+say what record a *listing* is; this says what record a *verdict* is about.
+
+Nothing else can say it. A verdict is keyed by `item_key`, and an `item_key`
+can legitimately carry live rows that fold to two records, so the identity —
+which holds one key — names at most one of the two, chosen by whichever
+writer ran last. Reading the record off the identity therefore attributes a
+verdict about one record to the other exactly when the two disagree, and does
+it silently in both directions: the record the verdict was *not* about is
+suppressed from the billable set as already judged and never sent, and
+propagation then hands it that verdict, with a reason written about a
+different album. Round 31's destination-side gate does not reach this, since
+it checks the row the verdict is being copied *to*; a genuine listing of the
+second record has an identity that agrees with itself and passes.
+
+A NULL means the record was not recorded: a verdict written before the column
+existed, or one that arrived by import, which carries no record attribution at
+all. Those fall back to the identity, and only where the `item_key` is
+unambiguous — no live row of it folds to anything but what the identity holds.
+That keeps the two cases this design exists for: a re-listing has no live rows
+under its old key, so nothing contradicts the identity, and a record stocked
+by two shops has one key each with its own agreeing rows. Only a genuine
+collision is excluded, and there it costs a re-billing rather than a crossed
+verdict, which is the trade this whole design makes everywhere else too.
+
+The column is deliberately **not** backfilled from the identity. Wherever the
+fallback is safe the two agree anyway, so a backfill would write nothing new;
+wherever they disagree, the identity is precisely the guess the column exists
+to stop trusting, and freezing that guess would make it permanent.
 
 ### Propagation
 
@@ -604,7 +638,16 @@ set truncates the newest arrivals rather than an arbitrary slice.
 
 The representative's `artist`/`title` are what travel to the model. They are
 one listing's wording of the record, which is what the model saw before this
-change too.
+change too — specifically the title the group's key was folded from
+(`COALESCE(NULLIF(listing_title, ''), title)`, the same expression the two
+live writers and the sweep use), not the catalog target a release crawler was
+searching for. On that path the two genuinely differ: the crawler matches by
+artist and title, so what it finds can be a different pressing or a different
+record, and sending the target's name asks the model about one record and
+files the answer under another.
+
+The group's `record_key` travels back with the representative and is stored on
+the verdict — see "The verdict carries its own record" under Storage.
 
 ### The sync cross-guard
 
