@@ -1166,6 +1166,61 @@ def test_an_unkeyed_live_row_makes_its_item_key_ambiguous(pg_test_db):
     assert sibling in billable
 
 
+def test_the_representative_is_chosen_by_a_rule_not_by_the_plan(pg_test_db):
+    """Neither DISTINCT ON is unique on the column it distinguishes, so an
+    ORDER BY that stops there leaves the choice to the planner. The inner one
+    sees two rows of one record under one `item_key` -- two crawlers at a URL
+    whose names fold together -- and the outer one sees two record groups
+    under one `item_key` tied on `first_seen`, since that is
+    CURRENT_TIMESTAMP and one value for everything a catalog replacement
+    writes. Both picks have to come from the rule.
+    (Copilot, PR #368, round 36.)
+    """
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        # One URL, two crawlers, two names that fold to the same record: the
+        # bracketed variant is fenced away, so the group holds both rows.
+        one_record = _seed_two_crawlers_on_one_url(
+            conn, "Album A Live At Leeds (Red Vinyl)", "Album A Live At Leeds")
+        conn.commit()
+        folds = {r["record_key"] for r in conn.execute(
+            "SELECT record_key FROM stock_items WHERE item_key = %s", [one_record]
+        ).fetchall()}
+    assert len(folds) == 1, "the two names did not fold together"
+
+    with db.user_scope(alice["id"]) as conn:
+        offered = next(
+            b for b in db.get_unjudged_stock_items(conn, alice["id"], 0)
+            if b["item_key"] == one_record
+        )
+    assert offered["title"] == "Album A Live At Leeds", (
+        "the title sent to the model is whichever row the plan happened to "
+        f"reach first, not the lowest fold source: got {offered['title']!r}"
+    )
+
+    # And the outer pick, between two record groups sharing an item_key.
+    with db.get_admin_pool().connection() as conn:
+        conn.execute("TRUNCATE catalog, users, crawlers CASCADE")
+        bob = db.create_user(conn, discogs_user_id=2, discogs_username="bob")
+        two_records = _seed_two_crawlers_on_one_url(
+            conn, "Album A Live At Leeds", "Album A Deluxe Reissue")
+        conn.commit()
+        seen = {r["last_seen"] for r in conn.execute(
+            "SELECT last_seen FROM stock_items WHERE item_key = %s", [two_records]
+        ).fetchall()}
+    assert len(seen) == 1, "the two rows did not tie on last_seen"
+
+    with db.user_scope(bob["id"]) as conn:
+        offered = next(
+            b for b in db.get_unjudged_stock_items(conn, bob["id"], 0)
+            if b["item_key"] == two_records
+        )
+    assert offered["record_key"] == record_key("Album A Deluxe Reissue", "Artist A"), (
+        "the record group billed for a colliding item_key is whichever the "
+        f"plan happened to reach first: got {offered['record_key']!r}"
+    )
+
+
 def test_the_model_is_sent_the_title_the_record_key_was_folded_from(pg_test_db):
     """A release-crawler row is grouped on the fold of `listing_title` -- the
     name the marketplace gave what it matched, which can be a different record

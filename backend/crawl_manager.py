@@ -1979,10 +1979,18 @@ class CrawlManager:
         would then run and the judgment would spend the user's credit on a
         catalog being replaced under it. So the lock is read again here, with
         the claim written and *not yet committed*, and a sync found holding it
-        rolls the claim back. That makes the commit the linearization point:
-        the run exists only if no sync held the lock after its row was
-        written. A sync starting after that is the case the missing mirror
-        guard allows on purpose.
+        rolls the claim back.
+
+        That is the decision point, not a linearization point, and the
+        difference is worth being exact about: nothing here is atomic with
+        the commit either, so a sync can still take the lock between this
+        read and it. What the second read buys is that the decision is made
+        as late as the claim can make it and with the row already written, so
+        the window is the gap to the commit rather than the whole of
+        `start_judgment_only`, and a refusal still leaves no row. A sync that
+        starts after the decision is the overlap the missing mirror guard
+        permits on purpose -- which is also why closing the remaining gap is
+        not worth reaching for. (Copilot, PR #368, rounds 32 and 36.)
 
         Rolled back rather than claimed-and-closed, because a refusal leaving
         no row is a property the router and the button both depend on.

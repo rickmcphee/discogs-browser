@@ -466,6 +466,24 @@ the record, and that branch needs no key at all. It is the floor: this exact
 listing having been judged reads as judged regardless, so nothing about the
 keys can put an item already paid for back in front of the model.
 
+**The floor is deliberately not narrowed by the verdict's `record_key`**, and
+that is a decision rather than an oversight, because it is what a colliding
+key costs. `item_key` hashes artist, title and URL, so two rows sharing one
+are *the same product page*, seen by two crawlers that named what they found
+differently. At most one of those two names is right about what is on that
+page; they are two descriptions of one thing the user can buy once, not two
+things. So the floor gives that URL one verdict, and the Store shows it on
+both rows — where narrowing it would instead leave the second row unbillable
+(the record branch will not re-offer a key that already has a verdict) *and*
+blank, which is worse on both counts. A record that genuinely differs lives
+at a different URL, mints its own `item_key`, and is billed and judged there
+like any other. What is lost is one page's second reading, not a record.
+Copilot raised it in round 36; the remedy it asks for — storage and readers
+that distinguish colliding record keys — means re-keying
+`stock_item_judgments` off `item_key`, which is the remedy already declined
+in rounds 26 and 27 and for the same reason: it destroys every stored verdict
+and the CSV round-trip that is keyed on `item_key` with it.
+
 #### The verdict carries its own record
 
 `record_key` is a column on `stock_item_judgments` too, and that one is not a
@@ -708,11 +726,17 @@ On its own that is check-then-act: a sync can take the lock after the read
 returns false and before the claim commits, and `start_stock_sync` has no
 mirror guard by design, so both would then run. The claim therefore reads the
 lock a *second* time, with its row written and not yet committed, and rolls
-back when a sync is found holding it. That makes the commit the linearization
-point — the run exists only if no sync held the lock after its row was
-written — and a rollback rather than a claim-and-close keeps the no-row
-property above. A sync starting after that read is the overlap the missing
-mirror guard permits on purpose.
+back when a sync is found holding it. A rollback rather than a claim-and-close
+keeps the no-row property above.
+
+That second read is the **decision point, not a linearization point**, and the
+distinction is worth keeping straight: it is not atomic with the commit
+either, so a sync can still take the lock in the gap between them. What it
+buys is that the decision is made as late as the claim can make it, with the
+row already written — the window shrinks from the whole of
+`start_judgment_only` to that gap. A sync starting after the decision is the
+overlap the missing mirror guard permits on purpose, which is also the reason
+the residue is not worth chasing.
 
 Read rather than taken, for the reason `advisory_lock_held` gives: a probe
 would hold the lock for a moment, and a genuine sync's own

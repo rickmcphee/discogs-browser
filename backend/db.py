@@ -4312,6 +4312,21 @@ def get_unjudged_stock_items(conn, user_id: int, limit: int) -> list[dict]:
     `recommendation_item_limit` that truncates the set drops the newest
     arrivals rather than an arbitrary slice of it.
 
+    Both DISTINCT ONs order past the column they are distinct on, because
+    neither is unique on its own and an incomplete ORDER BY leaves the
+    representative to the planner. The inner one can see several rows of one
+    record under one `item_key` -- two crawlers at a URL whose names fold
+    together -- so it orders on the fold source too, and the title the model
+    is shown stops depending on the plan. The outer one deduplicates record
+    groups sharing an `item_key`, and those routinely tie on `first_seen`,
+    which is `CURRENT_TIMESTAMP` and therefore one value for everything a
+    catalog replacement writes; `record_key` breaks it, and is unique within
+    an `item_key` because that key hashes the artist, so every row under it
+    folds its artist the same way. A tie can still remain in the inner one,
+    between rows whose fold source is also equal -- and those produce the
+    same output row, so there is nothing left to choose.
+    (Copilot, PR #368, round 36.)
+
     Then deduplicated by `item_key`, because a verdict is stored per item_key
     and, undeduplicated, two record groups sharing one would buy a second
     model call and nothing else: the same artist and title travelling twice,
@@ -4325,6 +4340,7 @@ def get_unjudged_stock_items(conn, user_id: int, limit: int) -> list[dict]:
     """
     limit_clause = "LIMIT %(limit)s" if limit > 0 else ""
     group = _record_group_sql("s")
+    fold_source = "COALESCE(NULLIF(s.listing_title, ''), s.title)"
     rows = conn.execute(
         f"""
         SELECT g.item_key, g.artist, g.title, g.record_key FROM (
@@ -4333,13 +4349,13 @@ def get_unjudged_stock_items(conn, user_id: int, limit: int) -> list[dict]:
             FROM (
                 SELECT DISTINCT ON ({group})
                        s.item_key, s.artist, s.record_key,
-                       COALESCE(NULLIF(s.listing_title, ''), s.title) AS title,
+                       {fold_source} AS title,
                        MIN(s.last_seen) OVER (PARTITION BY {group}) AS first_seen
                 FROM stock_items s
                 WHERE {_unjudged_record_where('%(user_id)s')}
-                ORDER BY {group}, s.item_key
+                ORDER BY {group}, s.item_key, {fold_source}
             ) r
-            ORDER BY r.item_key, r.first_seen ASC
+            ORDER BY r.item_key, r.first_seen ASC, r.record_key
         ) g
         ORDER BY g.first_seen ASC, g.item_key
         {limit_clause}
