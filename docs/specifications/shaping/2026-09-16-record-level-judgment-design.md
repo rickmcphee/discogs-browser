@@ -486,13 +486,28 @@ second record has an identity that agrees with itself and passes.
 
 A NULL means the record was not recorded: a verdict written before the column
 existed, or one that arrived by import, which carries no record attribution at
-all. Those fall back to the identity, and only where the `item_key` is
-unambiguous — no live row of it folds to anything but what the identity holds.
+all. An import also *clears* the column on a row it updates, because the
+verdict it replaces was about a record the imported one need not be — and
+because the fallback below applies only to a NULL, leaving a stale key there
+would make an unattributable verdict a confident record-level source and skip
+the guard entirely.
+
+A NULL falls back to the identity, and only where the `item_key` is
+unambiguous — no live row of it says anything but what the identity holds.
 That keeps the two cases this design exists for: a re-listing has no live rows
 under its old key, so nothing contradicts the identity, and a record stocked
 by two shops has one key each with its own agreeing rows. Only a genuine
 collision is excluded, and there it costs a re-billing rather than a crossed
 verdict, which is the trade this whole design makes everywhere else too.
+
+An **unkeyed** live row counts as disagreement, so the test is `IS DISTINCT
+FROM` rather than an inequality between two present keys. A row with no key
+yet has not said the identity is right: it is what the trigger leaves behind
+when an old Machine moves a title mid-deploy, and the sweep that follows may
+fold it to a different record. Reading that silence as agreement is the same
+false merge in slower motion, and waiting costs only a run's delay — the trade
+`_unjudged_record_where` already makes for an unkeyed row. Rows that are
+*absent* are not silence in that sense, so the re-listing fallback survives.
 
 The column is deliberately **not** backfilled from the identity. Wherever the
 fallback is safe the two agree anyway, so a backfill would write nothing new;

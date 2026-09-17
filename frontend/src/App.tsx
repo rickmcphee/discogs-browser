@@ -892,8 +892,17 @@ export default function App() {
           setRecommendationRunning(false)
           setRecommendationStopping(false)
           // Confirmed against the row, same as the two endings above, and
-          // retried for the same reason.
-          discoverJudgmentRun()
+          // retried for the same reason -- including what the two endings do
+          // with the answer. An error names no run either, so a replayed one
+          // can belong to a run that has since been replaced; the row saying
+          // a run is live makes the failure a *previous* run's, and leaving
+          // "Finding recommendations failed" up with the spinner off then
+          // describes the wrong run for the length of the right one.
+          // (Copilot, PR #368, round 35.)
+          const action = latestJudgmentActionSeq.current
+          discoverJudgmentRun().then(running => {
+            if (running && action === latestJudgmentActionSeq.current) showJudgmentRunning()
+          })
         }
         setSyncStatus(`Finding recommendations failed: ${event.error}`, event.id ?? null)
         return

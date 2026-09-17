@@ -817,6 +817,27 @@ describe('stopping a recommendation run from the profile page', () => {
     expect(screen.queryByText(/Finished finding recommendations/)).not.toBeInTheDocument()
   })
 
+  // And the error ending, which reconciles the flags exactly as the two
+  // terminal ones do but did not follow them in restoring the presentation.
+  // An error names no run either, so a replayed one can be an older run's.
+  // (Copilot, PR #368, round 35.)
+  it('restores the running banner when an error event is contradicted by the row', async () => {
+    getJudgmentStatus.mockResolvedValue({ any_judged: true, run: run() })
+    const row = await openProfile()
+    await waitFor(() => expect(within(row).getByRole('button')).toHaveTextContent('Stop'))
+
+    await act(async () => {
+      SilentEventSource.instances[0].emit({
+        status: 'stock_judgment_error', error: 'boom', id: 4,
+      })
+    })
+
+    await waitFor(() =>
+      expect(screen.getByText(/Finding recommendations for Store items…/)).toBeInTheDocument(),
+    )
+    expect(screen.queryByText(/Finding recommendations failed/)).not.toBeInTheDocument()
+  })
+
   it('does not poll the run once nothing is running', async () => {
     await openProfile()
     const atRest = getJudgmentStatus.mock.calls.length

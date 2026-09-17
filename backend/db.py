@@ -4184,13 +4184,24 @@ def _judged_record_matches_sql(stock: str = "s", identity: str = "i", judgment: 
     The identity is still the answer for a verdict that has none of its own
     -- one written before the column existed, or imported, since an import
     carries no record attribution -- but only where the item_key is
-    unambiguous: no live row of it folds to anything but what the identity
-    holds. That covers the two cases this path exists for. A re-listing has
-    no live rows at all under its old key, so nothing contradicts the
-    identity; a record stocked by two shops has one key each, each with its
-    own rows agreeing with its own identity. Only a genuine collision is
-    excluded, and it costs that record a re-billing rather than a crossed
-    verdict.
+    unambiguous: no live row of it says anything but what the identity holds.
+    That covers the two cases this path exists for. A re-listing has no live
+    rows at all under its old key, so nothing contradicts the identity; a
+    record stocked by two shops has one key each, each with its own rows
+    agreeing with its own identity. Only a genuine collision is excluded, and
+    it costs that record a re-billing rather than a crossed verdict.
+
+    An *unkeyed* live row counts as disagreement, which is why the test is
+    IS DISTINCT FROM rather than an inequality between two present keys. A
+    row with no key yet has not said the identity is right; it is what the
+    trigger leaves behind when an old Machine moves a title mid-deploy, and
+    the sweep that follows may fold it to a different record entirely.
+    Reading that silence as agreement lets an unattributed verdict reach a
+    record on evidence that has not arrived, which is the same false merge in
+    slower motion -- and it costs only a run's delay to wait, the trade
+    _unjudged_record_where already makes for an unkeyed row. Absent rows are
+    not silence in that sense: NOT EXISTS over none of them is still true, so
+    the re-listing fallback survives. (Copilot, PR #368, round 35.)
 
     Written as a disjunction rather than a COALESCE so both branches stay
     equalities the planner can drive an index from --
@@ -4205,8 +4216,7 @@ def _judged_record_matches_sql(stock: str = "s", identity: str = "i", judgment: 
                         AND NOT EXISTS (
                             SELECT 1 FROM stock_items amb
                             WHERE amb.item_key = {identity}.item_key
-                              AND amb.record_key IS NOT NULL
-                              AND amb.record_key <> {identity}.record_key
+                              AND amb.record_key IS DISTINCT FROM {identity}.record_key
                         ))
                 )"""
 
@@ -4962,13 +4972,18 @@ def import_stock_judgments(conn, user_id: int, judgments: list[dict]) -> tuple[i
     Callers must have collapsed duplicate item_keys first -- Postgres rejects
     a statement whose ON CONFLICT target appears twice.
 
-    `record_key` is neither written nor cleared here. An imported verdict
-    carries no record attribution -- the CSV has no such column -- so a row
-    this creates has none, and falls back to the identity where the item_key
-    is unambiguous. A row it *updates* keeps whatever the local run recorded,
-    because that names the record of the same item the import is replacing
-    the verdict on, which is a better answer than the identity's and strictly
-    better than NULL.
+    `record_key` is never written here and is *cleared* on an update. An
+    imported verdict carries no record attribution -- the CSV has no such
+    column -- so the row this leaves behind must not claim one. Keeping what
+    the local run recorded looks like the better answer and is the worse one:
+    it names a record the replaced verdict was about, which the imported
+    verdict need not be, and because the fallback in
+    _judged_record_matches_sql applies only to a NULL, a stale key makes an
+    unattributable verdict a *confident* record-level source and skips the
+    ambiguity guard altogether. Clearing it costs nothing wherever the guard
+    would have answered the same -- an unambiguous item_key folds to the key
+    the old verdict held -- and hands it the cases where it would not.
+    (Copilot, PR #368, round 35.)
     """
     if not judgments:
         return (0, 0, [])
@@ -4983,7 +4998,8 @@ def import_stock_judgments(conn, user_id: int, judgments: list[dict]) -> tuple[i
         ON CONFLICT (user_id, item_key) DO UPDATE SET
             recommended = EXCLUDED.recommended,
             reason      = EXCLUDED.reason,
-            judged_at   = EXCLUDED.judged_at
+            judged_at   = EXCLUDED.judged_at,
+            record_key  = NULL
         WHERE EXCLUDED.judged_at > stock_item_judgments.judged_at
         RETURNING (xmax = 0) AS inserted, item_key
         """,

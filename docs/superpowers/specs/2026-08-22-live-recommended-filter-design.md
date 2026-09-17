@@ -141,10 +141,15 @@ Four changes, all in `frontend/src/App.tsx`, no new endpoints.
    reads as finished for its whole length, Stop button beside a completion
    message. The rule is now that whoever restores the flags restores these
    with them — `showJudgmentRunning()`, called from the start reply when it
-   reports a run under way, and from the terminal handler's own reconciliation
-   read when that finds one. The read's call is fenced on
+   reports a run under way, and from each ending's own reconciliation read
+   when that finds one. Each read's call is fenced on
    `latestJudgmentActionSeq` for the reason the read itself is: it spans
    seconds, and a Stop or a Refresh inside them is newer truth than any ending.
+   That includes the *error* ending, which reconciles the flags exactly as the
+   two terminal ones do: an error names no run either, so a replayed one can
+   belong to a run since replaced, and "Finding recommendations failed" left
+   up with the spinner off then describes the wrong run for the length of the
+   right one.
 
 No change needed to `StockBrowser.tsx` itself: the effect that resets the
 filter away from "recommended" (`:118-122`) only fires when

@@ -1078,6 +1078,94 @@ def test_an_unattributed_verdict_still_covers_an_unambiguous_keys_record(pg_test
     assert rows[sibling]["reason"] == "worth it"
 
 
+def test_an_import_does_not_keep_the_record_the_verdict_it_replaced_was_about(pg_test_db):
+    """An import replaces the verdict and the reason and carries no record
+    attribution of its own, so keeping the one the local run recorded asserts
+    something the imported verdict cannot support -- and worse, a non-NULL key
+    skips the ambiguity guard entirely, making an unattributable verdict a
+    confident record-level source. Clearing it is free wherever the guard
+    would have answered the same, and the guard's job wherever it would not.
+    (Copilot, PR #368, round 35.)
+    """
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        collision, _leeds = _seed_collision_and_a_genuine_listing(conn)
+        deluxe = _seed_release_crawler_item(
+            conn, "ShopDeluxe", "https://deluxe/a", "Album A Deluxe Reissue")
+        conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        db.upsert_stock_judgments(conn, alice["id"], [{
+            "item_key": collision, "recommended": True,
+            "reason": "the deluxe reissue is worth it",
+            "record_key": record_key("Album A Deluxe Reissue", "Artist A"),
+        }])
+        applied = db.import_stock_judgments(conn, alice["id"], [{
+            "item_key": collision, "recommended": False,
+            "reason": "imported, record unknown",
+            "judged_at": datetime(2030, 1, 1, 0, 0, 0),
+        }])
+        db.propagate_stock_judgments(conn, alice["id"])
+        conn.commit()
+        rows = {r["item_key"]: r for r in db.get_all_stock_judgments(conn, alice["id"])}
+        billable = {b["item_key"] for b in db.get_unjudged_stock_items(conn, alice["id"], 0)}
+
+    assert applied[2] == [collision], "the import did not replace the local verdict"
+    assert deluxe not in rows, (
+        "an unattributed imported verdict was propagated as the record the "
+        "verdict it replaced had been about"
+    )
+    assert deluxe in billable
+
+
+def test_an_unkeyed_live_row_makes_its_item_key_ambiguous(pg_test_db):
+    """The guard asks whether any live row of the `item_key` folds to
+    something other than the identity's key. A row with no key yet answers
+    nothing -- it is what the trigger leaves behind when an old Machine moves
+    a title mid-deploy, and the next sweep may fold it to a different record
+    entirely. Reading that silence as agreement lets an unattributed verdict
+    reach a record on evidence that has not arrived.
+    (Copilot, PR #368, round 35.)
+    """
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        # Two rows under one item_key, both folding the same way, so the key
+        # is unambiguous to begin with.
+        judged = _seed_two_crawlers_on_one_url(
+            conn, "Album A Live At Leeds", "Album A Live At Leeds")
+        sibling = _seed_release_crawler_item(
+            conn, "ShopOther", "https://other/a", "Album A Live At Leeds")
+        conn.commit()
+        # An old binary moves one row's listing_title without naming either
+        # fold key; the trigger clears them, and the sweep has not run yet.
+        conn.execute(
+            "UPDATE stock_items SET listing_title = %s WHERE item_key = %s "
+            "AND crawler_id = (SELECT id FROM crawlers WHERE site_name = 'MarketB')",
+            ["Album A Live At Leeds (2026 Remaster)", judged],
+        )
+        conn.commit()
+        keys = conn.execute(
+            "SELECT record_key FROM stock_items WHERE item_key = %s", [judged]
+        ).fetchall()
+    assert any(k["record_key"] is None for k in keys), "the trigger did not clear the key"
+
+    with db.user_scope(alice["id"]) as conn:
+        db.import_stock_judgments(conn, alice["id"], [{
+            "item_key": judged, "recommended": True, "reason": "worth it",
+            "judged_at": datetime(2026, 1, 2, 3, 4, 5),
+        }])
+        db.propagate_stock_judgments(conn, alice["id"])
+        conn.commit()
+        rows = {r["item_key"]: r for r in db.get_all_stock_judgments(conn, alice["id"])}
+        billable = {b["item_key"] for b in db.get_unjudged_stock_items(conn, alice["id"], 0)}
+
+    assert sibling not in rows, (
+        "an unattributed verdict reached another listing through an item_key "
+        "whose live rows have not all been folded yet"
+    )
+    assert sibling in billable
+
+
 def test_the_model_is_sent_the_title_the_record_key_was_folded_from(pg_test_db):
     """A release-crawler row is grouped on the fold of `listing_title` -- the
     name the marketplace gave what it matched, which can be a different record
