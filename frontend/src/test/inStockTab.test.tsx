@@ -806,6 +806,73 @@ describe('In Stock tab', () => {
     await waitFor(() => expect(postJudgmentStart).toHaveBeenCalled())
   })
 
+  // A rejected start used to render as nothing at all, which on a long catalog
+  // sync is indistinguishable from a button that does not work. Same lesson as
+  // reportStockSyncRejection.
+  it.each([
+    [
+      { started: false, running: false, run: null, stock_sync_running: true },
+      /In-stock sync running — try Refresh again once it finishes\./,
+    ],
+    [
+      { started: false, running: true, run: null, stock_sync_running: false },
+      /A recommendation run is already under way — use Stop to end it\./,
+    ],
+    // Both at once, which the guards allow: a stock sync may start while a
+    // user's own run is going, so the sync refuses the start while the run is
+    // what would refuse the retry. The run's message is the actionable one.
+    [
+      { started: false, running: true, run: null, stock_sync_running: true },
+      /A recommendation run is already under way — use Stop to end it\./,
+    ],
+  ])('says why when Refresh Recommendations is turned away (%o)', async (result, message) => {
+    getUserSettings.mockResolvedValue({ ...defaultUserSettings, anthropic_api_key: 'sk-ant-test' })
+    postJudgmentStart.mockResolvedValue(result)
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: /profile/i }))
+    const description = await screen.findByText(/Evaluate unprocessed Store items for recommendation/)
+    const row = description.closest('tr') as HTMLElement
+    fireEvent.click(within(row).getByText('Refresh'))
+    await waitFor(() => expect(screen.getByText(message)).toBeInTheDocument())
+  })
+
+  // The start path makes blocking cross-Machine database checks now, so its
+  // response can land after an SSE event has already repainted the banner --
+  // and a rejection means a run *is* going, so its progress events are the
+  // ones arriving. (Copilot, PR #368.)
+  it('does not let a slow rejection talk over newer judgment progress', async () => {
+    getUserSettings.mockResolvedValue({ ...defaultUserSettings, anthropic_api_key: 'sk-ant-test' })
+    let resolveStart: (v: {
+      started: boolean
+      running: boolean
+      run: null
+      stock_sync_running: boolean
+    }) => void = () => {}
+    postJudgmentStart.mockImplementationOnce(() => new Promise((resolve) => { resolveStart = resolve }))
+
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: /profile/i }))
+    const description = await screen.findByText(/Evaluate unprocessed Store items for recommendation/)
+    const row = description.closest('tr') as HTMLElement
+    fireEvent.click(within(row).getByText('Refresh'))
+
+    // The run already in flight elsewhere reports progress while the start
+    // request is still blocked on those checks.
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
+    getLastCrawlSource().emit({ status: 'stock_judgment_progress', judged: 40, total: 120, id: 1 })
+    await waitFor(() => expect(
+      screen.getByText(/Finding recommendations for Store items… 40\/120/),
+    ).toBeInTheDocument())
+
+    resolveStart({ started: false, running: true, run: null, stock_sync_running: false })
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(
+      screen.queryByText('A recommendation run is already under way — use Stop to end it.'),
+    ).not.toBeInTheDocument()
+    expect(screen.getByText(/Finding recommendations for Store items… 40\/120/)).toBeInTheDocument()
+  })
+
   it('disables Export until a judgment has completed', async () => {
     render(<App />)
     fireEvent.click(await screen.findByRole('button', { name: /profile/i }))
@@ -939,6 +1006,32 @@ describe('In Stock tab', () => {
     await waitFor(() => expect(recommendedRadio().disabled).toBe(true))
   })
 
+  // A run can now write judgments without judging anything: propagation gives
+  // a record's verdict to its other listings, and that run reports judged: 0.
+  // Gating on `judged` alone left Recommended disabled in any client whose
+  // bootstrap fetch had returned any_judged: false. (Copilot, PR #368.)
+  it('enables Recommended when a run inherits judgments without judging any', async () => {
+    getUserSettings.mockResolvedValue({ ...defaultUserSettings, anthropic_api_key: 'sk-ant-test' })
+    getJudgmentStatus.mockResolvedValue({ any_judged: false })
+    render(<App />)
+    await waitFor(() => expect(screen.getByText('Store')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Store'))
+    await waitFor(() => expect(recommendedRadio().disabled).toBe(true))
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
+    const source = getLastCrawlSource()
+    source.emit({ status: 'stock_judgment_started' })
+    // The ending's own status read is left in flight, so the optimistic write
+    // is the only thing that can unlock the filter here. Let it answer and it
+    // would unlock the filter by itself, and this would pass with the
+    // inherited half of the condition deleted.
+    getJudgmentStatus.mockImplementation(() => new Promise(() => {}))
+    source.emit({ status: 'stock_judgment_complete', judged: 0, inherited: 7, id: 1 })
+    await waitFor(() => expect(recommendedRadio().disabled).toBe(false))
+    await waitFor(() => expect(
+      screen.getByText(/0 items checked, 7 matched to records already judged/),
+    ).toBeInTheDocument())
+  })
+
   it('does not let a slow bootstrap judgment-status response overwrite a newer SSE-driven one', async () => {
     getUserSettings.mockResolvedValue({ ...defaultUserSettings, anthropic_api_key: 'sk-ant-test' })
     let resolveBootstrap: (v: { any_judged: boolean }) => void = () => {}
@@ -964,6 +1057,9 @@ describe('In Stock tab', () => {
   it('does not let a slow bootstrap judgment-status response overwrite an explicit Clear', async () => {
     let resolveBootstrap: (v: { any_judged: boolean }) => void = () => {}
     getJudgmentStatus.mockImplementationOnce(() => new Promise((resolve) => { resolveBootstrap = resolve }))
+    // Every read after the pending bootstrap sees the world the event below
+    // describes: five judgments written.
+    getJudgmentStatus.mockResolvedValue({ any_judged: true })
     clearJudgments.mockResolvedValue({ cleared: true, running: false, count: 3 })
     vi.spyOn(window, 'confirm').mockReturnValue(true)
 
@@ -978,6 +1074,7 @@ describe('In Stock tab', () => {
     await waitFor(() => expect(within(row).getByText('Clear').closest('button')).not.toBeDisabled())
     fireEvent.click(within(row).getByText('Clear'))
     await waitFor(() => expect(clearJudgments).toHaveBeenCalled())
+    getJudgmentStatus.mockResolvedValue({ any_judged: false })
     await waitFor(() => expect(within(row).getByText('Clear').closest('button')).toBeDisabled())
 
     // The original bootstrap fetch was still in flight the whole time and
