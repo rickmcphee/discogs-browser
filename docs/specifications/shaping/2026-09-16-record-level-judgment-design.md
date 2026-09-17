@@ -406,6 +406,25 @@ by the Cheapest filter, re-folded by the next sweep. The sweep's recompute
 stays, because the trigger only guards writes made from now on and rows can
 already be stale from before it.
 
+**The verdict's own `record_key` has the same hole and the same answer**, and
+it is worse there because nothing sweeps it. An old binary's `ON CONFLICT DO
+UPDATE` on `stock_item_judgments` names the verdict fields and not a column it
+does not know about, so Postgres preserves the attribution while replacing the
+verdict it was about — and a non-NULL key *skips* the ambiguity guard rather
+than consulting it, which is the state round 35 called the one thing worse
+than not knowing. A third `BEFORE UPDATE` trigger clears the key when the
+verdict changed and the key did not.
+
+It cannot be keyed on a source the way the fold triggers are, because
+`record_key` is not derivable from any column on that row — which is the whole
+reason the column exists. It is keyed on the verdict instead: the same verdict
+written again is about the same record whoever wrote it, and a changed one
+needs its writer to say. A live writer that re-judges to a new verdict and
+computes the *same* key trips it and loses an attribution that was correct.
+That costs one fallback to the identity, and where the fallback is safe the
+two agree anyway — so the cost lands only on the ambiguous keys the guard
+already excludes, which is the direction to be wrong in. (Copilot, round 49.)
+
 With those, the sweep stays a convenience rather than a correctness guard —
 for the cases it is the *only* answer to. An unkeyed stock row is skipped by
 everything; a keyed stock row whose key is stale, or whose identity disagrees

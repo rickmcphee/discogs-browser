@@ -1118,6 +1118,81 @@ def test_an_import_does_not_keep_the_record_the_verdict_it_replaced_was_about(pg
     assert deluxe in billable
 
 
+def test_an_old_binarys_verdict_update_does_not_keep_the_record_it_replaced(pg_test_db):
+    """The rolling-deploy hole the fold keys already have a trigger for. An old
+    Machine keeps serving after the new one adds the column, and its ON CONFLICT
+    DO UPDATE names the verdict fields and not a column it does not know about
+    -- so Postgres preserves the attribution while replacing the verdict it was
+    about. A non-NULL key skips the ambiguity guard, which makes an
+    unattributable verdict a confident record-level source: the one thing worse
+    than not knowing. Written out as the old binary wrote it, since no code path
+    in this tree produces that shape any more. (Copilot, PR #368, round 49.)
+    """
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        collision, _leeds = _seed_collision_and_a_genuine_listing(conn)
+        deluxe = _seed_release_crawler_item(
+            conn, "ShopDeluxe", "https://deluxe/a", "Album A Deluxe Reissue")
+        conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        db.upsert_stock_judgments(conn, alice["id"], [{
+            "item_key": collision, "recommended": True,
+            "reason": "the deluxe reissue is worth it",
+            "record_key": record_key("Album A Deluxe Reissue", "Artist A"),
+        }])
+        conn.execute(
+            """
+            INSERT INTO stock_item_judgments (user_id, item_key, recommended, reason)
+            VALUES (%s, %s, FALSE, 'an older Machine wrote this')
+            ON CONFLICT (user_id, item_key) DO UPDATE SET
+                recommended = EXCLUDED.recommended, reason = EXCLUDED.reason,
+                judged_at = CURRENT_TIMESTAMP
+            """,
+            [alice["id"], collision],
+        )
+        db.propagate_stock_judgments(conn, alice["id"])
+        conn.commit()
+        rows = {r["item_key"]: r for r in db.get_all_stock_judgments(conn, alice["id"])}
+        billable = {b["item_key"] for b in db.get_unjudged_stock_items(conn, alice["id"], 0)}
+
+    assert deluxe not in rows, (
+        "a verdict an old binary replaced was propagated as the record the "
+        "verdict before it had been about"
+    )
+    assert deluxe in billable
+
+
+def test_a_rejudgment_that_names_its_record_keeps_it(pg_test_db):
+    """The trigger's other side. A writer that says which record it judged is
+    believed; only an update that changes the verdict and says nothing about the
+    record loses the attribution."""
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        collision, _leeds = _seed_collision_and_a_genuine_listing(conn)
+        conn.commit()
+
+    wanted = record_key("Album A", "Artist A")
+    with db.user_scope(alice["id"]) as conn:
+        db.upsert_stock_judgments(conn, alice["id"], [{
+            "item_key": collision, "recommended": True,
+            "reason": "the deluxe reissue is worth it",
+            "record_key": record_key("Album A Deluxe Reissue", "Artist A"),
+        }])
+        db.upsert_stock_judgments(conn, alice["id"], [{
+            "item_key": collision, "recommended": False,
+            "reason": "the plain pressing, on reflection, no",
+            "record_key": wanted,
+        }])
+        conn.commit()
+        stored = conn.execute(
+            "SELECT record_key FROM stock_item_judgments WHERE item_key = %s",
+            [collision],
+        ).fetchone()["record_key"]
+
+    assert stored == wanted
+
+
 def test_an_unkeyed_live_row_makes_its_item_key_ambiguous(pg_test_db):
     """The guard asks whether any live row of the `item_key` folds to
     something other than the identity's key. A row with no key yet answers

@@ -313,15 +313,15 @@ export default function App() {
   // window it opened, which an older start losing to a newer *start* still
   // cannot do. Zero means no start in flight. (Copilot, PR #368, round 30.)
   const judgmentStartPending = useRef(0)
-  // What this client left behind when it last presented a run, or null when
-  // it is not presenting one. Two counters, because the take-down asks two
-  // questions and one number cannot answer both: is the *banner* still the
-  // one we wrote, so may we replace it with the ending, and is the *spinner*
-  // still the one we raised, so may we lower it. A write can take the banner
-  // without taking the spinner -- a source-filter load failure writes through
-  // setSyncStatus and never touches `syncing` -- and answering both with
-  // `writes` alone left a completed run's spinner turning for good every time
-  // one did. (Copilot, PR #368, rounds 39-41.)
+  // The banner this client left behind when it last presented a run, or null
+  // when it is not presenting one. Only the banner: it holds one message and
+  // the newest writer wins, so the take-down asks whether ours is still the
+  // one on screen before replacing it with the ending. The spinner is not
+  // claimed at all -- "busy" is true while *any* operation is going, which is
+  // a question about a set rather than about who spoke last, and
+  // `spinnerOwners` answers it. This carried a second counter for the spinner
+  // until round 48 showed the counter could not answer that question however
+  // it was read. (Copilot, PR #368, rounds 39-41 and 48.)
   const judgmentPresentation = useRef<{ writes: number } | null>(null)
   // The last (status, judged) the poll saw, so it can tell a run that has
   // advanced from one it has merely been asked about again. Null means "no
@@ -659,11 +659,12 @@ export default function App() {
       // The claim is dropped either way: the run is over, so it is no longer
       // ours to take down.
       if (judgmentPresentation.current !== null && !s.run?.running && !judgmentStopPending.current) {
-        // Two separate claims, so two separate questions. The spinner is
-        // released only if nothing has raised it since we did -- still ours to
-        // lower even where the banner has moved on to someone else's message,
-        // and that is exactly when leaving it up is worst, since it would then
-        // be spinning beside a message that has nothing to do with a run.
+        // Two questions, asked separately. Giving up this run's share of the
+        // spinner lowers it only if nothing else still wants it, and it is
+        // given up even where the banner has moved on to someone else's
+        // message -- that is exactly when holding on is worst, since the
+        // spinner would then be turning beside a message with nothing to do
+        // with a run.
         const claimed = releaseJudgmentPresentation()
         if (claimed !== null && statusWrites.current === claimed.writes) {
           // A row that has gone entirely -- cleared out from under us -- can

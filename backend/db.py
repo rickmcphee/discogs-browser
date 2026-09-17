@@ -962,6 +962,40 @@ CREATE TABLE IF NOT EXISTS stock_item_judgments (
 -- column exists to stop trusting.
 ALTER TABLE stock_item_judgments ADD COLUMN IF NOT EXISTS record_key TEXT;
 
+-- And the same rolling-deploy hole the fold keys have, for the same reason.
+-- An old binary keeps serving after the new one adds this column, and its
+-- ON CONFLICT DO UPDATE names the verdict fields and not a column it does not
+-- know about -- so Postgres *preserves* the old attribution while replacing
+-- the verdict it was about. A NULL is read as "not recorded" and consults the
+-- guard; a stale key skips it, which makes an unattributable verdict a
+-- confident record-level source and is the one thing worse than not knowing.
+--
+-- Keyed on the verdict having changed, not on the row having been touched:
+-- the same verdict written again is still about the same record, whoever
+-- wrote it. A live writer that re-judges to a new verdict and computes the
+-- *same* key trips this and loses an attribution that was correct, which
+-- costs one fallback to the identity -- and where that fallback is safe the
+-- two agree anyway, so the cost lands only on the ambiguous keys the guard
+-- already excludes. That is the cheap side of a test the row cannot make for
+-- itself: record_key is not derivable from any column here, so unlike the
+-- fold keys there is no source to compare it against.
+-- (Copilot, PR #368, round 49.)
+CREATE OR REPLACE FUNCTION clear_verdict_attribution_left_behind() RETURNS trigger AS $$
+BEGIN
+    IF (NEW.recommended IS DISTINCT FROM OLD.recommended
+        OR NEW.reason IS DISTINCT FROM OLD.reason)
+       AND NEW.record_key IS NOT DISTINCT FROM OLD.record_key THEN
+        NEW.record_key := NULL;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS stock_item_judgments_clear_stale_attribution ON stock_item_judgments;
+CREATE TRIGGER stock_item_judgments_clear_stale_attribution
+    BEFORE UPDATE ON stock_item_judgments
+    FOR EACH ROW EXECUTE FUNCTION clear_verdict_attribution_left_behind();
+
 -- The current (or most recent) recommendation run for one user, as a row
 -- rather than as process memory. CrawlManager._judgment_tasks and the
 -- stock_judgment_* events that narrate a run are both in-process, and nothing

@@ -1236,6 +1236,38 @@ describe('stopping a recommendation run from the profile page', () => {
     expect(screen.getAllByText('⟳').length).toBeGreaterThan(0)
   })
 
+  // The read sequence covers the presentation, not only the run flags: a
+  // status request issued before Refresh returns an answer about the state
+  // before the click, and letting it reconcile would take down the run the
+  // click had just started. `refreshJudgmentStatus` bumps the run sequence at
+  // entry and every caller of `showJudgmentRunning` bumps it too, so the older
+  // read returns null before reaching either direction. Raised as a gap in
+  // round 49; the guard was already there, and this pins it.
+  it('ignores a status read that started before the run it would tear down', async () => {
+    let settleStale: (v: unknown) => void = () => {}
+    getJudgmentStatus.mockImplementationOnce(() => new Promise((resolve) => { settleStale = resolve }))
+    getJudgmentStatus.mockResolvedValue({ any_judged: true, run: run() })
+    const row = await openProfile()
+
+    fireEvent.click(within(row).getByRole('button'))
+    await waitFor(() =>
+      expect(screen.getByText(/Finding recommendations for Store items…/)).toBeInTheDocument(),
+    )
+
+    // The read that was in flight before the click, answering about the state
+    // before it: a run that had already finished.
+    await act(async () => {
+      settleStale({
+        any_judged: true,
+        run: run({ status: 'complete', running: false, judged: 5, total: 5 }),
+      })
+    })
+
+    expect(screen.getByText(/Finding recommendations for Store items…/)).toBeInTheDocument()
+    expect(screen.queryByText(/Finished finding recommendations/)).not.toBeInTheDocument()
+    expect(screen.getAllByText('⟳').length).toBeGreaterThan(0)
+  })
+
   it('does not poll the run once nothing is running', async () => {
     await openProfile()
     const atRest = getJudgmentStatus.mock.calls.length
