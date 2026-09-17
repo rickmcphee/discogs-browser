@@ -128,6 +128,15 @@ Rain" and "The Black Parade" are untouched, having no fence. Stores write a
 variant as an aside overwhelmingly often, so the restraint costs almost none
 of the saving.
 
+**A bracket is an aside only when it closes with its own kind.** `Kid A (Red]`
+is malformed, and reading it as a fence merges it onto `Kid A` on the strength
+of a typo — a merge is the expensive mistake here, and nothing in the title
+says the store meant a fence rather than mistyping a real character. So the
+pattern pairs each opener with its own closer and a mismatched one is left in
+the title, splitting that listing off at the cost of one judgment. This is the
+same rule the comma, the slash and the pipe are governed by, applied to the
+one punctuation class that *is* a fence. (Copilot, round 48.)
+
 A comma is **not** one of those separators, and neither is a slash or a pipe.
 All three failed the same test, in the same way. Ordinary titles use them far
 more often than storefronts use them as metadata boundaries, and the words

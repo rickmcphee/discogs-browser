@@ -238,7 +238,11 @@ _VARIANT_WORDS = frozenset("""
 # A bracketed aside, and the separators a store puts a variant behind when it
 # does not bracket it. The bare hyphen needs whitespace on both sides or
 # "Non-Stop" would split into two segments; the typographic dashes do not.
-_BRACKETED = re.compile(r"[(\[{][^)\]}]*[)\]}]")
+# Each opener matched only with its own closer: `Kid A (Red]` is malformed,
+# and reading it as a fenced aside merges it onto `Kid A` on the strength of a
+# typo. Splitting costs one judgment; this module resolves a guess that way.
+# (Copilot, PR #368, round 48.)
+_BRACKETED = re.compile(r"\([^)]*\)|\[[^\]]*\]|\{[^}]*\}")
 # No comma, no slash, no pipe. All three are ordinary title punctuation far
 # more often than they are metadata boundaries, and the words after one are
 # frequently colours or edition words, so treating them as boundaries merged

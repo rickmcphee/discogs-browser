@@ -1202,6 +1202,40 @@ describe('stopping a recommendation run from the profile page', () => {
     expect(screen.getAllByText('⟳').length).toBeGreaterThan(0)
   })
 
+  // "Busy" is true while *any* operation is going, which a count of raises
+  // cannot express: it answers "has anyone raised since I did". A judgment run
+  // that renews its claim while a stock sync is going bumps that count itself,
+  // so at its ending the number matches and it takes the sync's spinner with
+  // it. The spinner is derived from the set of operations that want it now.
+  // (Copilot, PR #368, round 48.)
+  it('leaves a stock sync its spinner when a renewed judgment claim ends', async () => {
+    getJudgmentStatus.mockResolvedValue({ any_judged: true, run: run() })
+    await openProfile()
+    await waitFor(() =>
+      expect(screen.getByText(/Finding recommendations for Store items…/)).toBeInTheDocument(),
+    )
+
+    await act(async () => {
+      SilentEventSource.instances[0].emit({ status: 'stock_sync_started', id: 40 })
+    })
+    // The renewal: after the sync raised the spinner, this run raises it again.
+    await act(async () => {
+      SilentEventSource.instances[0].emit({
+        status: 'stock_judgment_progress', judged: 40, total: 120, id: 41,
+      })
+    })
+
+    getJudgmentStatus.mockResolvedValue({ any_judged: true, run: null })
+    await act(async () => {
+      SilentEventSource.instances[0].emit({
+        status: 'stock_judgment_complete', judged: 40, total: 120, id: 42,
+      })
+    })
+
+    expect(screen.getByText(/Finished finding recommendations/)).toBeInTheDocument()
+    expect(screen.getAllByText('⟳').length).toBeGreaterThan(0)
+  })
+
   it('does not poll the run once nothing is running', async () => {
     await openProfile()
     const atRest = getJudgmentStatus.mock.calls.length

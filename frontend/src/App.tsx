@@ -322,7 +322,7 @@ export default function App() {
   // setSyncStatus and never touches `syncing` -- and answering both with
   // `writes` alone left a completed run's spinner turning for good every time
   // one did. (Copilot, PR #368, rounds 39-41.)
-  const judgmentPresentation = useRef<{ writes: number; raises: number } | null>(null)
+  const judgmentPresentation = useRef<{ writes: number } | null>(null)
   // The last (status, judged) the poll saw, so it can tell a run that has
   // advanced from one it has merely been asked about again. Null means "no
   // read yet", and only that very first read is exempt from the bump -- it is
@@ -393,21 +393,34 @@ export default function App() {
   // message reaches the banner: a write that skips it is invisible to the
   // guard, and the guard then talks over it.
   const statusWrites = useRef(0)
-  // Raises of the shared `syncing` spinner, counted for the same reason
-  // statusWrites counts banner writes: it is the only way a later owner can
-  // be told apart from no owner at all. The banner and the spinner are
-  // *separate* claims -- a writer can take the message without taking the
-  // spinner (a source-filter load failure does exactly that) -- and a claim
-  // that answered both with one number stranded the spinner whenever it did.
-  // (Copilot, PR #368, round 41.)
-  const syncingRaises = useRef(0)
+  // The operations that currently want the shared spinner. `syncing` is
+  // derived from the set rather than written by whoever spoke last, because
+  // the banner and the spinner are not the same kind of thing: a banner holds
+  // one message and the newest writer wins, while "busy" is true for as long
+  // as *any* of these is going.
+  //
+  // This was a count of raises for several rounds, on the theory that a later
+  // owner can be told apart from no owner by the number moving. It cannot:
+  // counting answers "has anyone raised since I did", which gets one of the
+  // two cases wrong whichever way it is read. A judgment run renewing its
+  // claim while a stock sync is going bumps the count itself, so at its
+  // ending the number matches and it takes the sync's spinner away with it;
+  // and a collection poll re-raising every tick makes the judgment's own
+  // claim unmatchable for good, stranding its spinner instead. A set answers
+  // the question that was actually being asked. (Copilot, PR #368, round 48.)
+  const spinnerOwners = useRef<Set<string>>(new Set())
 
   // eventId is null for locally-generated messages (button-click failures) that never
   // survive a refresh and so never need replay suppression; those always show.
-  // One way in, so no raiser is invisible to the count.
-  const beginSyncing = useCallback(() => {
-    syncingRaises.current++
+  // One way in and one way out, so no owner is invisible to the derivation.
+  const beginSyncing = useCallback((owner: string) => {
+    spinnerOwners.current.add(owner)
     setSyncing(true)
+  }, [])
+
+  const endSyncing = useCallback((owner: string) => {
+    spinnerOwners.current.delete(owner)
+    setSyncing(spinnerOwners.current.size > 0)
   }, [])
 
   const setSyncStatus = useCallback((message: string, eventId: number | null = null) => {
@@ -554,32 +567,29 @@ export default function App() {
     message = 'Finding recommendations for Store items…',
     eventId: number | null = null,
   ) => {
-    beginSyncing()
+    beginSyncing('judgment')
     setSyncStatus(message, eventId)
-    judgmentPresentation.current = {
-      writes: statusWrites.current,
-      raises: syncingRaises.current,
-    }
+    judgmentPresentation.current = { writes: statusWrites.current }
   }, [setSyncStatus, beginSyncing])
 
   // The other end of that claim, shared by everything that ends a judgment
-  // run: the HTTP take-down and both terminal SSE handlers. It lowers the
-  // spinner only if nothing has raised it since we did, and hands the claim
-  // back so a caller that also owns the banner can decide about the message.
+  // run: the HTTP take-down and both terminal SSE handlers. It gives up this
+  // run's share of the spinner -- which lowers it only if nothing else still
+  // wants it -- and hands the claim back so a caller that also owns the
+  // banner can decide about the message.
   //
-  // The events used to lower it unconditionally, which the HTTP path has not
-  // done since round 41 -- so a stock sync that raised the spinner after this
-  // run claimed it lost its busy indicator the moment the judgment ended, and
-  // nothing raised it again: `stock_sync_progress` does not, only
-  // `stock_sync_started` does. The sync then ran to completion with no sign
-  // of it. (Copilot, PR #368, round 46.)
+  // The events used to lower the spinner outright, which the HTTP path had
+  // stopped doing, so a stock sync that raised it after this run claimed it
+  // lost its busy indicator the moment the judgment ended, and nothing raised
+  // it again: `stock_sync_progress` does not, only `stock_sync_started` does.
+  // (Copilot, PR #368, round 46.)
   const releaseJudgmentPresentation = useCallback(() => {
     const claimed = judgmentPresentation.current
     if (claimed === null) return null
     judgmentPresentation.current = null
-    if (syncingRaises.current === claimed.raises) setSyncing(false)
+    endSyncing('judgment')
     return claimed
-  }, [])
+  }, [endSyncing])
 
   // Same race, same fix, for hasJudgedItems: the bootstrap fetch below and
   // handleImportRecommendations's post-import refresh can both have a
@@ -847,7 +857,7 @@ export default function App() {
       const event: CrawlEvent = JSON.parse(e.data)
       if (event.status === 'ping') return
       if (event.status === 'sync_started') {
-        beginSyncing()
+        beginSyncing('collection')
         setSyncStatus(event.scope === 'wishlist' ? 'Syncing wantlist…' : 'Syncing collection…', event.id ?? null)
         return
       }
@@ -871,7 +881,7 @@ export default function App() {
         // clears this again the moment it sees the run still running.
         sseAnnouncedOutcomeRef.current = true
         sseTerminalSeqRef.current += 1
-        setSyncing(false)
+        endSyncing('collection')
         if (event.scope === 'wishlist') {
           setSyncStatus(`Synced ${event.wishlist_synced} wantlist items for ${event.username}`, event.id ?? null)
         } else {
@@ -885,7 +895,7 @@ export default function App() {
       if (event.status === 'sync_error') {
         sseAnnouncedOutcomeRef.current = true
         sseTerminalSeqRef.current += 1
-        setSyncing(false)
+        endSyncing('collection')
         setSyncStatus(`Sync failed: ${event.error}`, event.id ?? null)
         // Each page's writes (including price_paid) commit before the next page
         // starts, so a sync that fails partway through can still have changed
@@ -914,7 +924,7 @@ export default function App() {
         return
       }
       if (event.status === 'stock_sync_started') {
-        beginSyncing()
+        beginSyncing('stock')
         setStockSyncTarget(event.crawler_id ?? 'all')
         setStockSyncStarting(null)
         setSyncStatus('Syncing in-stock catalog…', event.id ?? null)
@@ -951,7 +961,7 @@ export default function App() {
         return
       }
       if (event.status === 'stock_sync_complete') {
-        setSyncing(false)
+        endSyncing('stock')
         setStockSyncTarget(null)
         setStockSyncStarting(null)
         setSyncStatus(`In-stock sync complete: ${event.synced} items`, event.id ?? null)
@@ -962,7 +972,7 @@ export default function App() {
       }
       if (event.status === 'stock_sync_error') {
         if (!event.source) {
-          setSyncing(false)
+          endSyncing('stock')
           setStockSyncTarget(null)
           setStockSyncStarting(null)
         }
@@ -970,7 +980,7 @@ export default function App() {
         return
       }
       if (event.status === 'stock_sync_aborted') {
-        setSyncing(false)
+        endSyncing('stock')
         setStockSyncTarget(null)
         setStockSyncStarting(null)
         const sources = event.sources?.length ? ` (${event.sources.join(', ')})` : ''
@@ -1143,7 +1153,7 @@ export default function App() {
       clearTimeout(reconnectTimer)
     }
   }, [authState, setSyncStatus, fetchPriceStatus, refreshJudgmentStatus, discoverJudgmentRun,
-      showJudgmentRunning, releaseJudgmentPresentation, beginSyncing])
+      showJudgmentRunning, releaseJudgmentPresentation, beginSyncing, endSyncing])
 
   // Rides priceGeneration rather than a notification-specific SSE event: a
   // per-user event would have to be tagged with an owner, and the crawl worker
@@ -1298,7 +1308,7 @@ export default function App() {
             // Whatever outcome the stream announced, it was not this run's --
             // this one is still going.
             sseAnnouncedOutcomeRef.current = false
-            beginSyncing()
+            beginSyncing('collection')
             const progress = `${run.page}/${run.total_pages}/${run.synced}/${run.wishlist_synced}`
             if (progress !== lastSyncProgressRef.current) {
               lastSyncProgressRef.current = progress
@@ -1327,7 +1337,7 @@ export default function App() {
           } else if (followingSyncRef.current) {
             const alreadySpoken = sseAnnouncedOutcomeRef.current
             releaseSyncFollow()
-            setSyncing(false)
+            endSyncing('collection')
             // The refetch happens either way -- it is the whole point, and the
             // one thing that must not be lost. The line is skipped only when
             // the stream has just said the same thing.
@@ -1371,7 +1381,8 @@ export default function App() {
     // Keyed on whether the user is signed in, not on the authState object:
     // that object is replaced on every revalidation, and restarting the poll
     // for one costs nothing but risks everything above.
-  }, [authed, syncPollNonce, setSyncStatus, fetchPriceStatus, releaseSyncFollow, beginSyncing])
+  }, [authed, syncPollNonce, setSyncStatus, fetchPriceStatus, releaseSyncFollow, beginSyncing,
+      endSyncing])
 
   // Follows a run to its end over HTTP, because the events that narrate one
   // reach only the Machine running it. Keyed on the flag rather than on the

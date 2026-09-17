@@ -198,18 +198,28 @@ Four changes, all in `frontend/src/App.tsx`, no new endpoints.
    already) is not echoed. The claim is dropped either way, since the run is
    over.
 
-   **The banner and the spinner are two claims, not one**, and the claim
-   carries a counter for each: `statusWrites` for the message, and a
-   `syncingRaises` count for the shared `syncing` flag, incremented by a
-   `beginSyncing()` that every raiser now goes through. They come apart
-   because a write can take the message without taking the spinner — a
-   source-filter load failure writes through `setSyncStatus` and never touches
-   `syncing`, and so does a sync progress line reaching a client that missed
-   `stock_sync_started`. Answering both with `statusWrites` alone meant that
-   preserving such a message also preserved a *finished* run's spinner, which
-   then turned beside it for as long as the page stayed open. The take-down
-   asks the two separately: lower the spinner if nothing has raised it since
-   we did, write the ending if nothing has written the banner since.
+   **The banner and the spinner are two different kinds of thing, and only
+   one of them is claimed.** A banner holds one message and the newest writer
+   wins, so the claim records `statusWrites` and the take-down writes an
+   ending only if that value still stands — a write can take the message
+   without touching the spinner (a source-filter load failure does exactly
+   that), and answering both with one number preserved a *finished* run's
+   spinner every time an unrelated message arrived.
+
+   "Busy", though, is true while **any** operation is going, so the spinner is
+   derived from `spinnerOwners`, the set of operations that currently want it:
+   `beginSyncing(owner)` adds, `endSyncing(owner)` removes, and `syncing` is
+   whether the set is non-empty. The collection sync, the stock sync and the
+   judgment run each hold their own key. This was a raise *count* for several
+   rounds, and a count cannot express it: it answers "has anyone raised since
+   I did", which gets one of the two cases wrong whichever way it is read. A
+   judgment run renewing its claim while a stock sync is going bumps the count
+   itself, so at its ending the number matches and it takes the sync's spinner
+   away with it; and a collection poll re-raising every tick makes the
+   judgment's own claim unmatchable for good, stranding its spinner instead.
+   The set also ends the older version of the same fault, where each feature
+   lowered the shared spinner outright at its own ending and could hide
+   another's still-running work.
 
    **Writing a live-run banner, raising the spinner and claiming both are one
    act**, and `showJudgmentRunning(message?, eventId?)` is the only way to

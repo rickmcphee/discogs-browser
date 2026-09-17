@@ -461,3 +461,15 @@ def test_an_artist_uncovered_by_dropping_an_aside_is_still_stripped():
     assert record_key("(Limited Edition) Genesis - Foxtrot", "Genesis") == record_key(
         "Foxtrot", "Genesis"
     )
+
+
+@pytest.mark.parametrize("malformed", ["Kid A (Red]", "Kid A [Red)", "Kid A {Red]"])
+def test_a_mismatched_bracket_pair_is_not_a_fence(malformed):
+    """An opener is matched only with its own closer. A store that typed one
+    bracket and closed it with another has not fenced anything off, and reading
+    it as an aside merges two records on the strength of a typo -- the
+    expensive direction. Splitting costs one judgment, which is what this
+    module pays every time it cannot tell. (Copilot, PR #368, round 48.)
+    """
+    assert record_key(malformed, "Radiohead") != record_key("Kid A", "Radiohead")
+
