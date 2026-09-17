@@ -970,20 +970,29 @@ ALTER TABLE stock_item_judgments ADD COLUMN IF NOT EXISTS record_key TEXT;
 -- guard; a stale key skips it, which makes an unattributable verdict a
 -- confident record-level source and is the one thing worse than not knowing.
 --
--- Keyed on the verdict having changed, not on the row having been touched:
--- the same verdict written again is still about the same record, whoever
--- wrote it. A live writer that re-judges to a new verdict and computes the
--- *same* key trips this and loses an attribution that was correct, which
--- costs one fallback to the identity -- and where that fallback is safe the
--- two agree anyway, so the cost lands only on the ambiguous keys the guard
--- already excludes. That is the cheap side of a test the row cannot make for
--- itself: record_key is not derivable from any column here, so unlike the
--- fold keys there is no source to compare it against.
--- (Copilot, PR #368, round 49.)
+-- Keyed on a new verdict *occasion*, which is what judged_at records -- not
+-- on the verdict's text changing. Round 49 tested the text alone and an
+-- import walked through the gap: re-importing a CSV this app exported
+-- replaces a verdict with its own words, so only the date moves, and an old
+-- binary doing that kept the local run's attribution on a row that no longer
+-- had one. The same prose reached twice is not the same occasion, and only
+-- the writer of the second one can say which record it was about.
+--
+-- A writer naming a *different* record is believed, which is what the second
+-- condition exempts. One naming the same record loses the attribution to
+-- NULL, and that costs a fallback to the identity -- where the fallback is
+-- safe the two agree anyway, so the cost lands only on the ambiguous keys the
+-- guard already excludes. It is also rarer than it looks: the billable set
+-- excludes judged items, so the live writer almost always INSERTs, and an
+-- INSERT never reaches this trigger. That is the cheap side of a test the row
+-- cannot make for itself: record_key is not derivable from any column here,
+-- so unlike the fold keys there is no source to compare it against.
+-- (Copilot, PR #368, rounds 49 and 54.)
 CREATE OR REPLACE FUNCTION clear_verdict_attribution_left_behind() RETURNS trigger AS $$
 BEGIN
     IF (NEW.recommended IS DISTINCT FROM OLD.recommended
-        OR NEW.reason IS DISTINCT FROM OLD.reason)
+        OR NEW.reason IS DISTINCT FROM OLD.reason
+        OR NEW.judged_at IS DISTINCT FROM OLD.judged_at)
        AND NEW.record_key IS NOT DISTINCT FROM OLD.record_key THEN
         NEW.record_key := NULL;
     END IF;

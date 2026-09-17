@@ -412,18 +412,27 @@ UPDATE` on `stock_item_judgments` names the verdict fields and not a column it
 does not know about, so Postgres preserves the attribution while replacing the
 verdict it was about — and a non-NULL key *skips* the ambiguity guard rather
 than consulting it, which is the state round 35 called the one thing worse
-than not knowing. A third `BEFORE UPDATE` trigger clears the key when the
-verdict changed and the key did not.
+than not knowing. A third `BEFORE UPDATE` trigger clears the key when an
+update leaves it exactly as it found it.
 
 It cannot be keyed on a source the way the fold triggers are, because
 `record_key` is not derivable from any column on that row — which is the whole
-reason the column exists. It is keyed on the verdict instead: the same verdict
-written again is about the same record whoever wrote it, and a changed one
-needs its writer to say. A live writer that re-judges to a new verdict and
-computes the *same* key trips it and loses an attribution that was correct.
-That costs one fallback to the identity, and where the fallback is safe the
-two agree anyway — so the cost lands only on the ambiguous keys the guard
-already excludes, which is the direction to be wrong in. (Copilot, round 49.)
+reason the column exists. It is keyed on a new verdict **occasion** instead:
+`recommended`, `reason` or `judged_at` moving, with the key unmoved. The first
+version tested only the verdict's text, on the ground that the same verdict
+written again is about the same record whoever wrote it — and an import walked
+straight through that, because re-importing a CSV this app exported replaces a
+verdict with its own words and moves nothing but the date. The same prose
+reached twice is not the same occasion, and only the writer of the second one
+can say which record it was about.
+
+A writer naming a *different* record is believed and keeps it. One naming the
+same record loses the attribution, which costs a fallback to the identity —
+and where the fallback is safe the two agree anyway, so the cost lands only on
+the ambiguous keys the guard already excludes, which is the direction to be
+wrong in. It is rarer than it reads, too: the billable set excludes judged
+items, so the live writer almost always INSERTs, and an INSERT never reaches
+this trigger. (Copilot, rounds 49 and 54.)
 
 With those, the sweep stays a convenience rather than a correctness guard —
 for the cases it is the *only* answer to. An unkeyed stock row is skipped by

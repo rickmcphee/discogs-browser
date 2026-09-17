@@ -1167,10 +1167,58 @@ def test_an_old_binarys_verdict_update_does_not_keep_the_record_it_replaced(pg_t
     assert deluxe in billable
 
 
+def test_an_old_binarys_import_does_not_keep_the_record_when_only_the_date_moves(pg_test_db):
+    """Round 49 keyed the trigger on the verdict's text changing, and an import
+    can replace a verdict without changing a word of it -- re-importing a CSV
+    this app exported is exactly that, and it is the ordinary way rows come
+    back. An old binary's import names recommended, reason and judged_at and
+    cannot name record_key, so Postgres preserved the local run's attribution
+    on a verdict occasion that had none of its own. A non-NULL key skips the
+    ambiguity guard rather than consulting it, which is the whole hazard.
+    Written out as the old binary wrote it, since no code path in this tree
+    produces that shape any more. (Copilot, PR #368, round 54.)
+    """
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        collision, _leeds = _seed_collision_and_a_genuine_listing(conn)
+        deluxe = _seed_release_crawler_item(
+            conn, "ShopDeluxe", "https://deluxe/a", "Album A Deluxe Reissue")
+        conn.commit()
+
+    verdict = "the deluxe reissue is worth it"
+    with db.user_scope(alice["id"]) as conn:
+        db.upsert_stock_judgments(conn, alice["id"], [{
+            "item_key": collision, "recommended": True, "reason": verdict,
+            "record_key": record_key("Album A Deluxe Reissue", "Artist A"),
+        }])
+        # Same verdict, same reason, newer date -- the CSV round-trip.
+        conn.execute(
+            """
+            INSERT INTO stock_item_judgments (user_id, item_key, recommended, reason, judged_at)
+            VALUES (%s, %s, TRUE, %s, %s)
+            ON CONFLICT (user_id, item_key) DO UPDATE SET
+                recommended = EXCLUDED.recommended, reason = EXCLUDED.reason,
+                judged_at = EXCLUDED.judged_at
+            """,
+            [alice["id"], collision, verdict, datetime.now() + timedelta(days=365)],
+        )
+        db.propagate_stock_judgments(conn, alice["id"])
+        conn.commit()
+        rows = {r["item_key"]: r for r in db.get_all_stock_judgments(conn, alice["id"])}
+        billable = {b["item_key"] for b in db.get_unjudged_stock_items(conn, alice["id"], 0)}
+
+    assert deluxe not in rows, (
+        "an imported verdict that happened to read the same as the local one "
+        "was propagated as the record the local run had been about"
+    )
+    assert deluxe in billable
+
+
 def test_a_rejudgment_that_names_its_record_keeps_it(pg_test_db):
-    """The trigger's other side. A writer that says which record it judged is
-    believed; only an update that changes the verdict and says nothing about the
-    record loses the attribution."""
+    """The trigger's other side. A writer that names a *different* record is
+    believed and keeps it; what loses the attribution is an update that leaves
+    the key exactly as it found it while moving the verdict or its date, which
+    is the shape an old binary's write has and a knowing writer's does not."""
     with db.get_admin_pool().connection() as conn:
         alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
         collision, _leeds = _seed_collision_and_a_genuine_listing(conn)
