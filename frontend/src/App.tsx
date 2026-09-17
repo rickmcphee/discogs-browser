@@ -568,7 +568,25 @@ export default function App() {
     const action = latestJudgmentActionSeq.current
     for (let attempt = 0; attempt < POLL_READ_ATTEMPTS; attempt++) {
       const status = await refreshJudgmentStatus()
-      if (status?.run?.running) return true
+      if (status?.run?.running) {
+        // Here rather than at each call site, because *every* caller needs it
+        // and the one that needed it most was not a call site I had thought
+        // about: the mount-time read. A page loaded while a run is going on
+        // the other Machine got its Stop button from this read and nothing
+        // else -- no event is coming -- so it sat beside an empty banner with
+        // no spinner for the whole of a paid run. The two endings' reads had
+        // been given this individually; the bootstrap read and the start
+        // handler's had not. (Copilot, PR #368, rounds 34-37.)
+        //
+        // Fenced like the flags this read has just written: the loop can span
+        // seconds, so a newer action is newer truth, and a Stop in flight owns
+        // the presentation exactly as it owns the flags -- refreshJudgmentStatus
+        // skips them under judgmentStopPending for the same reason.
+        if (action === latestJudgmentActionSeq.current && !judgmentStopPending.current) {
+          showJudgmentRunning()
+        }
+        return true
+      }
       if (status && !waitForRun) return false
       if (attempt < POLL_READ_ATTEMPTS - 1) {
         await new Promise(r => setTimeout(r, JUDGMENT_RUN_POLL_MS))
@@ -576,7 +594,7 @@ export default function App() {
       }
     }
     return false
-  }, [refreshJudgmentStatus])
+  }, [refreshJudgmentStatus, showJudgmentRunning])
 
   // Continuous, unconditional health poll -- drives `backendUp`, which gates
   // BackendDownScreen for both "backend not up yet" and "backend went down
@@ -856,17 +874,11 @@ export default function App() {
         // so one dropped request leaves the optimistic write above standing
         // for good, which is the empty-table state the reordering was for.
         // (Copilot, PR #368, round 24.)
-        if (!startInFlight) {
-          // And when that read finds the run still going, the presentation
-          // this handler has just written is as wrong as the flags were.
-          // Fenced on the action counter for the same reason the read itself
-          // is: it spans seconds, and a Stop or a Refresh inside them is
-          // newer truth than anything this ending can say.
-          const action = latestJudgmentActionSeq.current
-          discoverJudgmentRun().then(running => {
-            if (running && action === latestJudgmentActionSeq.current) showJudgmentRunning()
-          })
-        }
+        // And when that read finds the run still going it restores the
+        // spinner and the banner too, since the presentation this handler
+        // has just written is as wrong as the flags were. That lives in
+        // discoverJudgmentRun, which every caller needs it from.
+        if (!startInFlight) discoverJudgmentRun()
         setStockSyncGeneration(g => g + 1)
         setStockJudgmentGeneration(g => g + 1)
         // Inherited listings are reported on either ending: a run stopped
@@ -892,17 +904,14 @@ export default function App() {
           setRecommendationRunning(false)
           setRecommendationStopping(false)
           // Confirmed against the row, same as the two endings above, and
-          // retried for the same reason -- including what the two endings do
-          // with the answer. An error names no run either, so a replayed one
-          // can belong to a run that has since been replaced; the row saying
-          // a run is live makes the failure a *previous* run's, and leaving
-          // "Finding recommendations failed" up with the spinner off then
-          // describes the wrong run for the length of the right one.
-          // (Copilot, PR #368, round 35.)
-          const action = latestJudgmentActionSeq.current
-          discoverJudgmentRun().then(running => {
-            if (running && action === latestJudgmentActionSeq.current) showJudgmentRunning()
-          })
+          // retried for the same reason -- and it restores the presentation
+          // as well, which an error ending needs as much as they do. An error
+          // names no run either, so a replayed one can belong to a run that
+          // has since been replaced; the row saying a run is live makes the
+          // failure a *previous* run's, and leaving "Finding recommendations
+          // failed" up with the spinner off then describes the wrong run for
+          // the length of the right one. (Copilot, PR #368, round 35.)
+          discoverJudgmentRun()
         }
         setSyncStatus(`Finding recommendations failed: ${event.error}`, event.id ?? null)
         return
@@ -961,8 +970,7 @@ export default function App() {
       source?.close()
       clearTimeout(reconnectTimer)
     }
-  }, [authState, setSyncStatus, fetchPriceStatus, refreshJudgmentStatus, discoverJudgmentRun,
-      showJudgmentRunning])
+  }, [authState, setSyncStatus, fetchPriceStatus, refreshJudgmentStatus, discoverJudgmentRun])
 
   // Rides priceGeneration rather than a notification-specific SSE event: a
   // per-user event would have to be tagged with an owner, and the crawl worker

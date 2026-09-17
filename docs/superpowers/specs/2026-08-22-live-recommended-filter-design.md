@@ -141,15 +141,22 @@ Four changes, all in `frontend/src/App.tsx`, no new endpoints.
    reads as finished for its whole length, Stop button beside a completion
    message. The rule is now that whoever restores the flags restores these
    with them — `showJudgmentRunning()`, called from the start reply when it
-   reports a run under way, and from each ending's own reconciliation read
-   when that finds one. Each read's call is fenced on
-   `latestJudgmentActionSeq` for the reason the read itself is: it spans
-   seconds, and a Stop or a Refresh inside them is newer truth than any ending.
-   That includes the *error* ending, which reconciles the flags exactly as the
-   two terminal ones do: an error names no run either, so a replayed one can
-   belong to a run since replaced, and "Finding recommendations failed" left
-   up with the spinner off then describes the wrong run for the length of the
-   right one.
+   reports a run under way, and from `discoverJudgmentRun` itself whenever a
+   read finds one. That covers the *error* ending, which reconciles the flags
+   exactly as the two terminal ones do (an error names no run either, so a
+   replayed one can belong to a run since replaced, and "Finding
+   recommendations failed" left up with the spinner off then describes the
+   wrong run for the length of the right one) — and, more to the point, it
+   covers the **mount-time** read, which is where the gap was worst: a page
+   loaded while a run is going on the other Machine takes its Stop button from
+   that read and from nothing else, since no event is coming. Putting the
+   restore at each ending's call site, as the first two passes at this did,
+   left that one out; it belongs in the read. Fenced there on
+   `latestJudgmentActionSeq`, since the retry loop spans seconds and a newer
+   action is newer truth, and on `judgmentStopPending`, because a Stop in
+   flight owns the presentation exactly as it owns the flags —
+   `refreshJudgmentStatus` already applies that condition to the flags it
+   writes beside it.
 
 No change needed to `StockBrowser.tsx` itself: the effect that resets the
 filter away from "recommended" (`:118-122`) only fires when
