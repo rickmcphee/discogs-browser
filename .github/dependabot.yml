@@ -81,7 +81,7 @@ updates:
 
   # The base image tags are floating (`3.11-slim`, `20-alpine`), so patch
   # updates already arrive at build time and Dependabot has nothing to raise.
-  # What it does propose -- python 3.11 -> 3.14, node 20 -> 26 -- has to move in
+  # What it does propose -- python 3.11 -> 3.14, node 22 -> 26 -- has to move in
   # lockstep with the `python-version` and `node-version` pins in
   # .github/workflows/fly-deploy.yml, which Dependabot cannot do. Left to
   # itself it silently diverges the runtime from the one CI tests against, so
