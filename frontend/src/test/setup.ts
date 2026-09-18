@@ -1,4 +1,4 @@
-import '@testing-library/jest-dom'
+import '@testing-library/jest-dom/vitest'
 
 // jsdom doesn't implement scrollIntoView or scrollTo
 window.HTMLElement.prototype.scrollIntoView = () => {}

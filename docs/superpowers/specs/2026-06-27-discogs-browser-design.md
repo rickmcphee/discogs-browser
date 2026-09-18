@@ -467,7 +467,7 @@ discogs-browser/
 ├── frontend/
 │   ├── package.json
 │   ├── vite.config.ts
-│   ├── Dockerfile              # node:20-alpine build → nginx:alpine
+│   ├── Dockerfile              # node:22-alpine build → nginx:alpine
 │   ├── nginx.conf              # proxy /api/, SSE-friendly headers
 │   └── src/
 │       ├── main.tsx
@@ -523,7 +523,7 @@ Target: Synology NAS (x86_64).
 
 These two base image tags are coupled to the `python-version` and `node-version` pins in `.github/workflows/fly-deploy.yml` — bumping the image without the CI pin runs production on a runtime the tests never exercised. Dependabot is configured (`.github/dependabot.yml`) to ignore major and minor updates for `python` and `node` for that reason; both move by hand, together with CI.
 
-`frontend/Dockerfile` uses a two-stage build: Node 20 to build `dist/`, then `nginx:alpine` to serve it. Copies `nginx.conf` which proxies `/api/` to `backend:8000` with `proxy_buffering off`, `chunked_transfer_encoding on` (SSE compatibility), and `proxy_read_timeout 600s` (prevents timeout on large collection refreshes).
+`frontend/Dockerfile` uses a two-stage build: Node 22 to build `dist/`, then `nginx:alpine` to serve it. Copies `nginx.conf` which proxies `/api/` to `backend:8000` with `proxy_buffering off`, `chunked_transfer_encoding on` (SSE compatibility), and `proxy_read_timeout 600s` (prevents timeout on large collection refreshes).
 
 `docker-compose.yml` defines two services (`backend`, `frontend`). The backend bind-mounts `./workspace` at `/data` — no named volume. The frontend is exposed on host port `8080`. nginx's `/api/` proxy block sets `proxy_read_timeout 600s` to avoid timeouts on large collection refreshes.
 

@@ -114,6 +114,24 @@ which requires an approving review. Both jsdom 29 → 30 and
 `@vitest/mocker` 4 → 5 were failing frontend tests on the day this was written,
 which is the mechanism working rather than an argument against it.
 
+**Ungrouped majors cannot land a lockstep family, and the stall looks like
+ordinary breakage.** `vitest`, `@vitest/coverage-v8` and `@vitest/mocker` ship
+as one release train, and `@vitest/coverage-v8` peer-depends on the exact
+`vitest` version — so each arrives as its own PR that *cannot* pass CI alone,
+however healthy the bump is. Whichever merged first would leave the peer
+unsatisfied. Nothing distinguishes that from the breaking major this policy is
+designed to catch, so the PRs sit, each regenerating `frontend/package-lock.json`
+against a different base until all of them also conflict. Their runtime floor
+compounds it: vitest 5 requires Node 22 and jsdom 30 requires `>=22.22.2`, which
+no Dependabot PR can deliver, because the `node-version` pin and the
+`node:*-alpine` build stage move by hand (see `.github/dependabot.yml`). The
+resolution is a single hand-made PR into `integration` carrying the whole family,
+the runtime pins and any source fix together — vitest 5 inlines `expect`, so
+`frontend/src/test/setup.ts` must import `@testing-library/jest-dom/vitest`
+rather than the bare entry for the matcher types to reach `tsc -b`. When a
+lockstep family stalls, read it as this shape before re-running CI: individually
+green is not available to any of them.
+
 ## What this does not change
 
 Nothing reaches production unattended. `integration` is a staging branch; the
