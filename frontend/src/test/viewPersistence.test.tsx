@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import App from '../App'
 
@@ -178,5 +178,41 @@ describe('a sort restored across the price-status round trip', () => {
     localStorage.setItem('sortField_collection', 'discogs_price')
     render(<App />)
     await waitFor(() => expect(lastCollectionSort()).toBe('artist'))
+  })
+})
+
+// Restored per test rather than through vi.restoreAllMocks(), which would
+// also reach the api-client mocks this file's other tests rely on.
+const storageSpies: { mockRestore: () => void }[] = []
+afterEach(() => {
+  while (storageSpies.length) storageSpies.pop()!.mockRestore()
+})
+
+// See usePersistentState.test.tsx: a spy on the localStorage *instance* is
+// never consulted, so it has to go on Storage.prototype -- otherwise the test
+// passes without the code under test ever meeting a throw.
+function breakStorage(method: 'getItem' | 'setItem', message: string) {
+  storageSpies.push(vi.spyOn(Storage.prototype, method).mockImplementation(() => {
+    throw new Error(message)
+  }))
+}
+
+describe('storage that refuses to answer', () => {
+  // The whole app renders through these reads, so one that throws where it is
+  // not caught is a blank page rather than a lost preference. jsdom's Storage
+  // never throws on its own -- Safari's private mode, blocked site data and a
+  // full quota do.
+  it('still renders when every read throws', async () => {
+    breakStorage('getItem', 'site data blocked')
+    render(<App />)
+    expect(await screen.findByRole('button', { name: 'Store' })).toBeInTheDocument()
+    expect(isLit('Collection')).toBe(true)
+  })
+
+  it('still switches tabs when every write throws', async () => {
+    breakStorage('setItem', 'quota exceeded')
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Store' }))
+    await waitFor(() => expect(isLit('Store')).toBe(true))
   })
 })

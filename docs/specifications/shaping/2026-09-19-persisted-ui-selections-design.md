@@ -34,10 +34,16 @@ Touches:
 
 - `frontend/src/hooks/usePersistentState.ts` — new. `usePersistentState`, which
   reads a validated string from `localStorage` on mount and writes every later
-  change back, and `usePersistentFlag` for the boolean-valued ones.
+  change back, `usePersistentFlag` for the boolean-valued ones, and the
+  guarded `readStored`/`writeStored`/`removeStored` behind both, exported for
+  the storage App and Account touch outside a hook.
 - `frontend/src/App.tsx` — the active library tab, under
   `discogs-browser.view`. `hasPriceData` starts as `null` (unknown) rather
-  than `false`; see "Decisions".
+  than `false`; see "Decisions". The dismissed-banner ids and the view-as-user
+  toggle move onto the guarded helpers, and the ids gain a finite-number
+  check.
+- `frontend/src/views/Account.tsx` — the log-out path's `removeItem` moves
+  onto `removeStored`.
 - `frontend/src/views/RecordBrowser.tsx` — artist filter, sort field, sort
   order and the Unmatched filter persist; the existing view-mode pair moves
   onto the hook.
@@ -47,7 +53,8 @@ Touches:
 - Tests: `frontend/src/test/usePersistentState.test.tsx` (new),
   `frontend/src/test/viewPersistence.test.tsx` (new),
   `frontend/src/test/recordBrowser.test.tsx`,
-  `frontend/src/test/stockBrowser.test.tsx`.
+  `frontend/src/test/stockBrowser.test.tsx`,
+  `frontend/src/test/crawlStatusBar.test.tsx`.
 
 What is stored, and under which key:
 
@@ -179,10 +186,28 @@ Out of scope:
   page.** Safari's private mode, a browser configured to block site data and a
   full quota all raise rather than returning `null`, and the existing
   initialisers read `localStorage` unguarded at the top of App's render. The
-  hook swallows both directions: a preference that does not survive the visit
+  guards swallow every direction: a preference that does not survive the visit
   is a far smaller failure than an app that does not start. Nothing is
   reported to the user, because there is nothing for them to do about it and
   the selection still works for as long as the tab is open.
+
+  The guard has to cover **every** storage access in a render path, not just
+  the ones behind the hook, or the property is not one the app has. So
+  `readStored`/`writeStored`/`removeStored` are exported for the values App
+  keeps outside it — the two dismissed-banner ids and the view-as-user toggle,
+  which are not selections restored into a control — and one of those
+  initialisers left unguarded aborts App's render exactly as before. The
+  dismissed ids are validated on the way in for the same reason the selections
+  are: `Number('banana')` is `NaN`, every `id > dismissed` comparison against
+  `NaN` is false, and one corrupt value hid that banner for good with nothing
+  in the UI to undo it.
+
+  Testing this needs a note of its own, because the obvious way does not
+  work: jsdom's `localStorage` takes a `vi.spyOn(window.localStorage, …)`
+  without ever consulting it, since the methods live on `Storage.prototype`.
+  A test written that way passes whether or not anything is guarded — it did
+  here, on the first attempt, until a mutation check caught it. The spy goes
+  on `Storage.prototype`.
 
 - **`parse` runs once, on mount.** The key is expected to be fixed for the
   component's lifetime, which holds for every caller: the literals, and the
@@ -199,7 +224,12 @@ Out of scope:
 stored value falls back, `''` survives a round trip, a value the `parse`
 rejects is not written over the one that would be restored, and a
 `localStorage` that throws in either direction leaves the component
-rendering. The view test files cover each restored selection through the UI
+rendering. `viewPersistence.test.tsx` covers the same property for the app as
+a whole — every read throwing still renders it, every write throwing still
+switches tabs — and `crawlStatusBar.test.tsx` that a corrupt dismissed id
+does not bury the banner. Each of those was mutation-checked against the
+guard it is about, which is how the `Storage.prototype` trap above was
+found. The view test files cover each restored selection through the UI
 it belongs to — the request the browser issues on mount carries the stored
 artist and sort, the Unmatched dropdown comes back on Unmatched, a stored
 sort field the tab no longer offers falls back to Artist, a stored

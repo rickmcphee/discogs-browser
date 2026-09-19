@@ -14,7 +14,7 @@ import BottomNav from './components/BottomNav'
 import NotificationBell from './components/NotificationBell'
 import Sheet from './components/Sheet'
 import { useIsMobile } from './hooks/useMediaQuery'
-import { usePersistentState } from './hooks/usePersistentState'
+import { readStored, usePersistentState, writeStored } from './hooks/usePersistentState'
 import { navButtonClass, primaryButtonClass, secondaryButtonClass, dismissButtonClass } from './styles/buttons'
 import { refreshCollection, getCollectionStatus, openCrawlStream, getCrawlStatus, postCrawlStart, postStockSyncStart, postJudgmentStart, postJudgmentStop, clearJudgments, exportRecommendationsCsv, importRecommendationsCsv, getCrawlers, getUserSettings, getUserHiddenCrawlers, postUserHiddenCrawlers, getJudgmentStatus, getPriceStatus, getNotificationsUnread, markNotificationsRead, checkHealth, getAuthStatus, setUnauthorizedHandler, hasAvatar } from './api/client'
 import type { StockSyncStartResult } from './api/client'
@@ -60,6 +60,15 @@ const LIBRARY_VIEWS: readonly string[] = LIBRARY_TABS.map((tab) => tab.view)
 
 function parseLibraryView(stored: string): View | null {
   return LIBRARY_VIEWS.includes(stored) ? (stored as View) : null
+}
+
+// A stored id is input like any other. Anything that is not a finite number --
+// hand-edited, or written by something else on this origin -- would make every
+// `id > dismissed` comparison below false and hide that banner for good, so it
+// reads as "nothing dismissed yet" instead.
+function dismissedEventId(key: string): number {
+  const id = Number(readStored(key) ?? 0)
+  return Number.isFinite(id) ? id : 0
 }
 
 // How long a click may hold its Refresh button disabled and spinning before
@@ -267,7 +276,7 @@ export default function App() {
   const [adminMenuOpen, setAdminMenuOpen] = useState(false)
   const [crawling, setCrawling] = useState(false)
   const [crawlBannerId, setCrawlBannerId] = useState(0)
-  const [dismissedCrawlId, setDismissedCrawlId] = useState(() => Number(localStorage.getItem(DISMISSED_CRAWL_KEY) ?? 0))
+  const [dismissedCrawlId, setDismissedCrawlId] = useState(() => dismissedEventId(DISMISSED_CRAWL_KEY))
   const [crawlCurrent, setCrawlCurrent] = useState<CrawlEvent | null>(null)
   const [crawlCount, setCrawlCount] = useState(0)
   const [crawlTotal, setCrawlTotal] = useState(0)
@@ -383,7 +392,7 @@ export default function App() {
   const [authRevalidating, setAuthRevalidating] = useState(false)
   const [syncMessage, setSyncMessage] = useState<string | null>(null)
   const [syncMessageId, setSyncMessageId] = useState<number | null>(null)
-  const [dismissedSyncId, setDismissedSyncId] = useState(() => Number(localStorage.getItem(DISMISSED_SYNC_KEY) ?? 0))
+  const [dismissedSyncId, setDismissedSyncId] = useState(() => dismissedEventId(DISMISSED_SYNC_KEY))
   const [syncing, setSyncing] = useState(false)
   const [syncGeneration, setSyncGeneration] = useState(0)
   const [stockSyncGeneration, setStockSyncGeneration] = useState(0)
@@ -429,7 +438,7 @@ export default function App() {
   // replaced simply stops matching, with nothing to keep in sync by hand.
   const [busyStatusMessage, setBusyStatusMessage] = useState<string | null>(null)
   const [authState, setAuthState] = useState<AuthStatus | null>(null)
-  const [viewAsUser, setViewAsUser] = useState(() => localStorage.getItem(VIEW_AS_USER_KEY) === 'true')
+  const [viewAsUser, setViewAsUser] = useState(() => readStored(VIEW_AS_USER_KEY) === 'true')
   const [signupToken, setSignupToken] = useState<string | null>(() => {
     const params = new URLSearchParams(window.location.search)
     return params.get('signup_pending')
@@ -1910,7 +1919,7 @@ export default function App() {
   const toggleViewAsUser = useCallback(() => {
     setViewAsUser((current) => {
       const next = !current
-      localStorage.setItem(VIEW_AS_USER_KEY, String(next))
+      writeStored(VIEW_AS_USER_KEY, String(next))
       return next
     })
   }, [])
@@ -1961,14 +1970,14 @@ export default function App() {
 
   function dismissSyncMessage() {
     if (syncMessageId !== null) {
-      localStorage.setItem(DISMISSED_SYNC_KEY, String(syncMessageId))
+      writeStored(DISMISSED_SYNC_KEY, String(syncMessageId))
       setDismissedSyncId(syncMessageId)
     }
     setSyncMessage(null)
   }
 
   function dismissCrawlBanner() {
-    localStorage.setItem(DISMISSED_CRAWL_KEY, String(crawlBannerId))
+    writeStored(DISMISSED_CRAWL_KEY, String(crawlBannerId))
     setDismissedCrawlId(crawlBannerId)
   }
 

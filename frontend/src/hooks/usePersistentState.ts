@@ -18,10 +18,16 @@ import { useCallback, useEffect, useState, type Dispatch, type SetStateAction } 
 // Storage is not always there to be read: Safari's private mode, a browser
 // configured to block site data and a full quota all throw rather than
 // returning null. A throw inside a useState initialiser takes down the whole
-// app, so both directions swallow it -- a preference that does not survive the
-// visit is a far smaller failure than a blank page, and there is nothing the
-// user could do about it either way.
-function read(key: string): string | null {
+// app, so every direction swallows it -- a preference that does not survive
+// the visit is a far smaller failure than a blank page, and there is nothing
+// the user could do about it either way.
+//
+// Exported for the values App keeps outside this hook -- the dismissed banner
+// ids and the view-as-user toggle, which are not selections restored into a
+// control and are read and written from event handlers. They go through the
+// same guards because one unguarded read left in a render path is the blank
+// page all over again.
+export function readStored(key: string): string | null {
   try {
     return localStorage.getItem(key)
   } catch {
@@ -29,11 +35,19 @@ function read(key: string): string | null {
   }
 }
 
-function write(key: string, value: string): void {
+export function writeStored(key: string, value: string): void {
   try {
     localStorage.setItem(key, value)
   } catch {
     // Ignored: the selection still works for as long as this tab is open.
+  }
+}
+
+export function removeStored(key: string): void {
+  try {
+    localStorage.removeItem(key)
+  } catch {
+    // Ignored, as above.
   }
 }
 
@@ -62,7 +76,7 @@ export function usePersistentState<T extends string>(
   parse: (stored: string) => T | null,
 ): [T, Dispatch<SetStateAction<T>>] {
   const [value, setValue] = useState<T>(() => {
-    const stored = read(key)
+    const stored = readStored(key)
     return (stored === null ? null : parse(stored)) ?? fallback
   })
   // Asked during render with the current `parse`, rather than inside the
@@ -70,7 +84,7 @@ export function usePersistentState<T extends string>(
   // closure captured on mount would answer for a filter the user has left.
   const storable = parse(value) !== null
   useEffect(() => {
-    if (storable) write(key, value)
+    if (storable) writeStored(key, value)
   }, [key, value, storable])
   return [value, setValue]
 }

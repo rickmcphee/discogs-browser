@@ -14,6 +14,16 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
+// The methods live on Storage.prototype, and jsdom's localStorage instance
+// takes an own-property spy without ever consulting it -- so a spy installed
+// on the instance silently does nothing, and a test written that way passes
+// whether or not the code under test guards anything. Break the prototype.
+function breakStorage(method: 'getItem' | 'setItem', message: string) {
+  vi.spyOn(Storage.prototype, method).mockImplementation(() => {
+    throw new Error(message)
+  })
+}
+
 describe('usePersistentState', () => {
   it('restores a stored value its parse recognises', () => {
     localStorage.setItem('mode', 'tiles')
@@ -52,17 +62,13 @@ describe('usePersistentState', () => {
   })
 
   it('renders with the fallback when reading storage throws', () => {
-    vi.spyOn(window.localStorage, 'getItem').mockImplementation(() => {
-      throw new Error('site data blocked')
-    })
+    breakStorage('getItem', 'site data blocked')
     const { result } = renderHook(() => usePersistentState<Mode>('mode', 'list', parseMode))
     expect(result.current[0]).toBe('list')
   })
 
   it('keeps working for this visit when writing storage throws', () => {
-    vi.spyOn(window.localStorage, 'setItem').mockImplementation(() => {
-      throw new Error('quota exceeded')
-    })
+    breakStorage('setItem', 'quota exceeded')
     const { result } = renderHook(() => usePersistentState<Mode>('mode', 'list', parseMode))
     act(() => result.current[1]('tiles'))
     expect(result.current[0]).toBe('tiles')
