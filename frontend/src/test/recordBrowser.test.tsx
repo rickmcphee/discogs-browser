@@ -212,3 +212,85 @@ describe('RecordBrowser', () => {
     await waitFor(() => expect(getReleases).toHaveBeenLastCalledWith(expect.objectContaining({ sort: 'artist', order: 'asc' })))
   })
 })
+
+describe('RecordBrowser persisted selections', () => {
+  it('restores a stored artist filter into the first request it makes', async () => {
+    getArtists.mockResolvedValue(['Pink Floyd'])
+    localStorage.setItem('artistFilter_collection', 'Pink Floyd')
+    render(<RecordBrowser scope="collection" />)
+    await waitFor(() => expect(getReleases).toHaveBeenLastCalledWith(expect.objectContaining({ artist: 'Pink Floyd' })))
+  })
+
+  it('clears a stored artist the collection no longer holds, and takes the All transition with it', async () => {
+    // reconcileSelectedArtist is what validates a restored label, since the
+    // list that could validate it has not arrived at mount.
+    getArtists.mockResolvedValue(['Radiohead'])
+    localStorage.setItem('artistFilter_collection', 'Pink Floyd')
+    localStorage.setItem('sortField_collection', 'title')
+    render(<RecordBrowser scope="collection" />)
+    await waitFor(() => expect(getReleases).toHaveBeenLastCalledWith(expect.objectContaining({ artist: undefined, sort: 'artist' })))
+    expect(localStorage.getItem('artistFilter_collection')).toBe('')
+  })
+
+  it('persists a sort chosen from a column header, field and direction both', async () => {
+    render(<RecordBrowser scope="collection" />)
+    await waitFor(() => expect(getReleases).toHaveBeenCalled())
+    fireEvent.click(screen.getByText(/Year/))
+    await waitFor(() => expect(localStorage.getItem('sortField_collection')).toBe('year'))
+    fireEvent.click(screen.getByText(/Year/))
+    await waitFor(() => expect(localStorage.getItem('sortOrder_collection')).toBe('desc'))
+  })
+
+  it('restores a stored sort into the first request it makes', async () => {
+    localStorage.setItem('sortField_collection', 'date_added')
+    localStorage.setItem('sortOrder_collection', 'desc')
+    render(<RecordBrowser scope="collection" />)
+    await waitFor(() => expect(getReleases).toHaveBeenLastCalledWith(expect.objectContaining({ sort: 'date_added', order: 'desc' })))
+  })
+
+  it('falls back to Artist when the stored sort names a field this build no longer offers', async () => {
+    localStorage.setItem('sortField_collection', 'catalogue_number')
+    localStorage.setItem('sortOrder_collection', 'sideways')
+    render(<RecordBrowser scope="collection" />)
+    await waitFor(() => expect(getReleases).toHaveBeenLastCalledWith(expect.objectContaining({ sort: 'artist', order: 'asc' })))
+  })
+
+  it('restores the Unmatched filter, dropdown and request together', async () => {
+    localStorage.setItem('unmatchedOnly_collection', 'true')
+    render(<RecordBrowser scope="collection" />)
+    await waitFor(() => expect(getReleases).toHaveBeenLastCalledWith(expect.objectContaining({ unmatched: true })))
+    expect(screen.getByRole('combobox')).toHaveValue('unmatched')
+  })
+
+  it('persists the Unmatched filter when it is chosen', async () => {
+    render(<RecordBrowser scope="collection" />)
+    await waitFor(() => expect(getReleases).toHaveBeenCalled())
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'unmatched' } })
+    await waitFor(() => expect(localStorage.getItem('unmatchedOnly_collection')).toBe('true'))
+  })
+
+  it('keeps each scope\'s selections to itself', async () => {
+    localStorage.setItem('sortField_collection', 'year')
+    localStorage.setItem('collectionViewMode_collection', 'tiles')
+    render(<RecordBrowser scope="wantlist" />)
+    await waitFor(() => expect(getReleases).toHaveBeenLastCalledWith(expect.objectContaining({ sort: 'artist' })))
+    expect(localStorage.getItem('collectionViewMode_wantlist')).toBe('list')
+  })
+
+  it('keeps a restored Price sort while App has not yet answered whether there are prices', async () => {
+    // hasPriceField is null until getPriceStatus() lands. Treating that as
+    // "no prices" would reset every restored Price sort on first render.
+    localStorage.setItem('sortField_collection', 'discogs_price')
+    const { rerender } = render(<RecordBrowser scope="collection" hasPriceField={null} />)
+    await waitFor(() => expect(getReleases).toHaveBeenLastCalledWith(expect.objectContaining({ sort: 'discogs_price' })))
+    rerender(<RecordBrowser scope="collection" hasPriceField={true} />)
+    await waitFor(() => expect(screen.getByText(/Price/)).toBeTruthy())
+    expect(getReleases).toHaveBeenLastCalledWith(expect.objectContaining({ sort: 'discogs_price' }))
+  })
+
+  it('still drops a restored Price sort once there are definitely no prices', async () => {
+    localStorage.setItem('sortField_collection', 'discogs_price')
+    render(<RecordBrowser scope="collection" hasPriceField={false} />)
+    await waitFor(() => expect(getReleases).toHaveBeenLastCalledWith(expect.objectContaining({ sort: 'artist', order: 'asc' })))
+  })
+})

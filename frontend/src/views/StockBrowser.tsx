@@ -10,6 +10,7 @@ import StockFilter from '../components/StockFilter'
 import { formatPrice } from './formatPrice'
 import { placeReasonPopover, reasonPopoverMaxWidth, type Insets, type Placement } from './reasonPopoverPosition'
 import { useIsMobile } from '../hooks/useMediaQuery'
+import { usePersistentFlag, usePersistentState } from '../hooks/usePersistentState'
 import { ArtistSidebar, ArtistSheetButton } from '../components/ArtistFilter'
 import MobileSort, { type SortOption } from '../components/MobileSort'
 
@@ -31,14 +32,34 @@ interface Props {
    *  active -- this pane stays mounted while hidden. */
   libraryGeneration?: number
   isAdmin?: boolean
-  hasPriceField?: boolean
+  /** Null until App's getPriceStatus() lands -- "not known yet", which hides
+   *  the Price column exactly as "no prices" does but does not reset a sort
+   *  restored onto it. See the persisted-selections design doc. */
+  hasPriceField?: boolean | null
 }
 
 const NO_HIDDEN_CRAWLER_IDS: number[] = []
+// Same as RecordBrowser's: stands in for the artist list until it lands.
+const NO_ARTISTS: string[] = []
 const NO_CRAWLERS: Crawler[] = []
 const NOOP_HIDDEN_CRAWLER_IDS_CHANGE = () => {}
 const STORE_FILTERS = ['all', 'recommended', 'saved', 'overlapped', 'collection', 'wantlist'] as const
 const LIBRARY_DEPENDENT_FILTERS: ReadonlySet<string> = new Set(['collection', 'wantlist', 'overlapped', 'recommended'])
+// Mirrors sortOptions below: the fields this tab's headers offer, and so the
+// only ones a stored sort may name -- a build that drops one must not have it
+// handed back by a browser that had it selected. That is not hypothetical
+// here; the Store filter's own restore validates for the same reason, after a
+// rename left a filter name in browsers that had chosen it.
+const STOCK_SORT_FIELDS: readonly StockSortField[] = ['artist', 'title', 'format', 'discogs_price', 'price', 'source']
+
+function isStoreFilter(value: string): boolean {
+  return (STORE_FILTERS as readonly string[]).includes(value)
+}
+
+function isStockSortField(value: string): value is StockSortField {
+  return (STOCK_SORT_FIELDS as readonly string[]).includes(value)
+}
+
 // Names the control, not its content: the justification itself is behind the
 // click now, so a hover that gave it away would be the tooltip all over again.
 const REASON_BUTTON_TITLE = 'Recommendation details'
@@ -365,24 +386,46 @@ function StockBrowser({
   const [rowTotal, setRowTotal] = useState(0)
   const [page, setPage] = useState(1)
   const [search, setSearch] = useState('')
-  const [selectedArtist, setSelectedArtist] = useState('')
-  const [artists, setArtists] = useState<string[]>([])
-  const [sort, setSort] = useState<StockSortField>('artist')
-  const [order, setOrder] = useState<SortOrder>('asc')
-  const [filter, setFilter] = useState<string>(() => {
-    const allowed: readonly string[] = STORE_FILTERS
-    const stored = localStorage.getItem('stockFilter_store')
-    return stored && allowed.includes(stored) ? stored : 'all'
-  })
-  const [viewMode, setViewMode] = useState<'list' | 'tiles'>(
-    () => (localStorage.getItem('collectionViewMode_store') === 'tiles' ? 'tiles' : 'list')
+  // Same as RecordBrowser's: any label is accepted back, and
+  // reconcileSelectedArtist below is what validates it against a list the API
+  // has not returned yet at mount.
+  const [selectedArtist, setSelectedArtist] = usePersistentState('artistFilter_store', '', (raw) => raw)
+  const [artists, setArtists] = useState<string[] | null>(null)
+  const [filter, setFilter] = usePersistentState<string>(
+    'stockFilter_store',
+    'all',
+    (raw) => (isStoreFilter(raw) ? raw : null),
+  )
+  // Declared after `filter` because it reads it: the Price column exists only
+  // under Collection, and outside it the backend degrades a discogs_price sort
+  // to artist order -- so restoring the two independently would leave the state
+  // claiming an order the rows are not in, with no visible control claiming it.
+  // Checked here rather than in an effect because an effect would let one
+  // load() go out under the sort it is about to reset.
+  const [sort, setSort] = usePersistentState<StockSortField>(
+    'sortField_store',
+    'artist',
+    (raw) => {
+      if (!isStockSortField(raw)) return null
+      return raw === 'discogs_price' && filter !== 'collection' ? null : raw
+    },
+  )
+  const [order, setOrder] = usePersistentState<SortOrder>(
+    'sortOrder_store',
+    'asc',
+    (raw) => (raw === 'asc' || raw === 'desc' ? raw : null),
+  )
+  const [viewMode, setViewMode] = usePersistentState<'list' | 'tiles'>(
+    'collectionViewMode_store',
+    'list',
+    (raw) => (raw === 'list' || raw === 'tiles' ? raw : null),
   )
   // Only the lowest-priced store's row for each record -- rows at the floor,
   // so a tie keeps both and each currency keeps its own (see
   // db._cheapest_clause). Stacks on every filter, Collection and Wantlist
   // included: under those it reads as "the cheapest place to buy a record I
   // follow", and unticking it is one click away.
-  const [cheapest, setCheapest] = useState(() => localStorage.getItem('stockCheapest') === 'true')
+  const [cheapest, setCheapest] = usePersistentFlag('stockCheapest')
   const [hasLoaded, setHasLoaded] = useState(false)
   // Bumped after every toggleSaved attempt (success or failure) to trigger a
   // race-guarded refetch through the same effects load()/getStockArtists
@@ -483,16 +526,19 @@ function StockBrowser({
     if (!recommendedAvailable && filter === 'recommended') {
       setFilter('all')
     }
-  }, [recommendedAvailable, filter])
+  }, [recommendedAvailable, filter, setFilter])
   // Same hazard as changeFilter's discogs_price reset above, but for the
   // hasPriceField prop itself flipping false (e.g. a sync clears the user's
   // last price) rather than a user-driven filter change.
+  // A definite false, not a falsy one: null is App still waiting on
+  // getPriceStatus(), and resetting on that would clear a restored Price sort
+  // on every first render, before the answer arrives.
   useEffect(() => {
-    if (!hasPriceField && sort === 'discogs_price') {
+    if (hasPriceField === false && sort === 'discogs_price') {
       setSort('artist')
       setOrder('asc')
     }
-  }, [hasPriceField, sort])
+  }, [hasPriceField, sort, setSort, setOrder])
   // Also refetches on syncGeneration ticks, same as load() above -- otherwise
   // the sidebar's artist list would go stale mid-crawl.
   useEffect(() => {
@@ -518,15 +564,16 @@ function StockBrowser({
   // sort and page (it's still the same artist); losing the artist delegates to
   // selectArtist(''), the full "back to All" transition, sort derivation
   // included.
+  // Null while the list is still on its way -- see RecordBrowser's copy: a
+  // restored artist reconciled against the empty initial state would be
+  // cleared before the API had said anything about it.
   useEffect(() => {
+    if (artists === null) return
     const next = reconcileSelectedArtist(artists, selectedArtist)
     if (next === selectedArtist) return
     if (next) setSelectedArtist(next)
     else selectArtist('')
-  }, [artists, selectedArtist])
-  useEffect(() => { localStorage.setItem('collectionViewMode_store', viewMode) }, [viewMode])
-  useEffect(() => { localStorage.setItem('stockFilter_store', filter) }, [filter])
-  useEffect(() => { localStorage.setItem('stockCheapest', String(cheapest)) }, [cheapest])
+  }, [artists, selectedArtist, setSelectedArtist])
   useEffect(() => { tableScrollRef.current?.scrollTo({ top: 0 }) }, [selectedArtist])
 
   function changeFilter(value: string) {
@@ -628,7 +675,7 @@ function StockBrowser({
   // The discogs price is what the user paid, which only a collection row has,
   // so the column and its sort exist only under the Collection filter -- and
   // only while the user has any price data at all.
-  const showPrice = filter === 'collection' && hasPriceField
+  const showPrice = filter === 'collection' && hasPriceField === true
   const colCount = showPrice ? 8 : 7
   const emptyMessage =
     filter === 'recommended' ? 'Nothing recommended is in stock right now.'
@@ -657,7 +704,7 @@ function StockBrowser({
       {/* Sidebar. Same trade as RecordBrowser's: on a phone it becomes a sheet
           behind a toolbar button, rendered instead of the sidebar. */}
       {!isMobile && (
-        <ArtistSidebar artists={artists} selected={selectedArtist} onSelect={selectArtist} />
+        <ArtistSidebar artists={artists ?? NO_ARTISTS} selected={selectedArtist} onSelect={selectArtist} />
       )}
 
       {/* Main */}
@@ -689,7 +736,7 @@ function StockBrowser({
           </div>
           <div className="flex flex-wrap items-center gap-1.5 md:contents">
             {isMobile && (
-              <ArtistSheetButton artists={artists} selected={selectedArtist} onSelect={selectArtist} />
+              <ArtistSheetButton artists={artists ?? NO_ARTISTS} selected={selectedArtist} onSelect={selectArtist} />
             )}
             <div className="contents md:ml-auto md:flex md:items-center md:gap-2">
               {isMobile && viewMode === 'list' && (

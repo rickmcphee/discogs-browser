@@ -5,6 +5,7 @@ import { dismissButtonClass, navButtonClass } from '../styles/buttons'
 import { textInputClass, selectClass } from '../styles/inputs'
 import { reconcileSelectedArtist } from './artistSelection'
 import { useIsMobile } from '../hooks/useMediaQuery'
+import { usePersistentFlag, usePersistentState } from '../hooks/usePersistentState'
 import { ArtistSidebar, ArtistSheetButton } from '../components/ArtistFilter'
 import MobileSort, { type SortOption } from '../components/MobileSort'
 
@@ -13,7 +14,10 @@ interface Props {
   syncing?: boolean
   onRefreshCollection?: () => void
   syncGeneration?: number
-  hasPriceField?: boolean
+  /** Null until App's getPriceStatus() lands -- "not known yet", which hides
+   *  the Price column exactly as "no prices" does but does not reset a sort
+   *  restored onto it. See the persisted-selections design doc. */
+  hasPriceField?: boolean | null
 }
 
 // Rendered from the tile, card and table branches below, which would otherwise
@@ -21,20 +25,43 @@ interface Props {
 const WANTLIST_EMPTY = 'No wantlist items yet. Add records to your wantlist on Discogs, then sync.'
 const COLLECTION_EMPTY = 'No records found. Click the sync icon above to load your collection from Discogs.'
 
+// What the sort headers below offer, and so the only fields a stored sort may
+// name -- a build that drops one must not have it handed back by a browser
+// that had it selected.
+const SORT_FIELDS: readonly SortField[] = ['artist', 'title', 'year', 'label', 'format', 'discogs_price', 'date_added']
+
+// Stands in for the artist list until it lands, so the sidebar renders the one
+// thing it can always offer -- All -- rather than nothing.
+const NO_ARTISTS: string[] = []
+
 export default function RecordBrowser({ scope, syncing, onRefreshCollection, syncGeneration, hasPriceField = true }: Props) {
   const isMobile = useIsMobile()
   const [releases, setReleases] = useState<Release[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
   const [search, setSearch] = useState('')
-  const [selectedArtist, setSelectedArtist] = useState('')
-  const [artists, setArtists] = useState<string[]>([])
-  const [sort, setSort] = useState<SortField>('artist')
-  const [order, setOrder] = useState<SortOrder>('asc')
-  const [viewMode, setViewMode] = useState<'list' | 'tiles'>(
-    () => (localStorage.getItem(`collectionViewMode_${scope}`) === 'tiles' ? 'tiles' : 'list')
+  // Any label is accepted back: the list that would validate it is one the API
+  // has not returned yet at mount. reconcileSelectedArtist below is what
+  // validates it, and a restored selection is indistinguishable there from one
+  // made before a sync re-spelled or dropped the artist.
+  const [selectedArtist, setSelectedArtist] = usePersistentState(`artistFilter_${scope}`, '', (raw) => raw)
+  const [artists, setArtists] = useState<string[] | null>(null)
+  const [sort, setSort] = usePersistentState<SortField>(
+    `sortField_${scope}`,
+    'artist',
+    (raw) => (SORT_FIELDS.includes(raw) ? raw : null),
   )
-  const [unmatched, setUnmatched] = useState(false)
+  const [order, setOrder] = usePersistentState<SortOrder>(
+    `sortOrder_${scope}`,
+    'asc',
+    (raw) => (raw === 'asc' || raw === 'desc' ? raw : null),
+  )
+  const [viewMode, setViewMode] = usePersistentState<'list' | 'tiles'>(
+    `collectionViewMode_${scope}`,
+    'list',
+    (raw) => (raw === 'list' || raw === 'tiles' ? raw : null),
+  )
+  const [unmatched, setUnmatched] = usePersistentFlag(`unmatchedOnly_${scope}`)
   const [hasLoaded, setHasLoaded] = useState(false)
   const PER_PAGE = 250
 
@@ -92,22 +119,30 @@ export default function RecordBrowser({ scope, syncing, onRefreshCollection, syn
   // A collection sync can re-case the selected artist's label -- the canonical
   // casing follows the catalog, which the sync itself writes. See
   // reconcileSelectedArtist; same handling as StockBrowser.
+  // Null while the list is still on its way: an artist restored from the last
+  // visit would otherwise be reconciled against the empty initial state and
+  // cleared before the API had said anything about it. A list that arrives
+  // genuinely empty still clears it, which is why "not loaded" cannot be
+  // spelled as [].
   useEffect(() => {
+    if (artists === null) return
     const next = reconcileSelectedArtist(artists, selectedArtist)
     if (next === selectedArtist) return
     if (next) setSelectedArtist(next)
     else selectArtist('')
-  }, [artists, selectedArtist])
-  useEffect(() => { localStorage.setItem(`collectionViewMode_${scope}`, viewMode) }, [viewMode, scope])
+  }, [artists, selectedArtist, setSelectedArtist])
   // The Price column and its sort header disappear when hasPriceField goes
   // false (e.g. a sync clears the user's last stored price) -- without this,
   // sort would stay pinned to discogs_price with no visible control claiming it.
+  // A definite false, not a falsy one: null is App still waiting on
+  // getPriceStatus(), and resetting on that would clear a restored Price sort
+  // on every first render, before the answer arrives.
   useEffect(() => {
-    if (!hasPriceField && sort === 'discogs_price') {
+    if (hasPriceField === false && sort === 'discogs_price') {
       setSort('artist')
       setOrder('asc')
     }
-  }, [hasPriceField, sort])
+  }, [hasPriceField, sort, setSort, setOrder])
 
   function toggleSort(field: SortField) {
     if (sort === field) {
@@ -154,7 +189,7 @@ export default function RecordBrowser({ scope, syncing, onRefreshCollection, syn
           filter that is set once, so it moves into a sheet behind a toolbar
           button -- rendered instead of the sidebar, never alongside it. */}
       {!isMobile && (
-        <ArtistSidebar artists={artists} selected={selectedArtist} onSelect={selectArtist} />
+        <ArtistSidebar artists={artists ?? NO_ARTISTS} selected={selectedArtist} onSelect={selectArtist} />
       )}
 
       {/* Main */}
@@ -189,7 +224,7 @@ export default function RecordBrowser({ scope, syncing, onRefreshCollection, syn
           </div>
           <div className="flex flex-wrap items-center gap-1.5 md:contents">
             {isMobile && (
-              <ArtistSheetButton artists={artists} selected={selectedArtist} onSelect={selectArtist} />
+              <ArtistSheetButton artists={artists ?? NO_ARTISTS} selected={selectedArtist} onSelect={selectArtist} />
             )}
             <div className="contents md:ml-auto md:flex md:items-center md:gap-1">
               {isMobile && viewMode === 'list' && (

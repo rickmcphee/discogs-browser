@@ -14,6 +14,7 @@ import BottomNav from './components/BottomNav'
 import NotificationBell from './components/NotificationBell'
 import Sheet from './components/Sheet'
 import { useIsMobile } from './hooks/useMediaQuery'
+import { usePersistentState } from './hooks/usePersistentState'
 import { navButtonClass, primaryButtonClass, secondaryButtonClass, dismissButtonClass } from './styles/buttons'
 import { refreshCollection, getCollectionStatus, openCrawlStream, getCrawlStatus, postCrawlStart, postStockSyncStart, postJudgmentStart, postJudgmentStop, clearJudgments, exportRecommendationsCsv, importRecommendationsCsv, getCrawlers, getUserSettings, getUserHiddenCrawlers, postUserHiddenCrawlers, getJudgmentStatus, getPriceStatus, getNotificationsUnread, markNotificationsRead, checkHealth, getAuthStatus, setUnauthorizedHandler, hasAvatar } from './api/client'
 import type { StockSyncStartResult } from './api/client'
@@ -46,6 +47,20 @@ const ADMIN_TABS: { view: View; label: string }[] = [
 const DISMISSED_SYNC_KEY = 'discogs-browser.dismissedSyncEventId'
 const DISMISSED_CRAWL_KEY = 'discogs-browser.dismissedCrawlEventId'
 const VIEW_AS_USER_KEY = 'discogs-browser.viewAsUser'
+// The tab the app reopens on. Only the library tabs are restorable: `logs`
+// and `queue` are mounted for an admin alone (and an admin viewing as a user
+// is not one), so a restored one would open the app on a blank screen with no
+// tab lit -- a failure that is invisible rather than merely wrong. Settings
+// renders for anyone, but it and the two errands either side of it (Account,
+// Notifications) are places you go to do something and then leave. The
+// persistence hook stores only what this accepts back, so while one of those
+// is open the stored tab stays the library tab the user was last on.
+const VIEW_KEY = 'discogs-browser.view'
+const LIBRARY_VIEWS: readonly string[] = LIBRARY_TABS.map((tab) => tab.view)
+
+function parseLibraryView(stored: string): View | null {
+  return LIBRARY_VIEWS.includes(stored) ? (stored as View) : null
+}
 
 // How long a click may hold its Refresh button disabled and spinning before
 // the app admits it does not know and lets go. Both claims need it, for the
@@ -244,7 +259,7 @@ function reportStockSyncRejection(
 }
 
 export default function App() {
-  const [view, setView] = useState<View>('collection')
+  const [view, setView] = usePersistentState<View>(VIEW_KEY, 'collection', parseLibraryView)
   const isMobile = useIsMobile()
   // Mobile-only state, and the sheet holding it unmounts at the breakpoint --
   // so without this a menu left open in portrait quietly reopens itself on the
@@ -267,7 +282,12 @@ export default function App() {
   const [avatarVersion, setAvatarVersion] = useState(0)
   const [hasAnthropicKey, setHasAnthropicKey] = useState(false)
   const [hasJudgedItems, setHasJudgedItems] = useState(false)
-  const [hasPriceData, setHasPriceData] = useState(false)
+  // Null until getPriceStatus() answers, rather than false: the browsers reset
+  // a discogs_price sort once this is definitely false, so starting it false
+  // would clear a sort restored from localStorage on every first render,
+  // before the answer arrived. Every render gate on it is a falsy check, so
+  // "not known yet" hides the Price column exactly as "no prices" does.
+  const [hasPriceData, setHasPriceData] = useState<boolean | null>(null)
   const latestPriceStatusSeq = useRef(0)
   const [unreadNotifications, setUnreadNotifications] = useState(0)
   const latestNotificationsSeq = useRef(0)
@@ -522,7 +542,18 @@ export default function App() {
     getPriceStatus().then((s) => {
       if (seq !== latestPriceStatusSeq.current) return
       setHasPriceData(s.any_price_paid)
-    }).catch(() => {})
+    }).catch(() => {
+      // A failure has to answer too, rather than leaving this unknown for the
+      // session: "not known yet" is what keeps a restored discogs_price sort
+      // alive, and left standing it would hide the Price column while the rows
+      // stayed in price order -- a sort with no control claiming it. Answering
+      // false restores the pre-existing trade-off exactly (a transient failure
+      // hides the column from a user who does have prices), and only where
+      // nothing has answered yet, so a later refetch failing cannot un-answer
+      // an earlier success.
+      if (seq !== latestPriceStatusSeq.current) return
+      setHasPriceData((known) => known ?? false)
+    })
   }, [])
 
   // Same counter, same reason: the bootstrap fetch, every SSE generation tick,
