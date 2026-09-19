@@ -371,6 +371,16 @@ price; otherwise it's omitted from the table (and the empty-state
 
 **Amendment (2026-08-02, branch `plex-manual-link-and-ui`):** "each tile links to `discogs_url`, same as the artist link in list view" is corrected — in both tile and list view, only the cover icon links to `discogs_url`; the artist name is plain text, not a link. See [`2026-07-09-collection-plex-filter-design.md`](2026-07-09-collection-plex-filter-design.md) and [`2026-08-02-plex-manual-link-and-ui-design.md`](2026-08-02-plex-manual-link-and-ui-design.md) for the current, authoritative hyperlink design, including the Collection-tab-only "Unmatched" filter dropdown next to the view-toggle buttons.
 
+**Amendment (2026-09-19, branch `claude/hopeful-ritchie-96zpzc`):** the view-toggle key is
+per tab, `collectionViewMode_${scope}`, not the flat `collectionViewMode`
+written above — it was scoped early on, since both `RecordBrowser` instances
+are mounted at once. It is also no longer the only selection that survives a
+restart: the sort field and direction, the artist sidebar's selection, the
+Unmatched dropdown and the tab the user was on are all restored on the next
+visit, through one hook rather than a read/write pair per value. Search text
+and the page number are deliberately not. See
+[`2026-09-19-persisted-ui-selections-design.md`](../../specifications/shaping/2026-09-19-persisted-ui-selections-design.md).
+
 ### Crawl Status Bar
 
 Fixed bottom bar visible while a crawl is active (or just completed). Shows progress count, current release/site, and a Dismiss button. The bar appears automatically when a scheduled crawl starts (via the `"started"` SSE event) with no user interaction required.
