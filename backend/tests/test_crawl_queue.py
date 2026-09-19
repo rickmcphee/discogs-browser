@@ -1459,24 +1459,82 @@ def test_saving_an_item_expedites_a_pending_row_without_clearing_its_deferral(ad
     assert row["held"]
 
 
-def test_saving_an_item_leaves_an_in_progress_row_alone(admin_conn, app_user_url):
-    """A worker has the row right now, so the save's answer is already being
-    crawled -- and touching a claimed row is what every other writer here
-    refuses to do."""
+def test_saving_an_item_stamps_priority_on_an_in_progress_row_and_nothing_else(admin_conn, app_user_url):
+    """A worker holding the row is already crawling what the user asked for --
+    but only if that pass finishes. Everything the claim set stays exactly as
+    it was, so the worker's own terminal write is unaffected; priority alone
+    moves, so a hand-back comes back expedited."""
     _wanted_and_unwanted_stock_rows(admin_conn)
     admin_conn.execute(
         "UPDATE crawl_queue SET status = 'in_progress', claimed_by = 'worker-1', "
-        "claimed_at = CURRENT_TIMESTAMP WHERE item_key = 'wanted'"
+        "claimed_at = CURRENT_TIMESTAMP, requested_at = CURRENT_TIMESTAMP - INTERVAL '1 hour' "
+        "WHERE item_key = 'wanted'"
     )
+    admin_conn.commit()
+    before = admin_conn.execute(
+        "SELECT claimed_at, requested_at FROM crawl_queue WHERE item_key = 'wanted'"
+    ).fetchone()
+
+    with db.get_app_pool().connection() as conn:
+        assert db.enqueue_crawl_queue_for_saved_stock_item(conn, "wanted") == 1
+        conn.commit()
+    row = admin_conn.execute(
+        "SELECT status, priority, claimed_by, claimed_at, requested_at "
+        "FROM crawl_queue WHERE item_key = 'wanted'"
+    ).fetchone()
+    assert (row["status"], row["priority"], row["claimed_by"]) == (
+        "in_progress", db.QUEUE_PRIORITY_INTERACTIVE, "worker-1",
+    )
+    assert row["claimed_at"] == before["claimed_at"]
+    assert row["requested_at"] == before["requested_at"]
+
+
+def test_a_save_during_a_claim_survives_the_rows_hand_back(admin_conn, app_user_url):
+    """The reason the in_progress case cannot be skipped. A pass that defers
+    hands the row back as 'pending' without touching priority, so a save that
+    recorded nothing would leave the deferred crawlers in the ordinary
+    backlog with nothing to show the user ever asked."""
+    _wanted_and_unwanted_stock_rows(admin_conn)
+    queue_id = admin_conn.execute(
+        "SELECT id FROM crawl_queue WHERE item_key = 'wanted'"
+    ).fetchone()["id"]
+    admin_conn.execute(
+        "UPDATE crawl_queue SET status = 'in_progress', claimed_by = 'worker-1', "
+        "claimed_at = CURRENT_TIMESTAMP WHERE id = %s",
+        [queue_id],
+    )
+    admin_conn.commit()
+
+    with db.get_app_pool().connection() as conn:
+        db.enqueue_crawl_queue_for_saved_stock_item(conn, "wanted")
+        conn.commit()
+    db.defer_crawl_queue_row(admin_conn, queue_id, [7], 60.0, "worker-1")
+    admin_conn.commit()
+
+    row = admin_conn.execute(
+        "SELECT status, priority FROM crawl_queue WHERE id = %s", [queue_id]
+    ).fetchone()
+    assert (row["status"], row["priority"]) == ("pending", db.QUEUE_PRIORITY_INTERACTIVE)
+
+
+def test_saving_an_in_progress_item_with_no_enabled_source_stamps_nothing(admin_conn, app_user_url):
+    """The store gate guards the in_progress stamp too -- it is a second
+    statement, so it needs the gate written on it rather than inheriting one."""
+    _wanted_and_unwanted_stock_rows(admin_conn)
+    admin_conn.execute(
+        "UPDATE crawl_queue SET status = 'in_progress', claimed_by = 'worker-1' "
+        "WHERE item_key = 'wanted'"
+    )
+    _set_enabled_by_name(admin_conn, "Store", False)
     admin_conn.commit()
 
     with db.get_app_pool().connection() as conn:
         assert db.enqueue_crawl_queue_for_saved_stock_item(conn, "wanted") == 0
         conn.commit()
     row = admin_conn.execute(
-        "SELECT status, priority, claimed_by FROM crawl_queue WHERE item_key = 'wanted'"
+        "SELECT priority FROM crawl_queue WHERE item_key = 'wanted'"
     ).fetchone()
-    assert (row["status"], row["priority"], row["claimed_by"]) == ("in_progress", 0, "worker-1")
+    assert row["priority"] == 0
 
 
 def test_a_stock_syncs_revive_puts_an_expedited_row_back_in_the_slow_lane(admin_conn, app_user_url):

@@ -2708,7 +2708,20 @@ QUEUE_PRIORITY_INTERACTIVE = 1
 #   'done'      -- revive it: already priced, but priced during some sync days
 #                  ago, which is not the comparison being asked for
 #   'pending'   -- raise the priority and change nothing else
-#   in_progress -- nothing; a worker has it right now
+#   in_progress -- raise the priority and change nothing else, in a second
+#                  statement that touches no other column
+#
+# The in_progress case is the one that looks safe to skip and is not. A worker
+# holding the row is already crawling what the user asked for, but only if
+# that pass finishes: defer_crawl_queue_row, revert_crawl_queue_claim and
+# reclaim_stranded_crawl_queue_rows all hand the row back as 'pending' without
+# touching priority, so a save that recorded nothing would leave the remaining
+# work -- or, on a revert or a reclaim, all of it -- in the ordinary backlog
+# with nothing to show the user ever asked. Stamping priority costs the worker
+# nothing: its terminal writes match on id and claimed_by and neither reads
+# this column. requested_at is deliberately not stamped with it -- the row's
+# age is what the Queue tab reports and a claim in flight has not just been
+# requested.
 #
 # The 'pending' case is the common one and the reason reviving alone would not
 # have done: with crawl_library_only off every live item already has a row, so
@@ -2735,11 +2748,11 @@ QUEUE_PRIORITY_INTERACTIVE = 1
 # "the item is queued because of this call". Nothing in production reads it.
 def enqueue_crawl_queue_for_saved_stock_item(conn, item_key: str) -> int:
     _lock_stock_queue_reconciliation(conn)
-    stock_source_gate = _enabled_stock_source_exists("%(item_key)s")
-    return conn.execute(
+    params = {"item_key": item_key, "priority": QUEUE_PRIORITY_INTERACTIVE}
+    queued = conn.execute(
         f"""
         INSERT INTO crawl_queue (item_key, priority)
-        SELECT %(item_key)s, %(priority)s WHERE {stock_source_gate}
+        SELECT %(item_key)s, %(priority)s WHERE {_enabled_stock_source_exists("%(item_key)s")}
         ON CONFLICT (item_key) DO UPDATE SET
             priority = %(priority)s,
             status = 'pending', requested_at = CURRENT_TIMESTAMP,
@@ -2750,7 +2763,21 @@ def enqueue_crawl_queue_for_saved_stock_item(conn, item_key: str) -> int:
                                        THEN NULL ELSE crawl_queue.pending_crawler_ids END
         WHERE crawl_queue.status <> 'in_progress'
         """,
-        {"item_key": item_key, "priority": QUEUE_PRIORITY_INTERACTIVE},
+        params,
+    ).rowcount
+    # Separate rather than a sixth CASE in the statement above: what this row
+    # needs is the opposite of what the others do -- every column left exactly
+    # as its worker set it, and priority alone moved -- and spelling that as
+    # "keep the current value" six times reads as though the writer had a
+    # choice about each. The two are mutually exclusive (a row is in one
+    # state), so at most one of them ever reports a row.
+    return queued + conn.execute(
+        f"""
+        UPDATE crawl_queue SET priority = %(priority)s
+        WHERE item_key = %(item_key)s AND status = 'in_progress'
+          AND {_enabled_stock_source_exists("%(item_key)s")}
+        """,
+        params,
     ).rowcount
 
 
@@ -3171,6 +3198,7 @@ def _queue_row_state_sql(library_only: bool = False) -> str:
     return f"""
         SELECT cq.status,
                cq.discogs_id IS NOT NULL AS is_release,
+               cq.priority > 0 AS expedited,
                cq.claimed_at,
                cq.available_at > CURRENT_TIMESTAMP AS held,
                (cq.item_key IS NULL OR {live}) AS live,
@@ -3194,6 +3222,11 @@ def _queue_totals(conn, stranded_after_seconds: float, library_only: bool = Fals
             COUNT(*) FILTER (WHERE status = 'pending' AND live AND actionable AND NOT held) AS claimable_rows,
             COUNT(*) FILTER (WHERE status = 'pending' AND live AND actionable AND NOT held AND is_release) AS claimable_release_rows,
             COUNT(*) FILTER (WHERE status = 'pending' AND live AND actionable AND NOT held AND NOT is_release) AS claimable_stock_rows,
+            -- The subset of those that sort ahead of the release rows rather
+            -- than behind them, which is the one thing _queue_crawler_eta
+            -- cannot read off the release/stock split any more.
+            COUNT(*) FILTER (WHERE status = 'pending' AND live AND actionable AND NOT held
+                             AND NOT is_release AND expedited) AS claimable_expedited_stock_rows,
             COUNT(*) FILTER (WHERE status = 'pending' AND live AND actionable AND held) AS held_rows,
             COUNT(*) FILTER (WHERE status = 'pending' AND NOT (live AND actionable)) AS unactionable_rows,
             COUNT(*) FILTER (WHERE status = 'in_progress') AS in_progress_rows,
@@ -3434,16 +3467,23 @@ def _queue_in_progress_units(conn) -> dict:
     return {r["crawler_id"]: r["units"] for r in rows}
 
 
-# An estimate, and labelled as one. It leans on the one thing the claim order
-# guarantees: every claimable release row sorts ahead of every claimable stock
-# row. So a crawler that takes no stock work waits only on the release rows,
-# and anything else waits on the whole claimable queue. Narrowing is ignored,
-# which can only make a crawler's true position earlier than reported.
+# An estimate, and labelled as one. It leans on what the claim order
+# guarantees: every claimable release row sorts ahead of every claimable
+# *routine* stock row. So a crawler that takes no stock work waits on the
+# release rows -- plus the expedited stock rows, which are the exception to
+# that split and sort ahead of everything. Anything else waits on the whole
+# claimable queue. Narrowing is ignored, which can only make a crawler's true
+# position earlier than reported.
+#
+# Counting the expedited rows here rather than ignoring them is not a rounding
+# detail: a release-only crawler that omitted them would report an ETA that is
+# short by exactly the rows most likely to have just arrived, which is the
+# moment an operator is most likely to be looking at the tile.
 def _queue_crawler_eta(bucket: dict, claimable_stock_units: int, totals: dict, drain_per_second: float):
     if not drain_per_second or not bucket["claimable_units"]:
         return None
     if claimable_stock_units == 0 and totals["claimable_stock_rows"] > 0:
-        position = totals["claimable_release_rows"]
+        position = totals["claimable_release_rows"] + totals["claimable_expedited_stock_rows"]
     else:
         position = totals["claimable_rows"]
     return position / drain_per_second

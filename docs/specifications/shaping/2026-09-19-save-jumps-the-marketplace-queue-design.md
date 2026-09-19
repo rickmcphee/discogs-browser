@@ -43,16 +43,28 @@ Touches:
 - `backend/db.py` — the `priority` column and the claimable index rebuilt
   around it; `QUEUE_PRIORITY_INTERACTIVE`; `enqueue_crawl_queue_for_saved_stock_item`
   rewritten; the sort in `claim_crawl_queue_batch` and `queue_next_for_crawler`;
-  a `priority = 0` reset on the two routine revives.
-- Tests in `backend/tests/test_crawl_queue.py` and
-  `backend/tests/test_stock_router.py`.
+  a `priority = 0` reset on the two routine revives; an `expedited` flag in
+  `_queue_row_state_sql`, counted by `_queue_totals` and read by
+  `_queue_crawler_eta`.
+- Tests in `backend/tests/test_crawl_queue.py`,
+  `backend/tests/test_stock_router.py` and
+  `backend/tests/test_queue_router.py`.
 
 Deliberately untouched: `enqueue_crawl_queue` (release targets), which cannot
 reach a prioritised row — priority is only ever set on an `item_key` row and
-the two key spaces are disjoint. The Queue tab's counts, ages and ETAs, which
+the two key spaces are disjoint. The Queue tab's counts and ages, which
 measure the queue rather than order it. The frontend, which already refetches
 stock rows on the `listing_changed` the crawl broadcasts, so a price that
 arrives seconds after a save lands on screen by itself.
+
+The Queue tab's per-crawler **ETA** is not in that list, and the difference is
+worth stating because it looks like a reporting detail and is a correctness
+one. `_queue_crawler_eta` does not merely count the queue — it derives a
+crawler's *position* in it from the claim's sort, on the stated guarantee that
+every claimable release row precedes every claimable stock row. This change
+makes that false for an expedited row, so a release-only crawler's ETA would
+come out short by exactly the rows most likely to have just arrived. It takes
+the new count.
 
 ## Design
 
@@ -72,10 +84,25 @@ collection crawl ahead of it had drained, which is the wait this change
 exists to remove.
 
 What it costs is that one saved item delays one collection row by one row.
-The lane is bounded by clicks: a user who fills it with five hundred saves has
-delayed their own collection crawl by five hundred rows, and it is their own
-queue in both directions. There is no path by which a sync, a schedule or
-another user's action puts anything into the priority lane.
+The lane is bounded by clicks rather than by anything automated: there is no
+path by which a sync, a schedule or a crawler toggle puts a row into it.
+
+It is **not** bounded per tenant, though, and it would be wrong to read it as
+"their own queue in both directions". `crawl_queue` is global and ownerless —
+a row names a target, never a user — so one person's saves sort ahead of
+everyone's routine work, not just their own. What keeps that acceptable is
+not a quota, which this queue has never had: release rows already outrank
+every other user's stock rows today, with no fairness mechanism anywhere in
+the claim, so the lane extends an existing cross-tenant property by one rank
+rather than introducing one. Starving the queue means clicking save faster
+than the pool drains, indefinitely, by hand.
+
+If that ever stops being theoretical, the fix is bounded scheduling —
+reserving part of each claim for routine rows — and it is deliberately not
+built here. It would be the first fairness mechanism in this queue, and
+`QUEUE_CLAIM_BATCH_SIZE` is 2, so any reservation is a coarse split that
+halves the expedite it is protecting. Sizing that is a decision about the
+whole queue, not about the save button.
 
 `crawl_queue_claimable_idx` is replaced by `crawl_queue_priority_claimable_idx`
 with `priority DESC` leading, matching the new sort. A new name, not an edited
@@ -91,7 +118,7 @@ watching for.
 
 ### The save is insert-or-expedite, and what it does depends on the state
 
-One statement, three outcomes, chosen by the row's status:
+Four outcomes, chosen by the row's status:
 
 - **No row** — insert one, at `QUEUE_PRIORITY_INTERACTIVE`, behind the
   unchanged enabled-store gate.
@@ -100,8 +127,8 @@ One statement, three outcomes, chosen by the row's status:
   re-crawl means "price this against everything eligible", not "resume some
   earlier pass's narrowed set".
 - **`pending`** — raise the priority and leave everything else alone.
-- **`in_progress`** — nothing. A worker has the row right now; the user is
-  already getting what they clicked for.
+- **`in_progress`** — raise the priority and leave everything else alone,
+  in a second statement.
 
 The `pending` case is the common one and the reason a revive alone would not
 have been enough. With `crawl_library_only` off, every live stock item already
@@ -117,6 +144,27 @@ names the work that pass deferred. Clearing them would send a worker straight
 back at a site that is failing, and re-run crawlers that had already finished
 for that target. Priority alone is the right lever there — the row is first in
 line the moment it is claimable, and not a moment before.
+
+The `in_progress` case looks safe to skip and is not. A worker holding the row
+is already crawling what the user asked for — but only if that pass finishes.
+`defer_crawl_queue_row`, `revert_crawl_queue_claim` and
+`reclaim_stranded_crawl_queue_rows` all hand the row back as `pending` without
+touching `priority`, by the rule above, so a save that recorded nothing would
+leave the remaining work — on a revert or a reclaim, *all* of it — in the
+ordinary backlog with nothing to show the user ever asked. Stamping the
+priority costs the worker nothing: `mark_crawl_queue_done` and
+`defer_crawl_queue_row` match on `id` and `claimed_by`, and neither reads this
+column. `requested_at` is deliberately not stamped with it — the row's age is
+what the Queue tab reports, and a claim in flight has not just been requested.
+
+It is a second statement rather than a sixth `CASE` in the first, because what
+this row needs is the *opposite* of what the others do: every column left
+exactly as its worker set it, and `priority` alone moved. Spelling that as
+"keep the current value" six times reads as though the writer had a choice
+about each. The two statements are mutually exclusive — a row is in one state
+— so at most one of them ever reports a row, and the returned count still
+means "the item is queued because of this call". Both carry the enabled-store
+gate; the second needs it written on it rather than inheriting one.
 
 The other columns need no branch. `claimed_by`, `claimed_at` and `completed_at`
 are already NULL on a pending row (every path back to `pending` nulls them), so
@@ -251,6 +299,18 @@ order of a two-row batch passes or fails by luck.
 Routine revives — a stock sync's and a crawler enable's — put a prioritised
 row back to `0`, while the enable's *widen* and a deferral both leave it
 alone.
+
+A save on an `in_progress` row stamps the priority and moves nothing else —
+`claimed_at` and `requested_at` are asserted unchanged — and a deferral after
+one leaves the row `pending` and still expedited, which is the whole reason
+that case cannot be skipped.
+
+`backend/tests/test_queue_router.py`: `/next` puts an expedited stock row
+ahead of a release row. The existing
+`test_next_returns_claim_order_with_releases_before_stock` cannot cover this —
+it uses routine rows only, so it passes with or without the priority key. The
+release-only crawler's ETA counts the expedited stock rows ahead of it and
+still excludes the routine ones behind it.
 
 `backend/tests/test_stock_router.py`: the endpoint queues an item whose row
 was `done`, and repeated saves stay idempotent.
