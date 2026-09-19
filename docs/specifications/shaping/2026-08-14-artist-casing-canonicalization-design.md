@@ -202,6 +202,17 @@ also closes a pre-existing hole of the same shape — hiding a crawler could
 already drop the selected artist out of the sidebar and leave the filter applied
 but unattributable.
 
+**Amendment (2026-09-19, branch `claude/hopeful-ritchie-96zpzc`):** the artist-list state
+in both views is `string[] | null`, and reconciliation returns early on null —
+"the list has not arrived" is no longer spelled as "the list is empty". It runs
+after each list refetch exactly as described above; what it no longer runs
+against is the placeholder before the first one. That distinction only started
+mattering when the selected artist could be restored from `localStorage`: at
+mount it was always `''`, so reconciling against `[]` was a no-op, and a
+restored label was instead cleared on the spot — before the API had said
+anything about it. A list that arrives genuinely empty still clears the
+selection, through the same `selectArtist('')`. See [`2026-09-19-persisted-ui-selections-design.md`](2026-09-19-persisted-ui-selections-design.md).
+
 **The re-casing match requires equal length**, which is what a pure change of
 case looks like. JS is not the authority on which labels are one artist —
 `LOWER()` is — and the two disagree in both directions. Without the length
