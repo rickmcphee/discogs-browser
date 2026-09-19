@@ -4,6 +4,22 @@ Date: 2026-08-18
 
 **Amendment (2026-09-06, branch `claude/store-cheapest-filter-x4tdwl`):** the Track tab is gone, and with it the Price column's every-filter rendering: under the Store tab the discogs price column now renders only with the Collection filter (and only while `hasPriceField` holds), sortable whenever shown, with the sort resetting to artist on leaving Collection. The `hasPriceField` wiring this design describes is unchanged and now reaches Store's `StockBrowser`. See [`2026-09-06-track-tab-fold-design.md`](2026-09-06-track-tab-fold-design.md).
 
+**Amendment (2026-09-19, branch `claude/hopeful-ritchie-96zpzc`):** `hasPriceData` no longer starts
+`false`, and the prop is `hasPriceField?: boolean | null`. Null means "not
+known yet" — `getPriceStatus()` is a round trip after mount, and the reset
+effect below (which clears a `discogs_price` sort once the column claiming it
+is gone) fired on every first render while the initial value was `false`. That
+was harmless until a sort could be restored from `localStorage`, which it now
+can: the effect cleared every restored Price sort before the answer arrived.
+So the effect waits for a definite `false`, and the column's render gates are
+unchanged — they are falsy checks, so "not known yet" hides the column exactly
+as "no prices" did. The transient-failure trade-off under Out of scope is
+unchanged, but it now takes a line of its own to keep: the `.catch` resolves
+the state to `false` where nothing has answered yet, since a failure left
+unanswered would hide the column while a restored Price sort went on ordering
+the rows — a sort with no control claiming it. A later refetch failing cannot
+un-answer an earlier success. See [`2026-09-19-persisted-ui-selections-design.md`](2026-09-19-persisted-ui-selections-design.md).
+
 ## Problem
 
 The Discogs `Price` column (`library_items.price_paid`, wire name `discogs_price` — see
