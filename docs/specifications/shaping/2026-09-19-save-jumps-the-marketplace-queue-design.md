@@ -148,10 +148,13 @@ whether the row is already in the lane:
   `pending_crawler_ids` reset the way every other revive resets them. A
   re-crawl means "price this against everything eligible", not "resume some
   earlier pass's narrowed set".
-- **`pending`, routine** — raise the priority and stamp `requested_at`:
-  joining the lane is when its place in the lane starts.
-- **`pending`, already expedited** — nothing at all. See `requested_at` below;
-  this is the case that makes a repeated save a true no-op.
+- **`pending`, routine** — raise the priority, widen it back to every
+  eligible crawler, and stamp `requested_at`: joining the lane is when its
+  place in the lane starts.
+- **`pending`, already expedited and already widened** — nothing at all. See
+  `requested_at` below; this is the case that makes a repeated save a true
+  no-op. (A row expedited and *then* narrowed by a backfill is widened again,
+  as any `pending` row is.)
 - **`in_progress`** — raise the priority and leave everything else alone,
   in a second statement.
 
@@ -161,14 +164,36 @@ has a row, so a save that only revived `done` rows would leave the ordinary
 backlog case — a row pending since the last sync, tens of thousands deep —
 exactly as slow as before.
 
-Two columns are therefore set conditionally rather than unconditionally.
-`available_at` and `pending_crawler_ids` are reset only on the `done` branch.
-On a `pending` row both are live state: `available_at` in the future means
-some crawler's site is in circuit-breaker cooldown and `pending_crawler_ids`
-names the work that pass deferred. Clearing them would send a worker straight
-back at a site that is failing, and re-run crawlers that had already finished
-for that target. Priority alone is the right lever there — the row is first in
+`available_at` is therefore set conditionally rather than unconditionally,
+and only it. On a `pending` row a future `available_at` is live state: some
+crawler's site is in circuit-breaker cooldown, and clearing it would send a
+worker straight back at a site that is failing. That column is about *when*
+the row runs, which a save has no business overriding — the row is first in
 line the moment it is claimable, and not a moment before.
+
+`pending_crawler_ids` is cleared in every branch, and that uniformity is
+load-bearing rather than tidy. A save means "price this against everything
+eligible", and that has to hold however the row came to be narrowed. Reading
+a narrowed `pending` row as a partial pass whose other crawlers just ran is
+only *sometimes* true: there are two writers of that column and they mean
+different things.
+
+- `defer_crawl_queue_row` narrows to the crawlers a pass could not reach, and
+  the rest did run — minutes ago, in the pass being deferred.
+- `backfill_crawl_queue_for_crawler` revives a **`done`** target as `pending`
+  with `ARRAY[the newly enabled crawler]`, because the rest already have
+  prices. Those prices are as old as the last full pass.
+
+Nothing on the row distinguishes the two, and the second is not a corner: its
+window is every row that backfill revived, from an admin enabling a crawler
+until the queue drains them, which at the sizes this queue reaches is not
+minutes. Preserving the set there would answer the click by refreshing one
+marketplace and leaving every other price on the comparison stale — the exact
+promise the `done` branch keeps and this one would quietly break.
+
+So the save widens unconditionally. The cost is re-running crawlers that did
+finish earlier in an in-flight pass's cycle: bounded, paid only when somebody
+clicks save, and precisely what they are asking for.
 
 The `in_progress` case looks safe to skip and is not. A worker holding the row
 is already crawling what the user asked for — but only if that pass finishes.
@@ -356,9 +381,12 @@ this deploys against.
 
 `backend/tests/test_crawl_queue.py`: a save inserts a missing row at the
 interactive priority; revives a `done` row and prioritises it; raises a
-`pending` row's priority while leaving its `available_at` hold and its
-narrowed `pending_crawler_ids` intact; and stamps an `in_progress` row's
-priority alone (below).
+`pending` row's priority and widens it back to every eligible crawler while
+leaving its `available_at` hold intact; and stamps an `in_progress` row's
+priority alone (below). The widening is pinned twice, once on a row narrowed
+by hand and once on one narrowed by a real `backfill_crawl_queue_for_crawler`
+run — the second asserts its own precondition, so it fails rather than passes
+vacuously if the backfill ever stops narrowing.
 The enabled-store gate is asserted on all three paths, because it guards the
 expedite as well as the insert and neither of those is obvious. In the first
 statement it lives in the `INSERT ... SELECT`, so a false gate yields no

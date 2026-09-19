@@ -1463,12 +1463,16 @@ def test_saving_an_item_revives_a_done_row_expedited(admin_conn, app_user_url):
     assert row["available"]
 
 
-def test_saving_an_item_expedites_a_pending_row_without_clearing_its_deferral(admin_conn, app_user_url):
+def test_saving_a_pending_row_widens_it_but_keeps_its_cooldown(admin_conn, app_user_url):
     """The common case with library-only off: the row is already pending, deep
-    in the backlog. Raising its priority is the whole change -- available_at
-    and pending_crawler_ids are a live circuit-breaker deferral there, not
-    residue, and clearing them would send a worker back at a failing site and
-    re-run crawlers that already finished for this target."""
+    in the backlog. Two different columns, two different answers.
+
+    available_at is about *when* the row runs -- a future one means some
+    crawler's site is in circuit-breaker cooldown, and a save has no business
+    sending a worker back at a failing site. pending_crawler_ids is about
+    *which* crawlers run, and a save means all of them: see the backfill test
+    below for the case where preserving it would answer the click with one
+    marketplace and a set of stale prices."""
     _wanted_and_unwanted_stock_rows(admin_conn)
     admin_conn.execute(
         "UPDATE crawl_queue SET pending_crawler_ids = ARRAY[7], "
@@ -1485,8 +1489,39 @@ def test_saving_an_item_expedites_a_pending_row_without_clearing_its_deferral(ad
     ).fetchone()
     assert row["status"] == "pending"
     assert row["priority"] == db.QUEUE_PRIORITY_INTERACTIVE
-    assert row["pending_crawler_ids"] == [7]
+    assert row["pending_crawler_ids"] is None
     assert row["held"]
+
+
+def test_saving_a_backfill_narrowed_row_still_reprices_every_marketplace(admin_conn, app_user_url):
+    """A narrowed pending row is not always a partial pass whose other
+    crawlers just ran. backfill_crawl_queue_for_crawler revives a *done*
+    target as pending with ARRAY[the newly enabled crawler], so the rest of
+    its prices are as old as the last full pass. Preserving that set would
+    answer the click by refreshing one marketplace and leaving every other
+    price stale -- and the window is every row the backfill revived, until the
+    queue drains them."""
+    _wanted_and_unwanted_stock_rows(admin_conn)
+    amazon = admin_conn.execute(
+        "SELECT id FROM crawlers WHERE site_name = 'Amazon'"
+    ).fetchone()["id"]
+    admin_conn.execute("UPDATE crawl_queue SET status = 'done' WHERE item_key = 'wanted'")
+    admin_conn.commit()
+    db.backfill_crawl_queue_for_crawler(admin_conn, amazon)
+    admin_conn.commit()
+    narrowed = admin_conn.execute(
+        "SELECT pending_crawler_ids FROM crawl_queue WHERE item_key = 'wanted'"
+    ).fetchone()["pending_crawler_ids"]
+    assert narrowed == [amazon], "precondition: the backfill leaves the row narrowed"
+
+    with db.get_app_pool().connection() as conn:
+        db.enqueue_crawl_queue_for_saved_stock_item(conn, "wanted")
+        conn.commit()
+    row = admin_conn.execute(
+        "SELECT pending_crawler_ids, priority FROM crawl_queue WHERE item_key = 'wanted'"
+    ).fetchone()
+    assert row["pending_crawler_ids"] is None
+    assert row["priority"] == db.QUEUE_PRIORITY_INTERACTIVE
 
 
 def test_saving_an_already_expedited_item_again_keeps_its_place_in_the_lane(admin_conn, app_user_url):

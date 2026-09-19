@@ -2736,9 +2736,11 @@ QUEUE_PRIORITY_INTERACTIVE = 1
 #   no row      -- insert one, expedited, behind the unchanged store gate
 #   'done'      -- revive it: already priced, but priced during some sync days
 #                  ago, which is not the comparison being asked for
-#   'pending'   -- raise the priority; and stamp requested_at only if the row
-#                  was routine, since joining the lane starts its place in the
-#                  lane. An already-expedited row changes nothing at all.
+#   'pending'   -- raise the priority and widen it back to every eligible
+#                  crawler; stamp requested_at only if the row was routine,
+#                  since joining the lane starts its place in the lane. An
+#                  already-expedited row that is already widened changes
+#                  nothing at all.
 #   in_progress -- raise the priority and change nothing else, in a second
 #                  statement that touches no other column
 #
@@ -2771,14 +2773,26 @@ QUEUE_PRIORITY_INTERACTIVE = 1
 # Promoting a routine pending row does stamp it, because entering the lane is
 # when its position in the lane starts, and so does reviving a 'done' row.
 #
-# Hence the two other CASEs. On a 'pending' row available_at and pending_crawler_ids
-# are live state, not residue: a future available_at means some crawler's site
-# is in circuit-breaker cooldown, and pending_crawler_ids names the work that
-# pass deferred. Resetting them would send a worker straight back at a failing
-# site and re-run crawlers that already finished for this target. Priority
-# alone is the right lever -- first in line the moment it is claimable, and not
-# before. On a 'done' row they are reset exactly as every other revive resets
-# them: a re-crawl means "everything eligible", not "resume a narrowed set".
+# available_at is the other CASE, and only it. On a 'pending' row a future
+# available_at is live state: some crawler's site is in circuit-breaker
+# cooldown, and resetting it would send a worker straight back at a site that
+# is failing. That is about *when* the row runs, which a save has no business
+# overriding. On a 'done' row it is reset like every other revive.
+#
+# pending_crawler_ids is cleared unconditionally, which is a deliberate
+# reversal: a save means "price this against everything eligible", in every
+# state, and that has to hold however the row came to be narrowed. Reading a
+# narrowed 'pending' row as a partial pass whose other crawlers just ran is
+# only sometimes true -- backfill_crawl_queue_for_crawler revives a *done*
+# target as pending with ARRAY[one crawler], so its other prices are as old as
+# the last full pass, and preserving that set would refresh one marketplace
+# and leave the comparison the user clicked for stale. Nothing on the row
+# distinguishes the two writers, and the window for the backfill case is every
+# row it revived until the queue drains them, so the safe reading is the
+# uniform one. The cost is re-running crawlers that did finish earlier in an
+# in-flight pass's cycle: bounded, paid only when someone clicks save, and
+# exactly what they are asking for.
+#
 # The three claim columns need no CASE -- every path back to 'pending' nulls
 # them, so writing NULL is a no-op there and a revive on a 'done' row.
 #
@@ -2803,8 +2817,7 @@ def enqueue_crawl_queue_for_saved_stock_item(conn, item_key: str) -> int:
             claimed_by = NULL, claimed_at = NULL, completed_at = NULL,
             available_at = CASE WHEN crawl_queue.status = 'done'
                                 THEN CURRENT_TIMESTAMP ELSE crawl_queue.available_at END,
-            pending_crawler_ids = CASE WHEN crawl_queue.status = 'done'
-                                       THEN NULL ELSE crawl_queue.pending_crawler_ids END
+            pending_crawler_ids = NULL
         WHERE crawl_queue.status <> 'in_progress'
         """,
         params,
