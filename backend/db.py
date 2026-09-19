@@ -2707,7 +2707,9 @@ QUEUE_PRIORITY_INTERACTIVE = 1
 #   no row      -- insert one, expedited, behind the unchanged store gate
 #   'done'      -- revive it: already priced, but priced during some sync days
 #                  ago, which is not the comparison being asked for
-#   'pending'   -- raise the priority and change nothing else
+#   'pending'   -- raise the priority; and stamp requested_at only if the row
+#                  was routine, since joining the lane starts its place in the
+#                  lane. An already-expedited row changes nothing at all.
 #   in_progress -- raise the priority and change nothing else, in a second
 #                  statement that touches no other column
 #
@@ -2852,6 +2854,7 @@ def claim_crawl_queue_batch(conn, worker_id: str, limit: int, library_only: bool
     stock_source_gate = _stock_item_crawlable("crawl_queue.item_key", library_only)
     return conn.execute(
         f"""
+        WITH claimed AS (
         UPDATE crawl_queue SET status = 'in_progress', claimed_by = %(worker_id)s, claimed_at = CURRENT_TIMESTAMP
         WHERE id IN (
             SELECT id FROM crawl_queue
@@ -2882,7 +2885,23 @@ def claim_crawl_queue_batch(conn, worker_id: str, limit: int, library_only: bool
             LIMIT %(limit)s
             FOR UPDATE SKIP LOCKED
         )
-        RETURNING id, discogs_id, item_key, pending_crawler_ids
+        RETURNING id, discogs_id, item_key, pending_crawler_ids, priority, requested_at
+        )
+        -- The sort above decides *which* rows the batch takes; this one decides
+        -- the order the caller gets them in, and they are not the same thing.
+        -- UPDATE ... RETURNING is under no obligation to hand rows back in the
+        -- order its subquery selected them, and _process_claimed_rows walks
+        -- this list sequentially -- so without a final ordered SELECT an
+        -- expedited row could be crawled after a routine one claimed beside
+        -- it, and two saves could run out of FIFO order. The guarantee the
+        -- priority lane makes is about when work runs, which makes the
+        -- returned order part of it rather than a presentational detail.
+        -- Restated rather than referenced: the two must stay identical, and a
+        -- sort that disagreed with the claim's would reorder within the batch
+        -- silently. Sized by LIMIT, so this costs a sort of at most
+        -- QUEUE_CLAIM_BATCH_SIZE rows.
+        SELECT id, discogs_id, item_key, pending_crawler_ids FROM claimed
+        ORDER BY priority DESC, (item_key IS NOT NULL), requested_at, id
         """,
         {"worker_id": worker_id, "limit": limit},
     ).fetchall()

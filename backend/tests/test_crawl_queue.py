@@ -319,11 +319,41 @@ def test_claim_crawl_queue_batch_is_fifo_within_the_expedited_lane(admin_conn):
     )
     admin_conn.commit()
 
-    # One at a time: the sort decides which rows a claim takes, and RETURNING
-    # is under no obligation to hand back even those in the sort's order.
-    [earlier] = db.claim_crawl_queue_batch(admin_conn, "worker-1", limit=1)
-    [later] = db.claim_crawl_queue_batch(admin_conn, "worker-1", limit=1)
-    assert [earlier["item_key"], later["item_key"]] == ["first", "second"]
+    # One batch, not one row at a time: the caller crawls these sequentially in
+    # the order handed back, so the returned order is the guarantee, and a
+    # single-row claim would never exercise it.
+    claimed = db.claim_crawl_queue_batch(admin_conn, "worker-1", limit=2)
+    assert [r["item_key"] for r in claimed] == ["first", "second"]
+
+
+def test_claim_crawl_queue_batch_returns_a_batch_in_the_order_it_will_be_crawled(admin_conn):
+    """The claim's subquery decides which rows the batch takes; UPDATE ...
+    RETURNING does not promise to hand them back in that order, and
+    _process_claimed_rows walks the list sequentially. Without the ordered
+    final SELECT an expedited row can be crawled after a routine one claimed
+    beside it -- the lane's whole promise is about when work runs."""
+    _make_stock_identity_and_crawler(admin_conn, item_key="saved", site_name="Amazon")
+    admin_conn.commit()
+    db.enqueue_crawl_queue_for_stock_item(admin_conn, "saved")
+    _make_catalog_and_crawler(admin_conn, discogs_id="r1", site_name="eBay")
+    admin_conn.commit()
+    db.enqueue_crawl_queue(admin_conn, "r1")
+    # The expedited row is enqueued first and has the lower id, so a claim that
+    # happened to return insertion order would pass by luck. Give the release
+    # row the earlier requested_at as well, so only the priority key can put
+    # the stock row first.
+    admin_conn.execute(
+        "UPDATE crawl_queue SET priority = %s WHERE item_key = 'saved'",
+        [db.QUEUE_PRIORITY_INTERACTIVE],
+    )
+    admin_conn.execute(
+        "UPDATE crawl_queue SET requested_at = CURRENT_TIMESTAMP - INTERVAL '1 hour' "
+        "WHERE discogs_id = 'r1'"
+    )
+    admin_conn.commit()
+
+    claimed = db.claim_crawl_queue_batch(admin_conn, "worker-1", limit=2)
+    assert [r["item_key"] for r in claimed] == ["saved", None]
 
 
 def test_enqueue_crawl_queue_still_resurrects_a_done_row_for_an_enabled_crawler(admin_conn):

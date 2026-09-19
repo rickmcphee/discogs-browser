@@ -113,6 +113,18 @@ built here. It would be the first fairness mechanism in this queue, and
 halves the expedite it is protecting. Sizing that is a decision about the
 whole queue, not about the save button.
 
+That sort decides *which* rows a batch takes. A second, identical one decides
+the order the caller gets them back in, and conflating the two is how the
+guarantee quietly fails to hold: `UPDATE ... RETURNING` is under no obligation
+to return rows in the order its subquery selected them, and
+`_process_claimed_rows` walks that list sequentially. Without a final ordered
+`SELECT` over the claimed rows, an expedited row could be crawled *after* a
+routine one claimed beside it, and two saves could run out of FIFO order —
+within one batch, so bounded by `QUEUE_CLAIM_BATCH_SIZE`, and silently worse
+if that constant ever rises. What the lane promises is about when work runs,
+which makes the returned order part of the guarantee rather than a
+presentational detail.
+
 `crawl_queue_claimable_idx` is replaced by `crawl_queue_priority_claimable_idx`
 with `priority DESC` leading, matching the new sort. A new name, not an edited
 definition: `CREATE INDEX IF NOT EXISTS` under an unchanged name is a no-op
@@ -127,7 +139,8 @@ watching for.
 
 ### The save is insert-or-expedite, and what it does depends on the state
 
-Four outcomes, chosen by the row's status:
+Five outcomes, chosen by the row's status — the `pending` one splits by
+whether the row is already in the lane:
 
 - **No row** — insert one, at `QUEUE_PRIORITY_INTERACTIVE`, behind the
   unchanged enabled-store gate.
@@ -135,7 +148,10 @@ Four outcomes, chosen by the row's status:
   `pending_crawler_ids` reset the way every other revive resets them. A
   re-crawl means "price this against everything eligible", not "resume some
   earlier pass's narrowed set".
-- **`pending`** — raise the priority and leave everything else alone.
+- **`pending`, routine** — raise the priority and stamp `requested_at`:
+  joining the lane is when its place in the lane starts.
+- **`pending`, already expedited** — nothing at all. See `requested_at` below;
+  this is the case that makes a repeated save a true no-op.
 - **`in_progress`** — raise the priority and leave everything else alone,
   in a second statement.
 
@@ -320,10 +336,15 @@ than left to the no-row one.
 
 The claim takes a prioritised stock row ahead of a pending release row, which
 is the ordering guarantee stated above and the one an unchanged sort would
-silently lose, and is FIFO within the lane. That FIFO test claims one row at a
-time: the sort decides which rows a claim takes, and `RETURNING` is under no
-obligation to hand even those back in the sort's order — asserting on the
-order of a two-row batch passes or fails by luck.
+silently lose, and is FIFO within the lane.
+
+Both of those assert on a **multi-row batch**, because the returned order is
+the guarantee: a single-row claim would exercise the selection and never the
+ordering. They are built so that no ordering by `id` satisfies both — one
+expects the higher id first, the other the lower — so a final `SELECT` that
+dropped the sort and fell back to insertion order fails one of them whichever
+direction it fell. That is the shape a single test would have got wrong: the
+FIFO case alone passes under `ORDER BY id DESC` by luck.
 
 Routine revives — a stock sync's and a crawler enable's — put a prioritised
 row back to `0`, while the enable's *widen* and a deferral both leave it
