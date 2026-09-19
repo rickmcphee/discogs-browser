@@ -396,6 +396,17 @@ an already-expedited row leaves it untouched *and* leaves that row first in
 the lane ahead of one saved in between, while a save that promotes a routine
 `pending` row does advance it.
 
+The lock ordering takes **two** tests, and the distinction is the whole
+point. One proves the backfill takes the reconciliation lock at all, from the
+lock side: while a save holds it, the backfill blocks. That one passes
+whether the acquisition sits before or after the backfill's `UPDATE`s, since
+it reaches the lock either way — so on its own it would have let the
+dangerous ordering back in while reading as a deadlock regression test. The
+second asserts the order directly: the acquisition is replaced with a raise,
+and the row is read back on the same uncommitted transaction, where a revive
+that had already run would be visible. Moving the call below the `UPDATE`s
+fails it.
+
 `backend/tests/test_queue_router.py`: `/next` puts an expedited stock row
 ahead of a release row. The existing
 `test_next_returns_claim_order_with_releases_before_stock` cannot cover this —

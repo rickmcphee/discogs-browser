@@ -1766,17 +1766,14 @@ def test_the_sweep_waits_for_an_in_flight_save(admin_conn, app_user_url):
         sweeping.commit()
 
 
-def test_the_backfill_takes_the_reconciliation_lock_before_any_queue_row(admin_conn, app_user_url):
-    """The deadlock this prevents needs both orders to exist. A save takes the
-    advisory lock and then waits for a queue row; the enable path holds queue
-    rows from the backfill and then calls the sweep, which wants the same
-    lock. Postgres can resolve that cycle by killing the save, losing the
-    user's click and its stock_item_saves row.
+def test_the_backfill_waits_for_the_lock_a_save_is_holding(admin_conn, app_user_url):
+    """The backfill takes the reconciliation lock at all -- proven from the
+    lock side, like the sweep's test above.
 
-    Proven from the lock side, like the sweep's test above: while a save holds
-    the lock, the backfill blocks on it -- which can only happen if it asks
-    for the lock before touching a row. With the acquisition after its
-    UPDATEs, it would take row locks first and this would not raise."""
+    Note what this does *not* prove: the acquisition could sit after the
+    backfill's UPDATEs and this would still raise, because it would still
+    reach the lock eventually. The ordering is the property that prevents the
+    deadlock, and the test below is the one that pins it."""
     _wanted_and_unwanted_stock_rows(admin_conn)
     amazon = admin_conn.execute(
         "SELECT id FROM crawlers WHERE site_name = 'Amazon'"
@@ -1795,3 +1792,39 @@ def test_the_backfill_takes_the_reconciliation_lock_before_any_queue_row(admin_c
     with db.get_app_pool().connection() as enabling:
         db.backfill_crawl_queue_for_crawler(enabling, amazon)
         enabling.commit()
+
+
+def test_the_backfill_touches_no_queue_row_before_taking_the_lock(monkeypatch, admin_conn):
+    """The deadlock needs both orders to exist. A save takes the advisory lock
+    and then waits for a queue row; the enable path holds queue rows from the
+    backfill and then calls the sweep, which wants the same lock. Postgres can
+    resolve that cycle by killing the save, losing the user's click and its
+    stock_item_saves row.
+
+    So what has to be asserted is the *order*, not that the lock is taken:
+    when the acquisition happens, no row has been written yet. Proven by
+    making the acquisition itself fail and reading the row back on the same
+    (still open, uncommitted) transaction -- a revive that had already run
+    would be visible to it. Moving the call below the UPDATEs fails this,
+    which is exactly the mutation the lock-side test above survives."""
+    crawler_id = _make_catalog_and_crawler(admin_conn, "r1")
+    admin_conn.commit()
+    db.enqueue_crawl_queue(admin_conn, "r1")
+    admin_conn.execute("UPDATE crawl_queue SET status = 'done' WHERE discogs_id = 'r1'")
+    admin_conn.commit()
+
+    class _LockReached(Exception):
+        pass
+
+    def _fail_instead_of_locking(conn):
+        raise _LockReached
+
+    monkeypatch.setattr(db, "_lock_stock_queue_reconciliation", _fail_instead_of_locking)
+    with pytest.raises(_LockReached):
+        db.backfill_crawl_queue_for_crawler(admin_conn, crawler_id)
+
+    status = admin_conn.execute(
+        "SELECT status FROM crawl_queue WHERE discogs_id = 'r1'"
+    ).fetchone()["status"]
+    assert status == "done", "the backfill revived a row before asking for the lock"
+    admin_conn.rollback()
