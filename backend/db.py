@@ -466,9 +466,9 @@ CREATE INDEX IF NOT EXISTS crawl_queue_completed_idx
     ON crawl_queue (completed_at) WHERE status = 'done';
 
 -- The other half of the same problem. queue_summary's totals aggregate reads
--- every row that is not 'done', and crawl_queue_claimable_idx cannot serve it
--- (partial on 'pending', so it sees neither in_progress rows nor the deferred
--- ones). Without this the poll seq-scans the whole table to find what is
+-- every row that is not 'done', and crawl_queue_priority_claimable_idx cannot
+-- serve it (partial on 'pending', so it sees neither in_progress rows nor the
+-- deferred ones). Without this the poll seq-scans the whole table to find what is
 -- usually a handful of live rows. Partial on the complement of 'done', so it
 -- stays proportional to work in flight rather than to the catalog.
 CREATE INDEX IF NOT EXISTS crawl_queue_active_idx
@@ -714,7 +714,7 @@ CREATE INDEX IF NOT EXISTS stock_items_artist_lower_idx ON stock_items (LOWER(ar
 -- sites see after psycopg's own substitution -- see _the_comma_form_sql.
 -- Named differently from the catalog_artist_the_lower_idx/
 -- stock_items_artist_the_lower_idx they replace for the reason
--- crawl_queue_claimable_idx above records: CREATE INDEX IF NOT EXISTS under an
+-- crawl_queue_priority_claimable_idx above records: CREATE INDEX IF NOT EXISTS under an
 -- unchanged name is a no-op against a database that already holds the old
 -- expression, so a rename is what actually gets the punctuation fold indexed
 -- on a deployment that has run before. Drop-and-recreate under the old name
@@ -2729,7 +2729,18 @@ QUEUE_PRIORITY_INTERACTIVE = 1
 # pending since the last sync, the whole inventory deep -- exactly as slow as
 # before.
 #
-# Hence the two CASEs. On a 'pending' row available_at and pending_crawler_ids
+# requested_at is the third CASE, and it is what makes a repeated save a true
+# no-op rather than nearly one. A row already pending in the expedited lane has
+# nothing this call can add: bumping its requested_at would move the earlier
+# click *behind* saves made after it, reversing FIFO within the lane and
+# restarting the age the Queue tab reports -- for a PUT, which should be
+# idempotent, and for a request that changed nothing. It is the same reason
+# defer_crawl_queue_row and reclaim_stranded_crawl_queue_rows leave the column
+# alone: a row is not sent to the back for something that is not a new request.
+# Promoting a routine pending row does stamp it, because entering the lane is
+# when its position in the lane starts, and so does reviving a 'done' row.
+#
+# Hence the two other CASEs. On a 'pending' row available_at and pending_crawler_ids
 # are live state, not residue: a future available_at means some crawler's site
 # is in circuit-breaker cooldown, and pending_crawler_ids names the work that
 # pass deferred. Resetting them would send a worker straight back at a failing
@@ -2755,7 +2766,9 @@ def enqueue_crawl_queue_for_saved_stock_item(conn, item_key: str) -> int:
         SELECT %(item_key)s, %(priority)s WHERE {_enabled_stock_source_exists("%(item_key)s")}
         ON CONFLICT (item_key) DO UPDATE SET
             priority = %(priority)s,
-            status = 'pending', requested_at = CURRENT_TIMESTAMP,
+            status = 'pending',
+            requested_at = CASE WHEN crawl_queue.status = 'pending' AND crawl_queue.priority > 0
+                                THEN crawl_queue.requested_at ELSE CURRENT_TIMESTAMP END,
             claimed_by = NULL, claimed_at = NULL, completed_at = NULL,
             available_at = CASE WHEN crawl_queue.status = 'done'
                                 THEN CURRENT_TIMESTAMP ELSE crawl_queue.available_at END,
@@ -3225,8 +3238,14 @@ def _queue_totals(conn, stranded_after_seconds: float, library_only: bool = Fals
             -- The subset of those that sort ahead of the release rows rather
             -- than behind them, which is the one thing _queue_crawler_eta
             -- cannot read off the release/stock split any more.
+            -- Underscored and popped before serialization, like the per-crawler
+            -- bucket's own _claimable_stock_units, which this is the queue-wide
+            -- analogue of: an input to the ETA, not a figure the tab shows.
+            -- queue_summary returns `totals` verbatim, so anything left in it
+            -- is public API, and QueueTotals in the frontend's types.ts is the
+            -- declaration of that shape.
             COUNT(*) FILTER (WHERE status = 'pending' AND live AND actionable AND NOT held
-                             AND NOT is_release AND expedited) AS claimable_expedited_stock_rows,
+                             AND NOT is_release AND expedited) AS _claimable_expedited_stock_rows,
             COUNT(*) FILTER (WHERE status = 'pending' AND live AND actionable AND held) AS held_rows,
             COUNT(*) FILTER (WHERE status = 'pending' AND NOT (live AND actionable)) AS unactionable_rows,
             COUNT(*) FILTER (WHERE status = 'in_progress') AS in_progress_rows,
@@ -3419,6 +3438,11 @@ def queue_summary(conn, crawl_delay_seconds: float = 30.0, library_only: bool = 
     totals["claimable_units"] = sum(c["claimable_units"] for c in out)
     totals["held_units"] = sum(c["held_units"] for c in out)
     totals["in_progress_units"] = sum(c["in_progress_units"] for c in out)
+    # After the loop, because that is what consumed it. Popped for the same
+    # reason the bucket pops its own underscored keys: this dict is returned
+    # verbatim as the endpoint's `totals`, so leaving it in would publish an
+    # ETA intermediate as API and put QueueTotals out of date with the wire.
+    totals.pop("_claimable_expedited_stock_rows")
     return {
         "totals": totals,
         "crawlers": out,
@@ -3483,7 +3507,7 @@ def _queue_crawler_eta(bucket: dict, claimable_stock_units: int, totals: dict, d
     if not drain_per_second or not bucket["claimable_units"]:
         return None
     if claimable_stock_units == 0 and totals["claimable_stock_rows"] > 0:
-        position = totals["claimable_release_rows"] + totals["claimable_expedited_stock_rows"]
+        position = totals["claimable_release_rows"] + totals["_claimable_expedited_stock_rows"]
     else:
         position = totals["claimable_rows"]
     return position / drain_per_second

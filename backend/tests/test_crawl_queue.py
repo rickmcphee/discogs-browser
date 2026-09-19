@@ -1459,6 +1459,59 @@ def test_saving_an_item_expedites_a_pending_row_without_clearing_its_deferral(ad
     assert row["held"]
 
 
+def test_saving_an_already_expedited_item_again_keeps_its_place_in_the_lane(admin_conn, app_user_url):
+    """A repeated save has nothing to add to a row already pending in the
+    lane, so it must change nothing -- the endpoint is a PUT. Bumping
+    requested_at would move the earlier click behind saves made after it and
+    restart the age the Queue tab reports."""
+    _wanted_and_unwanted_stock_rows(admin_conn)
+    _stock_item(admin_conn, "second", "C", "V", admin_conn.execute(
+        "SELECT id FROM crawlers WHERE site_name = 'Store'").fetchone()["id"])
+    admin_conn.commit()
+
+    with db.get_app_pool().connection() as conn:
+        db.enqueue_crawl_queue_for_saved_stock_item(conn, "wanted")
+        conn.commit()
+    first_at = admin_conn.execute(
+        "SELECT requested_at FROM crawl_queue WHERE item_key = 'wanted'"
+    ).fetchone()["requested_at"]
+    with db.get_app_pool().connection() as conn:
+        db.enqueue_crawl_queue_for_saved_stock_item(conn, "second")
+        conn.commit()
+    with db.get_app_pool().connection() as conn:
+        db.enqueue_crawl_queue_for_saved_stock_item(conn, "wanted")
+        conn.commit()
+
+    assert admin_conn.execute(
+        "SELECT requested_at FROM crawl_queue WHERE item_key = 'wanted'"
+    ).fetchone()["requested_at"] == first_at
+    # The consequence that makes it matter: the re-saved item is still first.
+    [earlier] = db.claim_crawl_queue_batch(admin_conn, "worker-1", limit=1)
+    assert earlier["item_key"] == "wanted"
+
+
+def test_promoting_a_routine_pending_row_does_stamp_its_request_time(admin_conn, app_user_url):
+    """The other side of that rule. A row joining the lane starts its position
+    in the lane now, so the save that promotes it does bump requested_at --
+    only a row already expedited is left alone."""
+    _wanted_and_unwanted_stock_rows(admin_conn)
+    admin_conn.execute(
+        "UPDATE crawl_queue SET requested_at = CURRENT_TIMESTAMP - INTERVAL '1 hour' "
+        "WHERE item_key = 'wanted'"
+    )
+    admin_conn.commit()
+    before = admin_conn.execute(
+        "SELECT requested_at FROM crawl_queue WHERE item_key = 'wanted'"
+    ).fetchone()["requested_at"]
+
+    with db.get_app_pool().connection() as conn:
+        db.enqueue_crawl_queue_for_saved_stock_item(conn, "wanted")
+        conn.commit()
+    assert admin_conn.execute(
+        "SELECT requested_at FROM crawl_queue WHERE item_key = 'wanted'"
+    ).fetchone()["requested_at"] > before
+
+
 def test_saving_an_item_stamps_priority_on_an_in_progress_row_and_nothing_else(admin_conn, app_user_url):
     """A worker holding the row is already crawling what the user asked for --
     but only if that pass finishes. Everything the claim set stays exactly as

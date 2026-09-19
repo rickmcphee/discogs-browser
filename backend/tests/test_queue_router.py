@@ -533,6 +533,11 @@ def test_summary_endpoint_returns_the_payload_for_an_admin(pg_test_db, authed_cl
     assert body["totals"]["claimable_rows"] == 0
     assert body["stranded_after_seconds"] >= db.QUEUE_STRANDED_FLOOR_SECONDS
     assert "pool_running" in body and "generated_at" in body
+    # `totals` is returned verbatim, so anything _queue_totals computes for its
+    # own use is API unless it is popped. QueueTotals in the frontend's types.ts
+    # is the declaration of this shape, and it does not carry the ETA's private
+    # expedited count.
+    assert not [k for k in body["totals"] if k.startswith("_")]
 
 
 def test_summary_bounds_its_own_runtime_server_side(pg_test_db, authed_client_factory):

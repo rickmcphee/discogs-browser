@@ -66,6 +66,15 @@ makes that false for an expedited row, so a release-only crawler's ETA would
 come out short by exactly the rows most likely to have just arrived. It takes
 the new count.
 
+That count is named `_claimable_expedited_stock_rows` and popped before the
+summary is returned, following the per-crawler bucket's own
+`_claimable_stock_units` — which is the same quantity one scope down.
+`queue_summary` hands back its `totals` dict verbatim, so a key left in it is
+`GET /api/queue/summary`'s public shape, declared by `QueueTotals` in the
+frontend's `types.ts`. An ETA intermediate is not that, and the endpoint test
+asserts no underscored key survives rather than naming this one, so the next
+such value is caught without anyone remembering this paragraph.
+
 ## Design
 
 ### Priority leads the sort, ahead of the release/stock split
@@ -170,12 +179,25 @@ The other columns need no branch. `claimed_by`, `claimed_at` and `completed_at`
 are already NULL on a pending row (every path back to `pending` nulls them), so
 writing NULL is a no-op there and a revive on a `done` row.
 
-`requested_at` is bumped in both branches *of this statement* — the insert and
-both arms of its `DO UPDATE`. Under the new sort it only breaks ties within
-the priority lane, where FIFO across saves is what you want: the first item
-saved is the first priced. The `in_progress` statement above is the one place
-it is deliberately left alone, for a reason that does not apply here: that row
-is mid-claim, and its age is something the Queue tab is already reporting.
+`requested_at` is stamped by the insert, by a `done` revive, and when a
+routine `pending` row is promoted — the three cases where something actually
+changes. Under the new sort it only breaks ties within the priority lane,
+where FIFO across saves is what you want: the first item saved is the first
+priced, and a row joining the lane starts its position there now.
+
+It is left alone in the two cases where nothing changes, and both matter:
+
+- **A row already pending in the lane.** A repeated save — a retry, a second
+  tab, an unsave and re-save — has nothing to add. Bumping would move the
+  earlier click *behind* saves made after it, reversing the FIFO above, and
+  restart the age the Queue tab reports. The endpoint is a `PUT`; with this
+  branch a repeat is a true no-op on every column rather than nearly one.
+- **A row mid-claim.** Its age is already being reported, and a claim in
+  flight has not just been requested.
+
+Both are the rule `defer_crawl_queue_row` and `reclaim_stranded_crawl_queue_rows`
+already follow, applied to a save instead of a hand-back: a row is not sent to
+the back of its lane for something that is not a new request.
 
 ### Reviving on save reverses an earlier decision, deliberately
 
@@ -312,12 +334,19 @@ A save on an `in_progress` row stamps the priority and moves nothing else —
 one leaves the row `pending` and still expedited, which is the whole reason
 that case cannot be skipped.
 
+`requested_at` is pinned from both directions, since one test alone is
+satisfied by a statement that always does the same thing: a repeated save of
+an already-expedited row leaves it untouched *and* leaves that row first in
+the lane ahead of one saved in between, while a save that promotes a routine
+`pending` row does advance it.
+
 `backend/tests/test_queue_router.py`: `/next` puts an expedited stock row
 ahead of a release row. The existing
 `test_next_returns_claim_order_with_releases_before_stock` cannot cover this —
 it uses routine rows only, so it passes with or without the priority key. The
 release-only crawler's ETA counts the expedited stock rows ahead of it and
-still excludes the routine ones behind it.
+still excludes the routine ones behind it. And the summary endpoint returns no
+underscored key, which is the guard on `totals` being public API.
 
 `backend/tests/test_stock_router.py`: the endpoint queues an item whose row
 was `done`, and repeated saves stay idempotent.
