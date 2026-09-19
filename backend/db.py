@@ -413,20 +413,33 @@ ALTER TABLE stock_item_identities ADD COLUMN IF NOT EXISTS record_key TEXT;
 ALTER TABLE crawl_queue ALTER COLUMN discogs_id DROP NOT NULL;
 ALTER TABLE crawl_queue ADD COLUMN IF NOT EXISTS item_key TEXT REFERENCES stock_item_identities(item_key);
 
--- Serves claim_crawl_queue_batch's WHERE/ORDER BY directly: leading
--- (item_key IS NOT NULL) matches the release-before-stock sort, then
--- requested_at, id for FIFO within a kind. Partial so it stays small as rows
--- accumulate 'done' history. available_at is deliberately not a key column --
--- deferred rows are a small minority, so keeping the index ordered for the
--- sort beats indexing the filter. Named differently from the
--- crawl_queue_pending_idx it replaces because CREATE INDEX IF NOT EXISTS
--- under an unchanged name is a no-op against a database that already has the
--- old definition. Placed after item_key exists (not immediately after
--- CREATE TABLE crawl_queue above) since it indexes that column and a fresh
--- install has no item_key column until the ALTER just above runs.
+-- Higher is claimed sooner. Two values are in use: 0, every routine enqueue,
+-- and QUEUE_PRIORITY_INTERACTIVE, which only the save path writes -- a user
+-- asking what the marketplaces want for this one record, now. It is a
+-- property of the request rather than of the item, so the routine revives
+-- reset it; see enqueue_crawl_queue_for_saved_stock_item.
+-- NOT NULL DEFAULT rather than nullable so there is no third state for a
+-- reader to interpret, and so a rolling deploy's old binary -- which names
+-- neither this column nor a default for it -- writes the routine value.
+ALTER TABLE crawl_queue ADD COLUMN IF NOT EXISTS priority INTEGER NOT NULL DEFAULT 0;
+
+-- Serves claim_crawl_queue_batch's WHERE/ORDER BY directly: leading priority
+-- DESC matches the expedited-first sort, then (item_key IS NOT NULL) for the
+-- release-before-stock split, then requested_at, id for FIFO within a kind.
+-- Partial so it stays small as rows accumulate 'done' history. available_at is
+-- deliberately not a key column -- deferred rows are a small minority, so
+-- keeping the index ordered for the sort beats indexing the filter. Named
+-- differently from the crawl_queue_claimable_idx it replaces (which was itself
+-- named differently from crawl_queue_pending_idx, for this same reason)
+-- because CREATE INDEX IF NOT EXISTS under an unchanged name is a no-op
+-- against a database that already has the old definition. Placed after
+-- item_key and priority exist (not immediately after CREATE TABLE crawl_queue
+-- above) since it indexes both and a fresh install has neither column until
+-- the ALTERs just above run.
 DROP INDEX IF EXISTS crawl_queue_pending_idx;
-CREATE INDEX IF NOT EXISTS crawl_queue_claimable_idx
-    ON crawl_queue ((item_key IS NOT NULL), requested_at, id)
+DROP INDEX IF EXISTS crawl_queue_claimable_idx;
+CREATE INDEX IF NOT EXISTS crawl_queue_priority_claimable_idx
+    ON crawl_queue (priority DESC, (item_key IS NOT NULL), requested_at, id)
     WHERE status = 'pending';
 
 -- pending_crawler_ids is the per-pass progress record: NULL means "every
@@ -2440,7 +2453,7 @@ def backfill_crawl_queue_for_crawler(conn, crawler_id: int) -> int:
         UPDATE crawl_queue SET
             status = 'pending', requested_at = CURRENT_TIMESTAMP,
             available_at = CURRENT_TIMESTAMP, claimed_by = NULL, claimed_at = NULL,
-            completed_at = NULL, pending_crawler_ids = ARRAY[%(crawler_id)s]
+            completed_at = NULL, pending_crawler_ids = ARRAY[%(crawler_id)s], priority = 0
         WHERE id IN (
             SELECT id FROM crawl_queue
             WHERE status = 'done'
@@ -2602,6 +2615,18 @@ def _enabled_stock_source_exists(item_key_expr: str) -> str:
 # "price this target with everything eligible", not "resume whatever narrowed
 # set some earlier pass deferred".
 #
+# The stock-item revive below also resets priority, as does the 'done' arm of
+# backfill_crawl_queue_for_crawler -- the two routine revives. The rule to
+# hold is that priority resets wherever requested_at does, and for the same
+# reason: both say "this is a fresh, routine request", and a row is expedited
+# because a user asked for it once, not because the item is special. That also
+# settles the other direction without a second rule. defer_crawl_queue_row,
+# reclaim_stranded_crawl_queue_rows and revert_crawl_queue_claim all leave
+# requested_at alone precisely because they are handing a row back rather than
+# requesting it, and they leave priority alone for the same reason: a saved
+# item's row deferred behind a cooldown, stranded by a dead Machine or handed
+# back at shutdown is still the row someone is waiting on.
+#
 # There is deliberately no enabled-crawler gate here any more. A queue row
 # names no crawler, so there is nothing to gate -- eligibility is resolved at
 # dispatch by get_eligible_crawlers() against live crawlers state.
@@ -2630,7 +2655,7 @@ def enqueue_crawl_queue_for_stock_item(conn, item_key: str, library_only: bool =
         ON CONFLICT (item_key) DO UPDATE SET
             status = 'pending', requested_at = CURRENT_TIMESTAMP,
             available_at = CURRENT_TIMESTAMP, claimed_by = NULL, claimed_at = NULL,
-            completed_at = NULL, pending_crawler_ids = NULL
+            completed_at = NULL, pending_crawler_ids = NULL, priority = 0
         WHERE crawl_queue.status = 'done'
         """,
         {"item_key": item_key},
@@ -2659,27 +2684,73 @@ def _lock_stock_queue_reconciliation(conn):
 # once per store refresh. Under crawl_library_only that leaves a hole: the
 # switch-on sweep deleted the item's row (or _sync_stock never inserted one)
 # while nobody wanted it, so the "next claim picks it up" promise the setting
-# makes only held while the row was still pending. These two close it.
+# makes only held while the row was still pending. Both helpers close it.
 #
-# Insert-if-absent only, deliberately not the revive enqueue_crawl_queue_for_
-# stock_item does. A 'done' row is the record that the item was already
-# priced; reviving it here would make every save a marketplace re-crawl, and
-# the next stock sync revives it with everything else anyway. What is
-# restored is exactly the row that is missing.
+# The save also expedites, which the library sync deliberately does not: one
+# is a click on one record, the other is a sync's worth of them.
 #
 # Both keep the enabled-store gate and neither asks library_only: with the
-# setting off every live item already has a row, so these are no-ops there
-# rather than something to switch off.
+# setting off every live item already has a row, so the *insert* is a no-op
+# there rather than something to switch off.
+
+
+# Only the save path writes this. Anything a schedule, a sync or an admin
+# toggle enqueues stays at 0 -- see claim_crawl_queue_batch's sort for what
+# the lane costs the rows behind it.
+QUEUE_PRIORITY_INTERACTIVE = 1
+
+
+# Insert-or-expedite. A save is a user asking what the marketplaces want for
+# one record, now, so it does whatever that row's state needs to make the
+# answer the next thing crawled:
+#
+#   no row      -- insert one, expedited, behind the unchanged store gate
+#   'done'      -- revive it: already priced, but priced during some sync days
+#                  ago, which is not the comparison being asked for
+#   'pending'   -- raise the priority and change nothing else
+#   in_progress -- nothing; a worker has it right now
+#
+# The 'pending' case is the common one and the reason reviving alone would not
+# have done: with crawl_library_only off every live item already has a row, so
+# a save that only touched 'done' rows would leave the ordinary case -- a row
+# pending since the last sync, the whole inventory deep -- exactly as slow as
+# before.
+#
+# Hence the two CASEs. On a 'pending' row available_at and pending_crawler_ids
+# are live state, not residue: a future available_at means some crawler's site
+# is in circuit-breaker cooldown, and pending_crawler_ids names the work that
+# pass deferred. Resetting them would send a worker straight back at a failing
+# site and re-run crawlers that already finished for this target. Priority
+# alone is the right lever -- first in line the moment it is claimable, and not
+# before. On a 'done' row they are reset exactly as every other revive resets
+# them: a re-crawl means "everything eligible", not "resume a narrowed set".
+# The three claim columns need no CASE -- every path back to 'pending' nulls
+# them, so writing NULL is a no-op there and a revive on a 'done' row.
+#
+# This reverses 2026-09-05-library-only-marketplace-crawl-design.md's choice of
+# insert-if-absent here, which reasoned that the next stock sync revives a
+# 'done' row with everything else. It does, and that wait is what this removes.
+#
+# The rowcount changed meaning with it: it was "a row was inserted", it is now
+# "the item is queued because of this call". Nothing in production reads it.
 def enqueue_crawl_queue_for_saved_stock_item(conn, item_key: str) -> int:
     _lock_stock_queue_reconciliation(conn)
     stock_source_gate = _enabled_stock_source_exists("%(item_key)s")
     return conn.execute(
         f"""
-        INSERT INTO crawl_queue (item_key)
-        SELECT %(item_key)s WHERE {stock_source_gate}
-        ON CONFLICT (item_key) DO NOTHING
+        INSERT INTO crawl_queue (item_key, priority)
+        SELECT %(item_key)s, %(priority)s WHERE {stock_source_gate}
+        ON CONFLICT (item_key) DO UPDATE SET
+            priority = %(priority)s,
+            status = 'pending', requested_at = CURRENT_TIMESTAMP,
+            claimed_by = NULL, claimed_at = NULL, completed_at = NULL,
+            available_at = CASE WHEN crawl_queue.status = 'done'
+                                THEN CURRENT_TIMESTAMP ELSE crawl_queue.available_at END,
+            pending_crawler_ids = CASE WHEN crawl_queue.status = 'done'
+                                       THEN NULL ELSE crawl_queue.pending_crawler_ids END
+        WHERE crawl_queue.status <> 'in_progress'
         """,
-        {"item_key": item_key},
+        {"item_key": item_key, "priority": QUEUE_PRIORITY_INTERACTIVE},
     ).rowcount
 
 
@@ -2756,12 +2827,18 @@ def claim_crawl_queue_batch(conn, worker_id: str, limit: int, library_only: bool
               -- crawler, and _drain_one_batch resolves the eligible set against
               -- live crawlers state per row instead.
               AND (item_key IS NULL OR {stock_source_gate})
-            -- (item_key IS NOT NULL) leads the sort so every pending release
-            -- row (FALSE) sorts ahead of every pending stock-item row (TRUE),
+            -- priority DESC leads, ahead of the release/stock split rather
+            -- than behind it, and that placement is the point: the split
+            -- below exists so bulk work cannot outrank a person, and an
+            -- expedited row is one person waiting on one record. Only the
+            -- save path writes a non-zero priority, so nothing scheduled,
+            -- synced or admin-triggered can reach this lane.
+            -- Then (item_key IS NOT NULL), so every pending release row
+            -- (FALSE) sorts ahead of every pending stock-item row (TRUE),
             -- regardless of which was enqueued first -- a large stock-sync
             -- enqueue burst must never delay a user's own collection crawl
             -- behind it. Priority within one LIMIT'd batch, not exclusion.
-            ORDER BY (item_key IS NOT NULL), requested_at, id
+            ORDER BY priority DESC, (item_key IS NOT NULL), requested_at, id
             LIMIT %(limit)s
             FOR UPDATE SKIP LOCKED
         )
@@ -2913,8 +2990,9 @@ def reclaim_stranded_crawl_queue_rows(conn, crawl_delay_seconds: float) -> int:
 # is mid-crawl and will mark_crawl_queue_done() when it finishes; deleting it
 # would leave that UPDATE matching nothing while the crawl still writes its
 # listing, so the pair would look never-crawled to the next sync. 'done' rows
-# are the record of past crawls and are never re-claimed -- only
-# enqueue_crawl_queue_for_stock_item resurrects one, and it now refuses to.
+# are the record of past crawls and are never re-claimed until something
+# resurrects one -- a stock sync's enqueue_crawl_queue_for_stock_item, or a
+# save, which re-prices what it revives at the front of the queue.
 def delete_dead_stock_crawl_queue_rows(conn, library_only: bool = False) -> int:
     # Taken for the source-only sweep too, not just the library-only one:
     # the same race exists with a store being re-enabled while a save lands,
@@ -3399,7 +3477,7 @@ def queue_next_for_crawler(conn, crawler_id: int, limit: int, library_only: bool
               WHERE c.id = %(crawler_id)s AND c.enabled AND c.crawler_type = 'release'
                 AND (cq.discogs_id IS NOT NULL OR NOT c.requires_discogs_release)
           )
-        ORDER BY (cq.item_key IS NOT NULL), cq.requested_at, cq.id
+        ORDER BY cq.priority DESC, (cq.item_key IS NOT NULL), cq.requested_at, cq.id
         LIMIT %(limit)s
         """,
         {"crawler_id": crawler_id, "limit": limit},

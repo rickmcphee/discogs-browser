@@ -107,8 +107,10 @@ def save_stock_item(item_key: str, request: Request):
     user_id = request.state.user_id
     with db.user_scope(user_id) as conn:
         db.save_stock_item(conn, user_id, item_key)
-        # A saved item is wanted, so it gets a queue row if it lacks one --
-        # the row library-only crawling may have swept while nobody wanted it.
+        # Saving is a user asking what the marketplaces want for this record,
+        # so the crawl goes to the front of the queue: a row if it lacks one
+        # (the row library-only crawling may have swept while nobody wanted
+        # it), a revive if it was already priced, and an expedite either way.
         db.enqueue_crawl_queue_for_saved_stock_item(conn, item_key)
         conn.commit()
     return {"saved": True}

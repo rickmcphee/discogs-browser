@@ -1452,10 +1452,11 @@ def test_stock_stats_empty_when_nothing_matches(pg_test_db, authed_client_factor
     assert body == {"total": 0, "sources": []}
 
 
-def test_put_stock_saved_queues_a_marketplace_crawl_for_an_item_with_no_queue_row(pg_test_db, authed_client_factory):
-    """Library-only crawling sweeps the rows of items nobody wants; saving one
-    is how it becomes wanted, so the save restores its row. Insert-if-absent:
-    a second save, or a save of an item already priced, changes nothing."""
+def test_put_stock_saved_queues_an_expedited_marketplace_crawl(pg_test_db, authed_client_factory):
+    """Saving asks what the marketplaces want for this record, now: the item
+    gets a pending row at the interactive priority whether it had none (the
+    one library-only crawling swept while nobody wanted it) or had already
+    been priced. Idempotent across repeated saves."""
     crawler_id = _make_crawler()
     with db.get_admin_pool().connection() as conn:
         user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
@@ -1476,5 +1477,8 @@ def test_put_stock_saved_queues_a_marketplace_crawl_for_an_item_with_no_queue_ro
         assert r.status_code == 200
 
     with db.get_admin_pool().connection() as conn:
-        rows = conn.execute("SELECT item_key, status FROM crawl_queue ORDER BY item_key").fetchall()
-    assert sorted((r["item_key"], r["status"]) for r in rows) == sorted([(absent_key, "pending"), (done_key, "done")])
+        rows = conn.execute("SELECT item_key, status, priority FROM crawl_queue ORDER BY item_key").fetchall()
+    assert sorted((r["item_key"], r["status"], r["priority"]) for r in rows) == sorted([
+        (absent_key, "pending", db.QUEUE_PRIORITY_INTERACTIVE),
+        (done_key, "pending", db.QUEUE_PRIORITY_INTERACTIVE),
+    ])
