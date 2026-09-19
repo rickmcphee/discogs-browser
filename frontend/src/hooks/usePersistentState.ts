@@ -57,11 +57,15 @@ export function removeStored(key: string): void {
  *
  * `parse` returns null for a value it does not recognise, and `fallback` is
  * used instead -- via `??`, not `||`, since `''` is a meaningful stored value
- * (the artist filter's "All"). It runs once, on mount: `key` is expected to be
- * fixed for the component's lifetime, which holds for every caller here (a
- * literal, or a `scope` prop App pins per mounted instance). A key that
- * changed later would write the current value under the new name without
- * reading what is stored there.
+ * (the artist filter's "All").
+ *
+ * Storage is *read* once, on mount, so `key` is expected to be fixed for the
+ * component's lifetime -- which holds for every caller here (a literal, or a
+ * `scope` prop App pins per mounted instance). A key that changed later would
+ * write the current value under the new name without reading what is stored
+ * there. `parse` itself is not mount-only: it is called again on every render
+ * to gate the write below, which is what lets StockBrowser's sort parse close
+ * over the filter that is active now rather than the one it mounted under.
  *
  * Writes go through `parse` too, so a value the hook would refuse to restore
  * is never stored over one it would. App's `view` needs that -- it also holds

@@ -14,15 +14,36 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-// The methods live on Storage.prototype, and jsdom's localStorage instance
-// takes an own-property spy without ever consulting it -- so a spy installed
-// on the instance silently does nothing, and a test written that way passes
-// whether or not the code under test guards anything. Break the prototype.
+// A storage method lives on its object's prototype, and the instance takes an
+// own-property spy without ever consulting it -- so a spy installed on
+// `localStorage` itself silently does nothing, and a test written that way
+// passes whether or not the code under test guards anything.
+//
+// Which prototype that is depends on the environment, so it is asked for
+// rather than named: jsdom's own Storage instance keeps its methods on
+// `Storage.prototype`, while the MemoryStorage fallback setup.ts installs
+// where jsdom leaves localStorage undefined keeps them on its own class
+// prototype, which does not inherit from Storage at runtime.
+function storagePrototype(): Storage {
+  return Object.getPrototypeOf(window.localStorage) as Storage
+}
+
 function breakStorage(method: 'getItem' | 'setItem', message: string) {
-  vi.spyOn(Storage.prototype, method).mockImplementation(() => {
+  vi.spyOn(storagePrototype(), method).mockImplementation(() => {
     throw new Error(message)
   })
 }
+
+describe('the storage-failure helper', () => {
+  // Twice now a spy has been installed somewhere the code under test never
+  // looks, leaving every failure-path test below passing without a throw. This
+  // asserts the helper does what its name says, whichever storage the
+  // environment provides.
+  it('actually makes storage throw', () => {
+    breakStorage('getItem', 'boom')
+    expect(() => localStorage.getItem('anything')).toThrow('boom')
+  })
+})
 
 describe('usePersistentState', () => {
   it('restores a stored value its parse recognises', () => {

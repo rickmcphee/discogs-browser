@@ -189,10 +189,13 @@ afterEach(() => {
 })
 
 // See usePersistentState.test.tsx: a spy on the localStorage *instance* is
-// never consulted, so it has to go on Storage.prototype -- otherwise the test
-// passes without the code under test ever meeting a throw.
+// never consulted, so it goes on that object's prototype -- asked for rather
+// than named, since jsdom's Storage and setup.ts's MemoryStorage fallback do
+// not share one. Otherwise the test passes without the code under test ever
+// meeting a throw.
 function breakStorage(method: 'getItem' | 'setItem', message: string) {
-  storageSpies.push(vi.spyOn(Storage.prototype, method).mockImplementation(() => {
+  const prototype = Object.getPrototypeOf(window.localStorage) as Storage
+  storageSpies.push(vi.spyOn(prototype, method).mockImplementation(() => {
     throw new Error(message)
   }))
 }

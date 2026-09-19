@@ -203,20 +203,30 @@ Out of scope:
   in the UI to undo it.
 
   Testing this needs a note of its own, because the obvious way does not
-  work: jsdom's `localStorage` takes a `vi.spyOn(window.localStorage, …)`
-  without ever consulting it, since the methods live on `Storage.prototype`.
-  A test written that way passes whether or not anything is guarded — it did
-  here, on the first attempt, until a mutation check caught it. The spy goes
-  on `Storage.prototype`.
+  work: `localStorage` takes a `vi.spyOn(window.localStorage, …)` without ever
+  consulting it, since a storage method lives on its object's prototype. A
+  test written that way passes whether or not anything is guarded — it did
+  here, on the first attempt, until a mutation check caught it. Nor can the
+  spy simply name `Storage.prototype`: `setup.ts` installs a `MemoryStorage`
+  fallback where jsdom leaves `localStorage` undefined, and implementing the
+  `Storage` *type* does not put that class in `Storage.prototype`'s chain at
+  runtime — so naming it would restore the vacuum in exactly the environment
+  the fallback exists for. The spy goes on
+  `Object.getPrototypeOf(window.localStorage)`, and a test of its own asserts
+  the helper really does make storage throw.
 
-- **`parse` runs once, on mount.** The key is expected to be fixed for the
-  component's lifetime, which holds for every caller: the literals, and the
-  `scope` prop that App pins per mounted instance (both `RecordBrowser`s stay
-  mounted for the session, one per scope, hidden by CSS rather than
-  unmounted). A key that changed later would write the current value under the
-  new name without reading what is stored there — documented at the hook
-  rather than defended against, since defending against it means re-reading
-  storage mid-session and clobbering state the user is looking at.
+- **Storage is read once, on mount; `parse` is not mount-only.** The read
+  happens in the `useState` initialiser, so the key is expected to be fixed
+  for the component's lifetime — which holds for every caller: the literals,
+  and the `scope` prop that App pins per mounted instance (both
+  `RecordBrowser`s stay mounted for the session, one per scope, hidden by CSS
+  rather than unmounted). A key that changed later would write the current
+  value under the new name without reading what is stored there — documented
+  at the hook rather than defended against, since defending against it means
+  re-reading storage mid-session and clobbering state the user is looking at.
+  `parse` itself runs again on every render, to gate the write; that is
+  deliberate and is what lets `StockBrowser`'s sort parse answer for the
+  filter that is active now rather than the one captured at mount.
 
 ## Testing
 
