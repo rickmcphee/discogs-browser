@@ -232,9 +232,11 @@ the end.
 of the paragraph above no longer describes what ships.
 `enqueue_crawl_queue_for_saved_stock_item` is insert-**or-expedite** now: it
 revives a `done` row, raises an already-`pending` row's priority without
-disturbing a circuit-breaker deferral that row is carrying, still leaves an
-`in_progress` row alone, and writes `QUEUE_PRIORITY_INTERACTIVE` in every case
-so the claim takes the row next. Both observations above still hold — a save
+disturbing a circuit-breaker deferral that row is carrying, and writes
+`QUEUE_PRIORITY_INTERACTIVE` in every case so the claim takes the row next.
+A row a worker is mid-crawl on is the one exception, and only a partial one:
+it keeps its status and every column the claim set, but takes the priority
+too, so that a deferral or a reclaim hands it back still expedited. Both observations above still hold — a save
 is a re-crawl, and the next stock sync would have revived the row anyway —
 they are simply no longer reasons to refuse: the re-crawl is what the click is
 for, and that wait is what the change removes. Its rowcount changed meaning

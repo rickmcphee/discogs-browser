@@ -170,9 +170,12 @@ The other columns need no branch. `claimed_by`, `claimed_at` and `completed_at`
 are already NULL on a pending row (every path back to `pending` nulls them), so
 writing NULL is a no-op there and a revive on a `done` row.
 
-`requested_at` is bumped in both branches. Under the new sort it only breaks
-ties within the priority lane, where FIFO across saves is what you want: the
-first item saved is the first priced.
+`requested_at` is bumped in both branches *of this statement* — the insert and
+both arms of its `DO UPDATE`. Under the new sort it only breaks ties within
+the priority lane, where FIFO across saves is what you want: the first item
+saved is the first priced. The `in_progress` statement above is the one place
+it is deliberately left alone, for a reason that does not apply here: that row
+is mid-claim, and its age is something the Queue tab is already reporting.
 
 ### Reviving on save reverses an earlier decision, deliberately
 
@@ -281,13 +284,17 @@ this deploys against.
 `backend/tests/test_crawl_queue.py`: a save inserts a missing row at the
 interactive priority; revives a `done` row and prioritises it; raises a
 `pending` row's priority while leaving its `available_at` hold and its
-narrowed `pending_crawler_ids` intact; leaves an `in_progress` row untouched.
-The enabled-store gate is asserted on both paths, because it guards the
-expedite as well as the insert and only one of those is obvious: it lives in
-the `INSERT ... SELECT`, so a false gate yields no source row, hence no
-conflict and no `DO UPDATE`. A `done` row is the one way an unstocked item
-still has a row to revive — the dead-row sweep takes `pending` only — so
-that case is tested directly rather than left to the no-row one.
+narrowed `pending_crawler_ids` intact; and stamps an `in_progress` row's
+priority alone (below).
+The enabled-store gate is asserted on all three paths, because it guards the
+expedite as well as the insert and neither of those is obvious. In the first
+statement it lives in the `INSERT ... SELECT`, so a false gate yields no
+source row, hence no conflict and no `DO UPDATE` — the revive is gated by
+something that reads like an insert-only clause. In the second it is written
+on the `UPDATE` itself, so it is gated only because it was remembered. A
+`done` row is the one way an unstocked item still has a row to revive — the
+dead-row sweep takes `pending` only — so that case is tested directly rather
+than left to the no-row one.
 
 The claim takes a prioritised stock row ahead of a pending release row, which
 is the ordering guarantee stated above and the one an unchanged sort would
