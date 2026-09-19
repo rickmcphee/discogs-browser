@@ -1698,3 +1698,87 @@ describe('StockBrowser Source filter', () => {
     expect(await screen.findByRole('img', { name: /items by source/i })).toBeInTheDocument()
   })
 })
+
+describe('StockBrowser persisted selections', () => {
+  it('restores a stored artist filter into the first request it makes', async () => {
+    localStorage.setItem('artistFilter_store', 'NAILS')
+    render(<StockBrowser />)
+    await waitFor(() => expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ artist: 'NAILS' })))
+    expect(screen.getByRole('button', { name: 'NAILS' }).className).toContain('bg-white')
+  })
+
+  it('clears a stored artist the store no longer lists, and takes the All transition with it', async () => {
+    getStockArtists.mockResolvedValue(['Rob Zombie'])
+    localStorage.setItem('artistFilter_store', 'NAILS')
+    localStorage.setItem('sortField_store', 'title')
+    render(<StockBrowser />)
+    await waitFor(() => expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ artist: undefined, sort: 'artist' })))
+    expect(localStorage.getItem('artistFilter_store')).toBe('')
+  })
+
+  it('keeps a restored artist visible in the sidebar when the artist list never arrives', async () => {
+    // See RecordBrowser's copy: a failed getStockArtists must not leave the
+    // rows filtered by an artist the sidebar does not show.
+    getStockArtists.mockRejectedValue(new Error('offline'))
+    localStorage.setItem('artistFilter_store', 'NAILS')
+    render(<StockBrowser />)
+    await waitFor(() => expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ artist: 'NAILS' })))
+    expect(screen.getByRole('button', { name: 'NAILS' }).className).toContain('bg-white')
+    expect(screen.getByRole('button', { name: 'All' }).className).not.toContain('bg-white')
+  })
+
+  it('persists a sort chosen from a column header, field and direction both, and restores it on remount', async () => {
+    const { unmount } = render(<StockBrowser />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    fireEvent.click(screen.getByText(/Cost/))
+    fireEvent.click(screen.getByText(/Cost/))
+    await waitFor(() => expect(localStorage.getItem('sortField_store')).toBe('price'))
+    expect(localStorage.getItem('sortOrder_store')).toBe('desc')
+    unmount()
+    getStock.mockClear()
+    render(<StockBrowser />)
+    await waitFor(() => expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ sort: 'price', order: 'desc' })))
+  })
+
+  it('falls back to Artist when the stored sort names a field this build no longer offers', async () => {
+    localStorage.setItem('sortField_store', 'shipping')
+    localStorage.setItem('sortOrder_store', 'upwards')
+    render(<StockBrowser />)
+    await waitFor(() => expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ sort: 'artist', order: 'asc' })))
+  })
+
+  it('drops a stored Price sort when the filter restored beside it has no Price column', async () => {
+    // The column exists only under Collection, and the backend degrades the
+    // sort to artist order outside it -- so restoring the pair as stored would
+    // claim an order the rows are not in, with no control saying so.
+    localStorage.setItem('stockFilter_store', 'wantlist')
+    localStorage.setItem('sortField_store', 'discogs_price')
+    render(<StockBrowser />)
+    await waitFor(() => expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ libraryScope: 'wantlist', sort: 'artist' })))
+    expect(screen.queryByText(/Price/)).toBeNull()
+    expect(localStorage.getItem('sortField_store')).toBe('artist')
+  })
+
+  it('restores a stored Price sort under the Collection filter it belongs to', async () => {
+    localStorage.setItem('stockFilter_store', 'collection')
+    localStorage.setItem('sortField_store', 'discogs_price')
+    localStorage.setItem('sortOrder_store', 'desc')
+    render(<StockBrowser />)
+    await waitFor(() => expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({
+      libraryScope: 'collection', sort: 'discogs_price', order: 'desc',
+    })))
+    expect(screen.getByText(/Price/)).toBeTruthy()
+  })
+
+  it('keeps a restored Price sort while App has not yet answered whether there are prices', async () => {
+    // hasPriceField is null until getPriceStatus() lands; treating that as
+    // "no prices" would reset every restored Price sort on first render.
+    localStorage.setItem('stockFilter_store', 'collection')
+    localStorage.setItem('sortField_store', 'discogs_price')
+    const { rerender } = render(<StockBrowser hasPriceField={null} />)
+    await waitFor(() => expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ sort: 'discogs_price' })))
+    rerender(<StockBrowser hasPriceField={true} />)
+    await waitFor(() => expect(screen.getByText(/Price/)).toBeTruthy())
+    expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ sort: 'discogs_price' }))
+  })
+})

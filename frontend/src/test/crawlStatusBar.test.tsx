@@ -150,6 +150,19 @@ describe('crawl status bar', () => {
     expect(screen.getByRole('button', { name: /Dismiss/i })).toBeInTheDocument()
   })
 
+  // A stored dismissed id that is not a number used to read back as NaN, and
+  // every `id > dismissed` comparison against NaN is false -- so one corrupt
+  // value hid the banner for good, with nothing in the UI to undo it.
+  it('still shows the banner when the stored dismissed id is not a number', async () => {
+    localStorage.setItem('discogs-browser.dismissedCrawlEventId', 'banana')
+    render(<App />)
+    const src = await getCrawlSourceOnMount()
+    src.emit({ status: 'started', total: 1, id: 1 })
+    src.emit({ status: 'complete', id: 2 })
+
+    await waitFor(() => expect(screen.getByText('Done')).toBeInTheDocument())
+  })
+
   it('hides the status bar after Dismiss', async () => {
     render(<App />)
     const src = await getCrawlSourceOnMount()

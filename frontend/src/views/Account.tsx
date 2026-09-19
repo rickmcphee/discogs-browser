@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, memo } from 'react'
 import Avatar from '../components/Avatar'
 import { createInvite, deleteAvatar, getUserSettings, listInvites, logout, postPlexMatchStart, saveUserSettings, uploadAvatar } from '../api/client'
 import type { Invite } from '../api/types'
+import { removeStored } from '../hooks/usePersistentState'
 import { secondaryButtonClass } from '../styles/buttons'
 import { textInputClass } from '../styles/inputs'
 import { stackedTableClass, stackedBodyClass, stackedRowClass, stackedCellClass } from '../styles/tables'
@@ -312,7 +313,7 @@ function Account({
             <button
               onClick={() => {
                 logout().then(() => {
-                  localStorage.removeItem('discogs-browser.viewAsUser')
+                  removeStored('discogs-browser.viewAsUser')
                   window.location.reload()
                 }).catch(() => {})
               }}
