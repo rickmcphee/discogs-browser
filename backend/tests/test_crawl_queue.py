@@ -1764,3 +1764,34 @@ def test_the_sweep_waits_for_an_in_flight_save(admin_conn, app_user_url):
     with db.get_app_pool().connection() as sweeping:
         assert db.delete_dead_stock_crawl_queue_rows(sweeping, library_only=True) == 1
         sweeping.commit()
+
+
+def test_the_backfill_takes_the_reconciliation_lock_before_any_queue_row(admin_conn, app_user_url):
+    """The deadlock this prevents needs both orders to exist. A save takes the
+    advisory lock and then waits for a queue row; the enable path holds queue
+    rows from the backfill and then calls the sweep, which wants the same
+    lock. Postgres can resolve that cycle by killing the save, losing the
+    user's click and its stock_item_saves row.
+
+    Proven from the lock side, like the sweep's test above: while a save holds
+    the lock, the backfill blocks on it -- which can only happen if it asks
+    for the lock before touching a row. With the acquisition after its
+    UPDATEs, it would take row locks first and this would not raise."""
+    _wanted_and_unwanted_stock_rows(admin_conn)
+    amazon = admin_conn.execute(
+        "SELECT id FROM crawlers WHERE site_name = 'Amazon'"
+    ).fetchone()["id"]
+    admin_conn.commit()
+
+    with db.get_app_pool().connection() as saving, db.get_app_pool().connection() as enabling:
+        db.enqueue_crawl_queue_for_saved_stock_item(saving, "wanted")  # holds the lock until commit
+        enabling.execute("SET LOCAL lock_timeout = '200ms'")
+        with pytest.raises(psycopg.errors.LockNotAvailable):
+            db.backfill_crawl_queue_for_crawler(enabling, amazon)
+        enabling.rollback()
+        saving.commit()
+
+    # And it still does its job once the lock is free.
+    with db.get_app_pool().connection() as enabling:
+        db.backfill_crawl_queue_for_crawler(enabling, amazon)
+        enabling.commit()

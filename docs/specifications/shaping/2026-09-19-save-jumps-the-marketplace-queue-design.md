@@ -273,13 +273,26 @@ column. Its inserts omit `priority` and take the default; its `ON CONFLICT DO
 UPDATE` names a column list that does not include `priority`, so a revive it
 performs *preserves* the value instead of resetting it.
 
-The failure that buys is bounded and benign in the one direction that matters:
-a saved item's `done` row revived by an old binary stays at
-`QUEUE_PRIORITY_INTERACTIVE` for one extra pass, so one routine re-crawl runs
-early. The reverse — a row that should be expedited being left behind — is
-unreachable, because the save path is the only writer of a non-zero priority
-and a save served by an old binary simply does what it did before. The next
-revive by a new binary corrects it.
+The failure that buys is bounded and benign: a saved item's `done` row revived
+by an old binary stays at `QUEUE_PRIORITY_INTERACTIVE` for one extra pass, so
+one routine re-crawl runs early, and the next revive by a new binary corrects
+it.
+
+The reverse — a row that should be expedited not being crawled first — **is**
+reachable, on the read side rather than the write side. An old worker's
+`claim_crawl_queue_batch` does not know the column, so it claims by the old
+sort and ignores the lane entirely: a save served by a new instance is
+correctly recorded and then picked up in ordinary FIFO order by whichever old
+worker claims it. Writing it up as unreachable was a mistake of scope —
+"the save path is the only writer of a non-zero priority" answers who can
+*set* it, not who has to *honour* it.
+
+Nothing is lost when it happens, and nothing needs doing about it: the row is
+already `pending` with the right priority stored, so the first new worker to
+claim honours it, and until then the item is crawled no later than it would
+have been without this feature. The window is one rolling deploy, and it is
+the same window in which half the workers are running the old code for every
+other reason too.
 
 This is why the column is `NOT NULL DEFAULT 0` rather than nullable: there is
 no state to distinguish, so there is nothing for a reader to get wrong, and
@@ -305,10 +318,32 @@ this deploys against.
   the conflicting row, so a save can now block behind a stock sync's enqueue
   transaction — one source's `replace_stock_items` plus its whole enqueue
   loop — if that transaction has already touched this item's row. Bounded by
-  that commit, and it cannot deadlock: the sync's enqueue never takes
-  `STOCK_QUEUE_RECONCILE_LOCK_KEY`, so it is never waiting on something the
-  save holds, and the sync's end-of-run sweep, which does take that lock,
+  that commit. It does not deadlock against the sync: the sync's enqueue never
+  takes `STOCK_QUEUE_RECONCILE_LOCK_KEY`, so it is never waiting on anything
+  the save holds, and the sync's end-of-run sweep, which does take that lock,
   takes it before touching a row — the same order the save does.
+
+  **That was not true of the crawler-enable path**, and reasoning only about
+  the sync is how it was missed. `routers/settings.py`'s enable runs
+  `backfill_crawl_queue_for_crawler` and then
+  `delete_dead_stock_crawl_queue_rows` *in one transaction*, so it held queue
+  rows and then waited for the advisory lock — the exact opposite of the
+  save's order, and a cycle Postgres may resolve by killing the save, taking
+  the user's click and its `stock_item_saves` row with it. `register_crawler`'s
+  conversion has the same shape. Reachable only since the save became an
+  upsert: `ON CONFLICT DO NOTHING` took no row lock to wait on.
+
+  Fixed by making the ordering a rule rather than a coincidence: **every taker
+  of `STOCK_QUEUE_RECONCILE_LOCK_KEY` acquires it before its first
+  `crawl_queue` row lock.** The backfill now takes it first, which is what
+  extends the rule to both of its callers at once. It needs no serialization
+  of its own — it is `FOR UPDATE SKIP LOCKED` throughout and never waits on a
+  row — so the lock is there purely for the ordering. A holder can then only
+  ever be waiting on rows, never on the lock, so the wait-for graph cannot
+  close. Cheap, too: the lock is re-entrant, so the sweep's acquisition a
+  moment later is a no-op, and it adds no unbounded wait that was not already
+  on that path — the sweep waits for this lock unconditionally today, and this
+  only moves the wait to before the row locks that made it dangerous.
 - **A rolling deploy briefly leaves the old binary's sort unindexed**, between
   the new binary's schema init dropping `crawl_queue_claimable_idx` and that
   binary taking over. Not a regression in practice: the claim's gate predicate

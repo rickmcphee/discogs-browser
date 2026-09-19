@@ -2424,6 +2424,27 @@ def set_crawler_enabled(conn, crawler_id: int, enabled: bool):
 # it (re-resolving eligibility at resolution time against a claim-time
 # baseline) costs more than the delay it removes.
 def backfill_crawl_queue_for_crawler(conn, crawler_id: int) -> int:
+    # Before any crawl_queue row lock, and that ordering is the whole point.
+    # Both callers -- the enable endpoint and register_crawler's conversion --
+    # follow this with delete_dead_stock_crawl_queue_rows in the *same*
+    # transaction, and that sweep takes this same advisory lock. So without
+    # this line the transaction holds queue rows and then waits for the lock,
+    # while a concurrent save holds the lock and waits for a queue row: a
+    # cycle, and one Postgres can resolve by killing the save, which loses the
+    # user's click and its stock_item_saves row with it. (Only since the save
+    # became an upsert -- ON CONFLICT DO NOTHING took no row lock to wait on.)
+    #
+    # Taking it here rather than at each call site is what makes the rule hold
+    # for both of them at once, and it is cheap: the lock is re-entrant, so the
+    # sweep's own acquisition a moment later is a no-op, and every holder is a
+    # short transaction. It adds no unbounded wait that was not already there
+    # -- that same sweep waits for this lock unconditionally today; this moves
+    # the wait earlier, to before the row locks that make it dangerous.
+    #
+    # The invariant to keep: anything that takes this lock takes it before its
+    # first crawl_queue row lock. Then a holder can only ever be waiting on
+    # rows, never on the lock, so the wait-for graph cannot close.
+    _lock_stock_queue_reconciliation(conn)
     requires_release = conn.execute(
         "SELECT requires_discogs_release FROM crawlers WHERE id = %s AND crawler_type = 'release'",
         [crawler_id],
@@ -2671,6 +2692,14 @@ def enqueue_crawl_queue_for_stock_item(conn, item_key: str, library_only: bool =
 # other's commit (READ COMMITTED takes one per statement), so the sweep keeps
 # a row just saved and the save re-inserts one just swept. Date-coded, per
 # the pg_advisory_xact_lock(2026080901) convention above.
+#
+# It has a second job now, and it is an ordering rule rather than a mutual
+# exclusion one: **every taker acquires it before its first crawl_queue row
+# lock.** backfill_crawl_queue_for_crawler takes it for that reason alone --
+# it needs no serialization, but it holds queue rows and is followed by the
+# sweep in the same transaction, so acquiring the lock afterwards would close
+# a wait-for cycle against a save holding the lock and waiting for a row. A
+# holder can then only ever be waiting on rows, never on this lock.
 STOCK_QUEUE_RECONCILE_LOCK_KEY = 2026090501
 
 
