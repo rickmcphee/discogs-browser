@@ -39,7 +39,8 @@ interface Props {
 }
 
 const NO_HIDDEN_CRAWLER_IDS: number[] = []
-// Same as RecordBrowser's: stands in for the artist list until it lands.
+// Same as RecordBrowser's: the sidebar's list before one has arrived and with
+// nothing selected. See sidebarArtists.
 const NO_ARTISTS: string[] = []
 const NO_CRAWLERS: Crawler[] = []
 const NOOP_HIDDEN_CRAWLER_IDS_CHANGE = () => {}
@@ -556,7 +557,9 @@ function StockBrowser({
       saved: filter === 'saved',
       overlapped: filter === 'overlapped',
       hiddenCrawlerIds,
-    }).then((list) => { if (latest) setArtists(list) })
+    // Swallowed for the same reason as RecordBrowser's: a failed list leaves
+    // `artists` null, which sidebarArtists is built for.
+    }).then((list) => { if (latest) setArtists(list) }).catch(() => {})
     return () => { latest = false }
   }, [filter, hiddenCrawlerIds, syncGeneration, retryTick, hiddenCrawlerIdsLoaded, libraryTick])
   // A refetched list can re-case the selected artist's label, or drop it
@@ -671,6 +674,12 @@ function StockBrowser({
     setPage(1)
   }
 
+  // Same as RecordBrowser's: until a real list lands the sidebar stands in
+  // the selection itself, so a restored artist cannot filter the rows with
+  // nothing on screen saying so -- which a failed request would leave in place
+  // for the session.
+  const sidebarArtists = artists ?? (selectedArtist ? [selectedArtist] : NO_ARTISTS)
+
   const totalPages = Math.ceil(rowTotal / PER_PAGE)
   // The discogs price is what the user paid, which only a collection row has,
   // so the column and its sort exist only under the Collection filter -- and
@@ -704,7 +713,7 @@ function StockBrowser({
       {/* Sidebar. Same trade as RecordBrowser's: on a phone it becomes a sheet
           behind a toolbar button, rendered instead of the sidebar. */}
       {!isMobile && (
-        <ArtistSidebar artists={artists ?? NO_ARTISTS} selected={selectedArtist} onSelect={selectArtist} />
+        <ArtistSidebar artists={sidebarArtists} selected={selectedArtist} onSelect={selectArtist} />
       )}
 
       {/* Main */}
@@ -736,7 +745,7 @@ function StockBrowser({
           </div>
           <div className="flex flex-wrap items-center gap-1.5 md:contents">
             {isMobile && (
-              <ArtistSheetButton artists={artists ?? NO_ARTISTS} selected={selectedArtist} onSelect={selectArtist} />
+              <ArtistSheetButton artists={sidebarArtists} selected={selectedArtist} onSelect={selectArtist} />
             )}
             <div className="contents md:ml-auto md:flex md:items-center md:gap-2">
               {isMobile && viewMode === 'list' && (

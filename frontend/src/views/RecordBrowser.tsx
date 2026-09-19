@@ -30,8 +30,8 @@ const COLLECTION_EMPTY = 'No records found. Click the sync icon above to load yo
 // that had it selected.
 const SORT_FIELDS: readonly SortField[] = ['artist', 'title', 'year', 'label', 'format', 'discogs_price', 'date_added']
 
-// Stands in for the artist list until it lands, so the sidebar renders the one
-// thing it can always offer -- All -- rather than nothing.
+// The sidebar's list before one has arrived and with nothing selected: All on
+// its own, which is the one option it can always offer. See sidebarArtists.
 const NO_ARTISTS: string[] = []
 
 export default function RecordBrowser({ scope, syncing, onRefreshCollection, syncGeneration, hasPriceField = true }: Props) {
@@ -113,7 +113,11 @@ export default function RecordBrowser({ scope, syncing, onRefreshCollection, syn
   // and a late-arriving stale list would drive the reconciliation below.
   useEffect(() => {
     let latest = true
-    getArtists(scope).then((list) => { if (latest) setArtists(list) })
+    // Swallowed rather than surfaced: a failed list leaves `artists` null,
+    // which sidebarArtists below is built for, and an uncaught rejection would
+    // otherwise reach the console for a request nothing retries until the next
+    // sync tick.
+    getArtists(scope).then((list) => { if (latest) setArtists(list) }).catch(() => {})
     return () => { latest = false }
   }, [scope, syncGeneration])
   // A collection sync can re-case the selected artist's label -- the canonical
@@ -166,6 +170,15 @@ export default function RecordBrowser({ scope, syncing, onRefreshCollection, syn
     setPage(1)
   }
 
+  // Until a real list lands, the sidebar still has to account for the
+  // selection: an empty list leaves the rows filtered by an artist with
+  // nothing on screen saying so -- the invisible filter this view goes out of
+  // its way to avoid -- and a request that fails leaves it that way for the
+  // session, since nothing retries until the next sync tick. The placeholder
+  // is the selection itself, which reconciliation then confirms, re-spells or
+  // clears once a list actually arrives.
+  const sidebarArtists = artists ?? (selectedArtist ? [selectedArtist] : NO_ARTISTS)
+
   const totalPages = Math.ceil(total / PER_PAGE)
 
   // The card list has no column headers to click, so the same fields the
@@ -189,7 +202,7 @@ export default function RecordBrowser({ scope, syncing, onRefreshCollection, syn
           filter that is set once, so it moves into a sheet behind a toolbar
           button -- rendered instead of the sidebar, never alongside it. */}
       {!isMobile && (
-        <ArtistSidebar artists={artists ?? NO_ARTISTS} selected={selectedArtist} onSelect={selectArtist} />
+        <ArtistSidebar artists={sidebarArtists} selected={selectedArtist} onSelect={selectArtist} />
       )}
 
       {/* Main */}
@@ -224,7 +237,7 @@ export default function RecordBrowser({ scope, syncing, onRefreshCollection, syn
           </div>
           <div className="flex flex-wrap items-center gap-1.5 md:contents">
             {isMobile && (
-              <ArtistSheetButton artists={artists ?? NO_ARTISTS} selected={selectedArtist} onSelect={selectArtist} />
+              <ArtistSheetButton artists={sidebarArtists} selected={selectedArtist} onSelect={selectArtist} />
             )}
             <div className="contents md:ml-auto md:flex md:items-center md:gap-1">
               {isMobile && viewMode === 'list' && (

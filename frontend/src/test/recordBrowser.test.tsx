@@ -232,6 +232,29 @@ describe('RecordBrowser persisted selections', () => {
     expect(localStorage.getItem('artistFilter_collection')).toBe('')
   })
 
+  it('keeps a restored artist visible in the sidebar when the artist list never arrives', async () => {
+    // A rejected getArtists leaves the list unloaded for the session -- nothing
+    // retries until the next sync tick -- while the restored artist goes on
+    // filtering the rows. An empty sidebar there is a filter with nothing on
+    // screen claiming it, which is the failure the whole reconciliation dance
+    // exists to avoid.
+    getArtists.mockRejectedValue(new Error('offline'))
+    localStorage.setItem('artistFilter_collection', 'Pink Floyd')
+    render(<RecordBrowser scope="collection" />)
+    await waitFor(() => expect(getReleases).toHaveBeenLastCalledWith(expect.objectContaining({ artist: 'Pink Floyd' })))
+    const button = screen.getByRole('button', { name: 'Pink Floyd' })
+    expect(button.className).toContain('bg-white')
+    expect(screen.getByRole('button', { name: 'All' }).className).not.toContain('bg-white')
+  })
+
+  it('offers All alone when nothing is selected and the list never arrives', async () => {
+    getArtists.mockRejectedValue(new Error('offline'))
+    render(<RecordBrowser scope="collection" />)
+    await waitFor(() => expect(getReleases).toHaveBeenCalled())
+    expect(screen.getByRole('button', { name: 'All' }).className).toContain('bg-white')
+    expect(screen.getAllByRole('button').filter((b) => b.className.includes('text-sm px-2 py-1'))).toHaveLength(1)
+  })
+
   it('persists a sort chosen from a column header, field and direction both', async () => {
     render(<RecordBrowser scope="collection" />)
     await waitFor(() => expect(getReleases).toHaveBeenCalled())

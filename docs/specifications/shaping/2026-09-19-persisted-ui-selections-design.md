@@ -128,6 +128,20 @@ Out of scope:
   catalog to nothing is the most common way to make the app look broken. Both
   stay per-visit.
 
+- **A restored artist is visible before the list that would confirm it.**
+  The sidebar's list is `artists ?? [selectedArtist]` while nothing has
+  arrived, not `artists ?? []`. The empty version was right for as long as the
+  selection at mount was always `''`; with a restored one it puts an artist
+  filter on the rows with nothing on screen claiming it, and a rejected
+  request — nothing retries until the next sync tick — leaves it that way for
+  the session. Which is the invisible filter `changeFilter` and
+  `reconcileSelectedArtist` both exist to prevent, arrived at from a new
+  direction. The placeholder is the selection itself, so it appears in the
+  sidebar, highlighted and one click from cleared, until a real list confirms,
+  re-spells or clears it. Both artist fetches also swallow their rejections
+  now, since a failed one is a state the view handles rather than an error to
+  surface.
+
 - **The artist filter is validated by the code that already validates
   artists.** Its `parse` accepts any string, because the set of legal values
   is a list the API has not returned yet at mount. `reconcileSelectedArtist`

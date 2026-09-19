@@ -1716,6 +1716,17 @@ describe('StockBrowser persisted selections', () => {
     expect(localStorage.getItem('artistFilter_store')).toBe('')
   })
 
+  it('keeps a restored artist visible in the sidebar when the artist list never arrives', async () => {
+    // See RecordBrowser's copy: a failed getStockArtists must not leave the
+    // rows filtered by an artist the sidebar does not show.
+    getStockArtists.mockRejectedValue(new Error('offline'))
+    localStorage.setItem('artistFilter_store', 'NAILS')
+    render(<StockBrowser />)
+    await waitFor(() => expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ artist: 'NAILS' })))
+    expect(screen.getByRole('button', { name: 'NAILS' }).className).toContain('bg-white')
+    expect(screen.getByRole('button', { name: 'All' }).className).not.toContain('bg-white')
+  })
+
   it('persists a sort chosen from a column header, field and direction both, and restores it on remount', async () => {
     const { unmount } = render(<StockBrowser />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
