@@ -228,6 +228,22 @@ reconciliation lock, to insert nothing. It reads the setting when it runs,
 not when the sync starts, so a long sync honours the setting as it stands at
 the end.
 
+**Amendment (2026-09-19, branch `claude/kind-darwin-gpg70g`):** the save half
+of the paragraph above no longer describes what ships.
+`enqueue_crawl_queue_for_saved_stock_item` is insert-**or-expedite** now: it
+revives a `done` row, raises an already-`pending` row's priority without
+disturbing a circuit-breaker deferral that row is carrying, still leaves an
+`in_progress` row alone, and writes `QUEUE_PRIORITY_INTERACTIVE` in every case
+so the claim takes the row next. Both observations above still hold — a save
+is a re-crawl, and the next stock sync would have revived the row anyway —
+they are simply no longer reasons to refuse: the re-crawl is what the click is
+for, and that wait is what the change removes. Its rowcount changed meaning
+with it, from "a row was inserted" to "the item is queued because of this
+call". `enqueue_crawl_queue_for_library_stock_items` is untouched and stays
+insert-if-absent at the routine priority — a sync's worth of records is not
+one person waiting on one of them. See
+[`2026-09-19-save-jumps-the-marketplace-queue-design.md`](2026-09-19-save-jumps-the-marketplace-queue-design.md).
+
 The sync runs its restoration on both exits. Each page commits as it lands,
 so a sync that fails on a later page has already made the earlier pages real
 library membership; the failure path restores for those too, best-effort, so
@@ -317,6 +333,13 @@ superuser `admin_conn` bypasses RLS and would prove nothing about the view):
 
 `backend/tests/test_stock_router.py`: saving an item queues it when it has no
 row and leaves a `done` row alone, across repeated saves.
+
+**Amendment (2026-09-19, branch `claude/kind-darwin-gpg70g`):** every "leaves
+a `done` row alone" in the two paragraphs above is now "revives it, expedited"
+— see the amendment under *Interest added means a row exists*. The tests named
+here assert the new behaviour under the same names' successors; what still
+holds unchanged is the enabled-store gate ("inserts nothing for an item no
+enabled store lists") and the library sync's own restoration.
 
 `backend/tests/test_settings_router.py`: default off; round trip; the
 off-to-on sweep with its count and log line; no sweep when already on; no
