@@ -337,6 +337,47 @@ def _existing_indexes(conn) -> set:
     return {r["indexname"] for r in rows}
 
 
+def test_superseded_claimable_index_is_dropped_for_the_priority_one(admin_conn):
+    """Same migration shape as the artist fold above, and the same trap: the
+    claim's sort gained a leading `priority DESC`, and CREATE INDEX IF NOT
+    EXISTS under the old name would be a no-op against a deployment that
+    already holds the old definition -- so the new key list would go unindexed
+    on exactly the databases that have been running longest.
+
+    The functional ordering tests cannot cover this: Postgres sorts the rows
+    correctly with no index at all, so every one of them passes with the whole
+    migration deleted. This asserts the schema instead.
+
+    The old name is created here first, because asserting its absence against
+    the fresh template0 database each run starts from would pass with the DROP
+    deleted -- it was never there to drop. Its definition deliberately is not
+    the superseded expression: what has to hold is that GLOBAL_SCHEMA removes
+    that *name*, whatever an older deployment built under it.
+    """
+    admin_conn.execute(
+        "CREATE INDEX crawl_queue_claimable_idx ON crawl_queue (requested_at)"
+    )
+    # Committed before the migration runs, for the reason the artist test
+    # records: init_global_schema takes its own connection and its DROP INDEX
+    # wants a lock this one would still hold.
+    admin_conn.commit()
+
+    db.init_global_schema()
+
+    assert admin_conn.execute(
+        "SELECT 1 FROM pg_indexes WHERE indexname = 'crawl_queue_claimable_idx'"
+    ).fetchone() is None
+    # And the replacement is there afterwards -- a migration that dropped the
+    # old name and indexed nothing would otherwise pass.
+    definition = admin_conn.execute(
+        "SELECT indexdef FROM pg_indexes WHERE indexname = 'crawl_queue_priority_claimable_idx'"
+    ).fetchone()
+    assert definition is not None
+    # The leading key is the whole point of the rename, so it is what this
+    # pins rather than the index merely existing under a new name.
+    assert "priority DESC" in definition["indexdef"]
+
+
 def test_crawl_queue_unique_on_item_key(admin_conn):
     admin_conn.execute(
         "INSERT INTO stock_item_identities (item_key, artist, title) VALUES ('key1', 'A', 'T')"

@@ -231,9 +231,12 @@ the end.
 **Amendment (2026-09-19, branch `claude/kind-darwin-gpg70g`):** the save half
 of the paragraph above no longer describes what ships.
 `enqueue_crawl_queue_for_saved_stock_item` is insert-**or-expedite** now: it
-revives a `done` row, raises an already-`pending` row's priority without
-disturbing a circuit-breaker deferral that row is carrying, and writes
+revives a `done` row, raises an already-`pending` row's priority, and writes
 `QUEUE_PRIORITY_INTERACTIVE` in every case so the claim takes the row next.
+On that `pending` row it preserves a circuit-breaker deferral's `available_at`
+— when the row may run is not a save's business — while deliberately clearing
+`pending_crawler_ids`, so the crawl the click buys is every eligible
+marketplace rather than whatever set the row happened to be carrying.
 A row a worker is mid-crawl on is the one exception, and only a partial one:
 it keeps its status and every column the claim set, but takes the priority
 too, so that a deferral or a reclaim hands it back still expedited. Both observations above still hold — a save

@@ -457,6 +457,16 @@ an already-expedited row leaves it untouched *and* leaves that row first in
 the lane ahead of one saved in between, while a save that promotes a routine
 `pending` row does advance it.
 
+`backend/tests/test_global_schema.py` pins the index migration itself, which
+no behavioural test can: Postgres sorts the claim correctly with no index at
+all, so every ordering test above passes with the whole rename deleted. It
+recreates the old name, runs `init_global_schema`, and asserts the old name is
+gone *and* the replacement carries `priority DESC` — failing under either half
+of the migration being removed. Same shape as the artist-fold migration test
+beside it, and for the same reason: asserting the old name's absence against
+the fresh `template0` database each run starts from would pass with every
+`DROP` deleted, because it was never there to drop.
+
 The lock ordering takes **two** tests, and the distinction is the whole
 point. One proves the backfill takes the reconciliation lock at all, from the
 lock side: while a save holds it, the backfill blocks. That one passes
