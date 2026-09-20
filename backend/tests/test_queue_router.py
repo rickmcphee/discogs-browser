@@ -290,6 +290,25 @@ def test_next_returns_claim_order_with_releases_before_stock(admin_conn):
     assert items[0]["narrowed"] is False
 
 
+def test_next_puts_an_expedited_stock_row_ahead_of_a_release_row(admin_conn):
+    """The test above uses only routine rows, so it passes with or without the
+    priority key. This one pins the half of the claim's sort that key adds:
+    /next's whole contract is that it lists what the worker will take next,
+    and a saved item outranks the release lane there exactly as it does in
+    claim_crawl_queue_batch."""
+    amazon = _crawler(admin_conn, "Amazon")
+    db.enqueue_crawl_queue_for_stock_item(admin_conn, _stock_identity(admin_conn, "k1"))
+    db.enqueue_crawl_queue(admin_conn, _release(admin_conn, "r1", artist="RA", title="RT"))
+    admin_conn.execute(
+        "UPDATE crawl_queue SET priority = %s WHERE item_key IS NOT NULL",
+        [db.QUEUE_PRIORITY_INTERACTIVE],
+    )
+    admin_conn.commit()
+
+    items = db.queue_next_for_crawler(admin_conn, amazon, 10)
+    assert [i["kind"] for i in items] == ["stock", "release"]
+
+
 def test_next_excludes_rows_this_crawler_is_not_eligible_for(admin_conn):
     discogs = _crawler(admin_conn, "Discogs", requires_discogs_release=True)
     db.enqueue_crawl_queue_for_stock_item(admin_conn, _stock_identity(admin_conn, "k1"))
@@ -468,6 +487,37 @@ def test_eta_uses_the_recent_drain_rate(admin_conn):
     assert summary["totals"]["eta_seconds"] == pytest.approx(db.QUEUE_ACTIVITY_WINDOW_SECONDS)
 
 
+def test_eta_for_a_release_only_crawler_counts_the_expedited_stock_rows(admin_conn):
+    """A release-only crawler used to wait on the release rows alone, because
+    every stock row sorted behind them. An expedited one does not, so leaving
+    it out reports an ETA short by exactly the rows most likely to have just
+    arrived -- which is when an operator is most likely to be reading it."""
+    _crawler(admin_conn, "Amazon")
+    discogs = _crawler(admin_conn, "Discogs", requires_discogs_release=True)
+    for i in range(4):
+        db.enqueue_crawl_queue(admin_conn, _release(admin_conn, f"r{i}"))
+    admin_conn.commit()
+    for row in db.claim_crawl_queue_batch(admin_conn, "w", limit=2):
+        db.mark_crawl_queue_done(admin_conn, row["id"], "w")
+    admin_conn.commit()
+
+    db.enqueue_crawl_queue_for_stock_item(admin_conn, _stock_identity(admin_conn, "k1"))
+    db.enqueue_crawl_queue_for_stock_item(admin_conn, _stock_identity(admin_conn, "k2"))
+    admin_conn.execute(
+        "UPDATE crawl_queue SET priority = %s WHERE item_key = 'k1'",
+        [db.QUEUE_PRIORITY_INTERACTIVE],
+    )
+    admin_conn.commit()
+
+    summary = db.queue_summary(admin_conn)
+    assert summary["totals"]["rows_done_last_hour"] == 2
+    by_id = {c["crawler_id"]: c for c in summary["crawlers"]}
+    # Two release rows plus the one expedited stock row ahead of them, over a
+    # drain of two rows per activity window. The routine stock row is behind
+    # this crawler's work and is correctly not counted.
+    assert by_id[discogs]["eta_seconds"] == pytest.approx(1.5 * db.QUEUE_ACTIVITY_WINDOW_SECONDS)
+
+
 def test_summary_endpoint_returns_the_payload_for_an_admin(pg_test_db, authed_client_factory):
     with db.get_admin_pool().connection() as conn:
         user = db.create_user(conn, discogs_user_id=3, discogs_username="root2")
@@ -483,6 +533,11 @@ def test_summary_endpoint_returns_the_payload_for_an_admin(pg_test_db, authed_cl
     assert body["totals"]["claimable_rows"] == 0
     assert body["stranded_after_seconds"] >= db.QUEUE_STRANDED_FLOOR_SECONDS
     assert "pool_running" in body and "generated_at" in body
+    # `totals` is returned verbatim, so anything _queue_totals computes for its
+    # own use is API unless it is popped. QueueTotals in the frontend's types.ts
+    # is the declaration of this shape, and it does not carry the ETA's private
+    # expedited count.
+    assert not [k for k in body["totals"] if k.startswith("_")]
 
 
 def test_summary_bounds_its_own_runtime_server_side(pg_test_db, authed_client_factory):
