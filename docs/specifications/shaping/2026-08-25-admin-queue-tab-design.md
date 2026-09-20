@@ -136,6 +136,14 @@ status <> 'done'` does the same for the totals aggregate: the existing
 `in_progress` rows nor the deferred ones, leaving the poll to seq-scan the whole
 table for what is usually a handful of live rows.
 
+**Amendment (2026-09-19, branch `claude/kind-darwin-gpg70g`):**
+`crawl_queue_claimable_idx` is now `crawl_queue_priority_claimable_idx`, with
+`priority DESC` prepended to its key list to match the claim's new leading sort
+key. Renamed rather than redefined, for the reason its own predecessor was —
+`CREATE INDEX IF NOT EXISTS` under an unchanged name is a no-op against a
+database holding the old definition. Still partial on `'pending'`, so
+everything this paragraph says about what it does *not* serve is unchanged.
+
 **Amendment (2026-08-29, after the tab shipped and then broke):** the
 reasoning above was applied to the fan-out and not to the totals aggregate, and
 the totals aggregate is what failed. It asked both of its per-row questions —
@@ -332,6 +340,14 @@ at dispatch, because `_drain_one_batch` consults the process-local
 circuit-breaker cooldown this tab does not expose and only then moves
 `available_at` forward. Everything the database can see says the row is
 claimable; whether the crawler runs is decided in a worker process.
+
+**Amendment (2026-09-19, branch `claude/kind-darwin-gpg70g`):** that sort is
+now `priority DESC, (item_key IS NOT NULL), requested_at, id`, and this
+endpoint takes the new key along with the claim — the contract it states is
+that the list is in the claim's *own* order, so a saved item jumping the queue
+has to show here too, or the tab disagrees with the worker about exactly the
+rows a user is watching for. See
+[`2026-09-19-save-jumps-the-marketplace-queue-design.md`](2026-09-19-save-jumps-the-marketplace-queue-design.md).
 Returns `artist`, `title`, `kind` (`release`/`stock`), `waiting_seconds`, and
 `narrowed` (whether the row carries a `pending_crawler_ids` array). `narrowed`
 is reported as the observable fact only — that the target runs for a subset of

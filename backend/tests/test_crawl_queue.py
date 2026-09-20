@@ -280,6 +280,82 @@ def test_claim_crawl_queue_batch_prioritizes_release_rows_over_stock_item_rows(a
     assert row["item_key"] is None
 
 
+def test_claim_crawl_queue_batch_takes_an_expedited_stock_row_before_a_release_row(admin_conn):
+    """priority leads the sort, ahead of the release-before-stock split. That
+    split exists so bulk work cannot outrank a person; an expedited row is one
+    person waiting on one record, so it outranks both."""
+    _make_stock_identity_and_crawler(admin_conn, item_key="key1", site_name="Amazon")
+    admin_conn.commit()
+    db.enqueue_crawl_queue_for_stock_item(admin_conn, "key1")
+    admin_conn.commit()
+
+    _make_catalog_and_crawler(admin_conn, discogs_id="r1", site_name="eBay")
+    admin_conn.commit()
+    db.enqueue_crawl_queue(admin_conn, "r1")
+    admin_conn.execute(
+        "UPDATE crawl_queue SET priority = %s WHERE item_key = 'key1'",
+        [db.QUEUE_PRIORITY_INTERACTIVE],
+    )
+    admin_conn.commit()
+
+    [row] = db.claim_crawl_queue_batch(admin_conn, "worker-1", limit=1)
+    assert row["item_key"] == "key1"
+    assert row["discogs_id"] is None
+
+
+def test_claim_crawl_queue_batch_is_fifo_within_the_expedited_lane(admin_conn):
+    """requested_at still breaks ties, so the first record saved is the first
+    priced rather than the lane being unordered."""
+    _make_stock_identity_and_crawler(admin_conn, item_key="first", site_name="Amazon")
+    _make_stock_identity_and_crawler(admin_conn, item_key="second", site_name="Amazon")
+    admin_conn.commit()
+    db.enqueue_crawl_queue_for_stock_item(admin_conn, "second")
+    db.enqueue_crawl_queue_for_stock_item(admin_conn, "first")
+    admin_conn.execute(
+        "UPDATE crawl_queue SET priority = %s, "
+        "requested_at = CURRENT_TIMESTAMP - (CASE WHEN item_key = 'first' "
+        "THEN INTERVAL '1 minute' ELSE INTERVAL '0' END)",
+        [db.QUEUE_PRIORITY_INTERACTIVE],
+    )
+    admin_conn.commit()
+
+    # One batch, not one row at a time: the caller crawls these sequentially in
+    # the order handed back, so the returned order is the guarantee, and a
+    # single-row claim would never exercise it.
+    claimed = db.claim_crawl_queue_batch(admin_conn, "worker-1", limit=2)
+    assert [r["item_key"] for r in claimed] == ["first", "second"]
+
+
+def test_claim_crawl_queue_batch_returns_a_batch_in_the_order_it_will_be_crawled(admin_conn):
+    """The claim's subquery decides which rows the batch takes; UPDATE ...
+    RETURNING does not promise to hand them back in that order, and
+    _process_claimed_rows walks the list sequentially. Without the ordered
+    final SELECT an expedited row can be crawled after a routine one claimed
+    beside it -- the lane's whole promise is about when work runs."""
+    _make_stock_identity_and_crawler(admin_conn, item_key="saved", site_name="Amazon")
+    admin_conn.commit()
+    db.enqueue_crawl_queue_for_stock_item(admin_conn, "saved")
+    _make_catalog_and_crawler(admin_conn, discogs_id="r1", site_name="eBay")
+    admin_conn.commit()
+    db.enqueue_crawl_queue(admin_conn, "r1")
+    # The expedited row is enqueued first and has the lower id, so a claim that
+    # happened to return insertion order would pass by luck. Give the release
+    # row the earlier requested_at as well, so only the priority key can put
+    # the stock row first.
+    admin_conn.execute(
+        "UPDATE crawl_queue SET priority = %s WHERE item_key = 'saved'",
+        [db.QUEUE_PRIORITY_INTERACTIVE],
+    )
+    admin_conn.execute(
+        "UPDATE crawl_queue SET requested_at = CURRENT_TIMESTAMP - INTERVAL '1 hour' "
+        "WHERE discogs_id = 'r1'"
+    )
+    admin_conn.commit()
+
+    claimed = db.claim_crawl_queue_batch(admin_conn, "worker-1", limit=2)
+    assert [r["item_key"] for r in claimed] == ["saved", None]
+
+
 def test_enqueue_crawl_queue_still_resurrects_a_done_row_for_an_enabled_crawler(admin_conn):
     """The ON CONFLICT ... DO UPDATE ... WHERE status = 'done' semantics must
     survive the rewrite to INSERT ... SELECT: without the resurrect, a target
@@ -739,6 +815,45 @@ def test_backfill_skips_a_row_another_transaction_holds(admin_conn):
         # connection to the pool instead of leaving it checked out.
         locker.rollback()
         lock_cm.__exit__(None, None, None)
+
+
+def test_backfill_revive_puts_an_expedited_row_back_in_the_slow_lane(admin_conn):
+    """Enabling a crawler is bulk admin work, so the row it revives rejoins the
+    ordinary queue however it got expedited before."""
+    crawler_id = _make_catalog_and_crawler(admin_conn, "r1")
+    admin_conn.commit()
+    db.enqueue_crawl_queue(admin_conn, "r1")
+    admin_conn.execute(
+        "UPDATE crawl_queue SET status = 'done', priority = %s WHERE discogs_id = 'r1'",
+        [db.QUEUE_PRIORITY_INTERACTIVE],
+    )
+    admin_conn.commit()
+
+    assert db.backfill_crawl_queue_for_crawler(admin_conn, crawler_id) == 1
+    admin_conn.commit()
+    row = admin_conn.execute(
+        "SELECT status, priority FROM crawl_queue WHERE discogs_id = 'r1'"
+    ).fetchone()
+    assert (row["status"], row["priority"]) == ("pending", 0)
+
+
+def test_backfill_widening_leaves_an_expedited_pending_rows_priority_alone(admin_conn):
+    """The widen does not touch requested_at, so it does not touch priority --
+    the row is still pending and still the one someone is waiting on."""
+    crawler_a = _make_catalog_and_crawler(admin_conn, "r1", site_name="Amazon")
+    crawler_b = _make_catalog_and_crawler(admin_conn, "r1", site_name="eBay")
+    admin_conn.commit()
+    db.enqueue_crawl_queue(admin_conn, "r1")
+    admin_conn.execute(
+        "UPDATE crawl_queue SET pending_crawler_ids = ARRAY[%s], priority = %s WHERE discogs_id = 'r1'",
+        [crawler_a, db.QUEUE_PRIORITY_INTERACTIVE],
+    )
+    admin_conn.commit()
+
+    db.backfill_crawl_queue_for_crawler(admin_conn, crawler_b)
+    admin_conn.commit()
+    row = admin_conn.execute("SELECT priority FROM crawl_queue WHERE discogs_id = 'r1'").fetchone()
+    assert row["priority"] == db.QUEUE_PRIORITY_INTERACTIVE
 
 
 def test_backfill_widens_a_narrowed_pending_row(admin_conn):
@@ -1308,7 +1423,7 @@ def test_sweep_under_library_only_leaves_an_in_progress_row_alone(admin_conn, ap
 
 # --- interest added restores a missing queue row ------------------------------
 
-def test_saving_an_item_inserts_a_missing_queue_row(admin_conn, app_user_url):
+def test_saving_an_item_inserts_a_missing_queue_row_expedited(admin_conn, app_user_url):
     _wanted_and_unwanted_stock_rows(admin_conn)
     with db.get_app_pool().connection() as conn:
         assert db.delete_dead_stock_crawl_queue_rows(conn, library_only=True) == 1
@@ -1317,22 +1432,269 @@ def test_saving_an_item_inserts_a_missing_queue_row(admin_conn, app_user_url):
     with db.get_app_pool().connection() as conn:
         assert db.enqueue_crawl_queue_for_saved_stock_item(conn, "unwanted") == 1
         conn.commit()
-    row = admin_conn.execute("SELECT status FROM crawl_queue WHERE item_key = 'unwanted'").fetchone()
-    assert row["status"] == "pending"
+    row = admin_conn.execute(
+        "SELECT status, priority FROM crawl_queue WHERE item_key = 'unwanted'"
+    ).fetchone()
+    assert (row["status"], row["priority"]) == ("pending", db.QUEUE_PRIORITY_INTERACTIVE)
 
 
-def test_saving_an_item_leaves_an_existing_done_row_alone(admin_conn, app_user_url):
-    """Insert-if-absent, not a revive: a save must not turn into a re-crawl of
-    an item that was already priced."""
+def test_saving_an_item_revives_a_done_row_expedited(admin_conn, app_user_url):
+    """A save asks what the marketplaces want for this record now, so a row
+    that was priced during some earlier sync is re-crawled -- and reviving
+    means every eligible crawler, so an earlier pass's narrowed set goes."""
     _wanted_and_unwanted_stock_rows(admin_conn)
+    admin_conn.execute(
+        "UPDATE crawl_queue SET status = 'done', completed_at = CURRENT_TIMESTAMP, "
+        "pending_crawler_ids = ARRAY[1] WHERE item_key = 'wanted'"
+    )
+    admin_conn.commit()
+
+    with db.get_app_pool().connection() as conn:
+        assert db.enqueue_crawl_queue_for_saved_stock_item(conn, "wanted") == 1
+        conn.commit()
+    row = admin_conn.execute(
+        "SELECT status, priority, pending_crawler_ids, completed_at, "
+        "available_at <= CURRENT_TIMESTAMP AS available FROM crawl_queue WHERE item_key = 'wanted'"
+    ).fetchone()
+    assert row["status"] == "pending"
+    assert row["priority"] == db.QUEUE_PRIORITY_INTERACTIVE
+    assert row["pending_crawler_ids"] is None
+    assert row["completed_at"] is None
+    assert row["available"]
+
+
+def test_saving_a_pending_row_widens_it_but_keeps_its_cooldown(admin_conn, app_user_url):
+    """The common case with library-only off: the row is already pending, deep
+    in the backlog. Two different columns, two different answers.
+
+    available_at is about *when* the row runs -- a future one means some
+    crawler's site is in circuit-breaker cooldown, and a save has no business
+    sending a worker back at a failing site. pending_crawler_ids is about
+    *which* crawlers run, and a save means all of them: see the backfill test
+    below for the case where preserving it would answer the click with one
+    marketplace and a set of stale prices."""
+    _wanted_and_unwanted_stock_rows(admin_conn)
+    admin_conn.execute(
+        "UPDATE crawl_queue SET pending_crawler_ids = ARRAY[7], "
+        "available_at = CURRENT_TIMESTAMP + INTERVAL '30 minutes' WHERE item_key = 'wanted'"
+    )
+    admin_conn.commit()
+
+    with db.get_app_pool().connection() as conn:
+        assert db.enqueue_crawl_queue_for_saved_stock_item(conn, "wanted") == 1
+        conn.commit()
+    row = admin_conn.execute(
+        "SELECT status, priority, pending_crawler_ids, "
+        "available_at > CURRENT_TIMESTAMP AS held FROM crawl_queue WHERE item_key = 'wanted'"
+    ).fetchone()
+    assert row["status"] == "pending"
+    assert row["priority"] == db.QUEUE_PRIORITY_INTERACTIVE
+    assert row["pending_crawler_ids"] is None
+    assert row["held"]
+
+
+def test_saving_a_backfill_narrowed_row_still_reprices_every_marketplace(admin_conn, app_user_url):
+    """A narrowed pending row is not always a partial pass whose other
+    crawlers just ran. backfill_crawl_queue_for_crawler revives a *done*
+    target as pending with ARRAY[the newly enabled crawler], so the rest of
+    its prices are as old as the last full pass. Preserving that set would
+    answer the click by refreshing one marketplace and leaving every other
+    price stale -- and the window is every row the backfill revived, until the
+    queue drains them."""
+    _wanted_and_unwanted_stock_rows(admin_conn)
+    amazon = admin_conn.execute(
+        "SELECT id FROM crawlers WHERE site_name = 'Amazon'"
+    ).fetchone()["id"]
     admin_conn.execute("UPDATE crawl_queue SET status = 'done' WHERE item_key = 'wanted'")
+    admin_conn.commit()
+    db.backfill_crawl_queue_for_crawler(admin_conn, amazon)
+    admin_conn.commit()
+    narrowed = admin_conn.execute(
+        "SELECT pending_crawler_ids FROM crawl_queue WHERE item_key = 'wanted'"
+    ).fetchone()["pending_crawler_ids"]
+    assert narrowed == [amazon], "precondition: the backfill leaves the row narrowed"
+
+    with db.get_app_pool().connection() as conn:
+        db.enqueue_crawl_queue_for_saved_stock_item(conn, "wanted")
+        conn.commit()
+    row = admin_conn.execute(
+        "SELECT pending_crawler_ids, priority FROM crawl_queue WHERE item_key = 'wanted'"
+    ).fetchone()
+    assert row["pending_crawler_ids"] is None
+    assert row["priority"] == db.QUEUE_PRIORITY_INTERACTIVE
+
+
+def test_saving_an_already_expedited_item_again_keeps_its_place_in_the_lane(admin_conn, app_user_url):
+    """A repeated save has nothing to add to a row already pending in the
+    lane, so it must change nothing -- the endpoint is a PUT. Bumping
+    requested_at would move the earlier click behind saves made after it and
+    restart the age the Queue tab reports."""
+    _wanted_and_unwanted_stock_rows(admin_conn)
+    _stock_item(admin_conn, "second", "C", "V", admin_conn.execute(
+        "SELECT id FROM crawlers WHERE site_name = 'Store'").fetchone()["id"])
+    admin_conn.commit()
+
+    with db.get_app_pool().connection() as conn:
+        db.enqueue_crawl_queue_for_saved_stock_item(conn, "wanted")
+        conn.commit()
+    first_at = admin_conn.execute(
+        "SELECT requested_at FROM crawl_queue WHERE item_key = 'wanted'"
+    ).fetchone()["requested_at"]
+    with db.get_app_pool().connection() as conn:
+        db.enqueue_crawl_queue_for_saved_stock_item(conn, "second")
+        conn.commit()
+    with db.get_app_pool().connection() as conn:
+        db.enqueue_crawl_queue_for_saved_stock_item(conn, "wanted")
+        conn.commit()
+
+    assert admin_conn.execute(
+        "SELECT requested_at FROM crawl_queue WHERE item_key = 'wanted'"
+    ).fetchone()["requested_at"] == first_at
+    # The consequence that makes it matter: the re-saved item is still first.
+    [earlier] = db.claim_crawl_queue_batch(admin_conn, "worker-1", limit=1)
+    assert earlier["item_key"] == "wanted"
+
+
+def test_promoting_a_routine_pending_row_does_stamp_its_request_time(admin_conn, app_user_url):
+    """The other side of that rule. A row joining the lane starts its position
+    in the lane now, so the save that promotes it does bump requested_at --
+    only a row already expedited is left alone."""
+    _wanted_and_unwanted_stock_rows(admin_conn)
+    admin_conn.execute(
+        "UPDATE crawl_queue SET requested_at = CURRENT_TIMESTAMP - INTERVAL '1 hour' "
+        "WHERE item_key = 'wanted'"
+    )
+    admin_conn.commit()
+    before = admin_conn.execute(
+        "SELECT requested_at FROM crawl_queue WHERE item_key = 'wanted'"
+    ).fetchone()["requested_at"]
+
+    with db.get_app_pool().connection() as conn:
+        db.enqueue_crawl_queue_for_saved_stock_item(conn, "wanted")
+        conn.commit()
+    assert admin_conn.execute(
+        "SELECT requested_at FROM crawl_queue WHERE item_key = 'wanted'"
+    ).fetchone()["requested_at"] > before
+
+
+def test_saving_an_item_stamps_priority_on_an_in_progress_row_and_nothing_else(admin_conn, app_user_url):
+    """A worker holding the row is already crawling what the user asked for --
+    but only if that pass finishes. Everything the claim set stays exactly as
+    it was, so the worker's own terminal write is unaffected; priority alone
+    moves, so a hand-back comes back expedited."""
+    _wanted_and_unwanted_stock_rows(admin_conn)
+    admin_conn.execute(
+        "UPDATE crawl_queue SET status = 'in_progress', claimed_by = 'worker-1', "
+        "claimed_at = CURRENT_TIMESTAMP, requested_at = CURRENT_TIMESTAMP - INTERVAL '1 hour' "
+        "WHERE item_key = 'wanted'"
+    )
+    admin_conn.commit()
+    before = admin_conn.execute(
+        "SELECT claimed_at, requested_at FROM crawl_queue WHERE item_key = 'wanted'"
+    ).fetchone()
+
+    with db.get_app_pool().connection() as conn:
+        assert db.enqueue_crawl_queue_for_saved_stock_item(conn, "wanted") == 1
+        conn.commit()
+    row = admin_conn.execute(
+        "SELECT status, priority, claimed_by, claimed_at, requested_at "
+        "FROM crawl_queue WHERE item_key = 'wanted'"
+    ).fetchone()
+    assert (row["status"], row["priority"], row["claimed_by"]) == (
+        "in_progress", db.QUEUE_PRIORITY_INTERACTIVE, "worker-1",
+    )
+    assert row["claimed_at"] == before["claimed_at"]
+    assert row["requested_at"] == before["requested_at"]
+
+
+def test_a_save_during_a_claim_survives_the_rows_hand_back(admin_conn, app_user_url):
+    """The reason the in_progress case cannot be skipped. A pass that defers
+    hands the row back as 'pending' without touching priority, so a save that
+    recorded nothing would leave the deferred crawlers in the ordinary
+    backlog with nothing to show the user ever asked."""
+    _wanted_and_unwanted_stock_rows(admin_conn)
+    queue_id = admin_conn.execute(
+        "SELECT id FROM crawl_queue WHERE item_key = 'wanted'"
+    ).fetchone()["id"]
+    admin_conn.execute(
+        "UPDATE crawl_queue SET status = 'in_progress', claimed_by = 'worker-1', "
+        "claimed_at = CURRENT_TIMESTAMP WHERE id = %s",
+        [queue_id],
+    )
+    admin_conn.commit()
+
+    with db.get_app_pool().connection() as conn:
+        db.enqueue_crawl_queue_for_saved_stock_item(conn, "wanted")
+        conn.commit()
+    db.defer_crawl_queue_row(admin_conn, queue_id, [7], 60.0, "worker-1")
+    admin_conn.commit()
+
+    row = admin_conn.execute(
+        "SELECT status, priority FROM crawl_queue WHERE id = %s", [queue_id]
+    ).fetchone()
+    assert (row["status"], row["priority"]) == ("pending", db.QUEUE_PRIORITY_INTERACTIVE)
+
+
+def test_saving_an_in_progress_item_with_no_enabled_source_stamps_nothing(admin_conn, app_user_url):
+    """The store gate guards the in_progress stamp too -- it is a second
+    statement, so it needs the gate written on it rather than inheriting one."""
+    _wanted_and_unwanted_stock_rows(admin_conn)
+    admin_conn.execute(
+        "UPDATE crawl_queue SET status = 'in_progress', claimed_by = 'worker-1' "
+        "WHERE item_key = 'wanted'"
+    )
+    _set_enabled_by_name(admin_conn, "Store", False)
     admin_conn.commit()
 
     with db.get_app_pool().connection() as conn:
         assert db.enqueue_crawl_queue_for_saved_stock_item(conn, "wanted") == 0
         conn.commit()
-    row = admin_conn.execute("SELECT status FROM crawl_queue WHERE item_key = 'wanted'").fetchone()
-    assert row["status"] == "done"
+    row = admin_conn.execute(
+        "SELECT priority FROM crawl_queue WHERE item_key = 'wanted'"
+    ).fetchone()
+    assert row["priority"] == 0
+
+
+def test_a_stock_syncs_revive_puts_an_expedited_row_back_in_the_slow_lane(admin_conn, app_user_url):
+    """priority is a property of the request, not of the item: a row is
+    expedited because a user asked for it once. A stock sync reviving the
+    'done' row afterwards is routine work with nobody waiting on it."""
+    _wanted_and_unwanted_stock_rows(admin_conn)
+    with db.get_app_pool().connection() as conn:
+        db.enqueue_crawl_queue_for_saved_stock_item(conn, "wanted")
+        conn.commit()
+    admin_conn.execute("UPDATE crawl_queue SET status = 'done' WHERE item_key = 'wanted'")
+    admin_conn.commit()
+
+    db.enqueue_crawl_queue_for_stock_item(admin_conn, "wanted")
+    admin_conn.commit()
+    row = admin_conn.execute(
+        "SELECT status, priority FROM crawl_queue WHERE item_key = 'wanted'"
+    ).fetchone()
+    assert (row["status"], row["priority"]) == ("pending", 0)
+
+
+def test_a_deferral_leaves_an_expedited_rows_priority_alone(admin_conn, app_user_url):
+    """A deferral hands a row back rather than requesting it -- which is why it
+    leaves requested_at alone -- so it must leave priority alone too: the row a
+    cooldown deferred is still the row someone is waiting on."""
+    _wanted_and_unwanted_stock_rows(admin_conn)
+    with db.get_app_pool().connection() as conn:
+        db.enqueue_crawl_queue_for_saved_stock_item(conn, "wanted")
+        conn.commit()
+    queue_id = admin_conn.execute(
+        "SELECT id FROM crawl_queue WHERE item_key = 'wanted'"
+    ).fetchone()["id"]
+    admin_conn.execute(
+        "UPDATE crawl_queue SET status = 'in_progress', claimed_by = 'worker-1' WHERE id = %s",
+        [queue_id],
+    )
+    admin_conn.commit()
+
+    db.defer_crawl_queue_row(admin_conn, queue_id, [7], 60.0, "worker-1")
+    admin_conn.commit()
+    row = admin_conn.execute("SELECT status, priority FROM crawl_queue WHERE id = %s", [queue_id]).fetchone()
+    assert (row["status"], row["priority"]) == ("pending", db.QUEUE_PRIORITY_INTERACTIVE)
 
 
 def test_saving_an_item_with_no_enabled_source_inserts_nothing(admin_conn, app_user_url):
@@ -1345,6 +1707,25 @@ def test_saving_an_item_with_no_enabled_source_inserts_nothing(admin_conn, app_u
         assert db.enqueue_crawl_queue_for_saved_stock_item(conn, "wanted") == 0
         conn.commit()
     assert admin_conn.execute("SELECT COUNT(*) FROM crawl_queue").fetchone()["count"] == 0
+
+
+def test_saving_an_item_with_no_enabled_source_does_not_revive_its_done_row(admin_conn, app_user_url):
+    """The gate guards the expedite as well as the insert. A 'done' row
+    survives the dead-row sweep ('pending' only), so this is the one way an
+    unstocked item still has a row to revive -- and reviving it would send
+    every marketplace out to price something no enabled store lists."""
+    _wanted_and_unwanted_stock_rows(admin_conn)
+    admin_conn.execute("UPDATE crawl_queue SET status = 'done' WHERE item_key = 'wanted'")
+    _set_enabled_by_name(admin_conn, "Store", False)
+    admin_conn.commit()
+
+    with db.get_app_pool().connection() as conn:
+        assert db.enqueue_crawl_queue_for_saved_stock_item(conn, "wanted") == 0
+        conn.commit()
+    row = admin_conn.execute(
+        "SELECT status, priority FROM crawl_queue WHERE item_key = 'wanted'"
+    ).fetchone()
+    assert (row["status"], row["priority"]) == ("done", 0)
 
 
 def test_library_sync_inserts_missing_rows_for_this_users_matching_items_only(admin_conn, app_user_url):
@@ -1418,3 +1799,67 @@ def test_the_sweep_waits_for_an_in_flight_save(admin_conn, app_user_url):
     with db.get_app_pool().connection() as sweeping:
         assert db.delete_dead_stock_crawl_queue_rows(sweeping, library_only=True) == 1
         sweeping.commit()
+
+
+def test_the_backfill_waits_for_the_lock_a_save_is_holding(admin_conn, app_user_url):
+    """The backfill takes the reconciliation lock at all -- proven from the
+    lock side, like the sweep's test above.
+
+    Note what this does *not* prove: the acquisition could sit after the
+    backfill's UPDATEs and this would still raise, because it would still
+    reach the lock eventually. The ordering is the property that prevents the
+    deadlock, and the test below is the one that pins it."""
+    _wanted_and_unwanted_stock_rows(admin_conn)
+    amazon = admin_conn.execute(
+        "SELECT id FROM crawlers WHERE site_name = 'Amazon'"
+    ).fetchone()["id"]
+    admin_conn.commit()
+
+    with db.get_app_pool().connection() as saving, db.get_app_pool().connection() as enabling:
+        db.enqueue_crawl_queue_for_saved_stock_item(saving, "wanted")  # holds the lock until commit
+        enabling.execute("SET LOCAL lock_timeout = '200ms'")
+        with pytest.raises(psycopg.errors.LockNotAvailable):
+            db.backfill_crawl_queue_for_crawler(enabling, amazon)
+        enabling.rollback()
+        saving.commit()
+
+    # And it still does its job once the lock is free.
+    with db.get_app_pool().connection() as enabling:
+        db.backfill_crawl_queue_for_crawler(enabling, amazon)
+        enabling.commit()
+
+
+def test_the_backfill_touches_no_queue_row_before_taking_the_lock(monkeypatch, admin_conn):
+    """The deadlock needs both orders to exist. A save takes the advisory lock
+    and then waits for a queue row; the enable path holds queue rows from the
+    backfill and then calls the sweep, which wants the same lock. Postgres can
+    resolve that cycle by killing the save, losing the user's click and its
+    stock_item_saves row.
+
+    So what has to be asserted is the *order*, not that the lock is taken:
+    when the acquisition happens, no row has been written yet. Proven by
+    making the acquisition itself fail and reading the row back on the same
+    (still open, uncommitted) transaction -- a revive that had already run
+    would be visible to it. Moving the call below the UPDATEs fails this,
+    which is exactly the mutation the lock-side test above survives."""
+    crawler_id = _make_catalog_and_crawler(admin_conn, "r1")
+    admin_conn.commit()
+    db.enqueue_crawl_queue(admin_conn, "r1")
+    admin_conn.execute("UPDATE crawl_queue SET status = 'done' WHERE discogs_id = 'r1'")
+    admin_conn.commit()
+
+    class _LockReached(Exception):
+        pass
+
+    def _fail_instead_of_locking(conn):
+        raise _LockReached
+
+    monkeypatch.setattr(db, "_lock_stock_queue_reconciliation", _fail_instead_of_locking)
+    with pytest.raises(_LockReached):
+        db.backfill_crawl_queue_for_crawler(admin_conn, crawler_id)
+
+    status = admin_conn.execute(
+        "SELECT status FROM crawl_queue WHERE discogs_id = 'r1'"
+    ).fetchone()["status"]
+    assert status == "done", "the backfill revived a row before asking for the lock"
+    admin_conn.rollback()

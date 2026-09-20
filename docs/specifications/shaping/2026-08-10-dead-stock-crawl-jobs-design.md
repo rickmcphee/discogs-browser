@@ -273,7 +273,16 @@ disable takes effect on the very next claim, and it covers the enqueue race in
 The sweep is what keeps the gate cheap. `claim_crawl_queue_batch`'s
 `ORDER BY (item_key IS NOT NULL), requested_at, id` forces a sort over the
 whole filtered set rather than an index walk terminated by `LIMIT`, so the
-predicate is evaluated for every pending row on every batch. Without the sweep,
+predicate is evaluated for every pending row on every batch.
+
+**Amendment (2026-09-19, branch `claude/kind-darwin-gpg70g`):** that sort, and
+the one in the SQL block earlier in this document, now lead with
+`priority DESC` — `ORDER BY priority DESC, (item_key IS NOT NULL),
+requested_at, id`, so the save endpoint can put one record at the front of the
+queue. A longer key list does not change this paragraph's argument: the sort is
+still over the whole filtered set, so the gate is still evaluated per pending
+row and the sweep is still what keeps that cheap. See
+[`2026-09-19-save-jumps-the-marketplace-queue-design.md`](2026-09-19-save-jumps-the-marketplace-queue-design.md). Without the sweep,
 dead rows would accumulate permanently — never claimed, never removed, re-tested
 by every claim for the life of the deployment. The sweep keeps dead rows from
 accumulating on top of that working set — the added predicate is a
