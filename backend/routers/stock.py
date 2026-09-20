@@ -1,5 +1,7 @@
 import csv
 import io
+import logging
+import psycopg
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
 from pydantic import BaseModel
 from typing import Optional
@@ -9,6 +11,8 @@ from admin import require_admin
 from crawl_manager import crawl_manager
 
 router = APIRouter()
+
+log = logging.getLogger(__name__)
 
 
 def _parse_crawler_ids(raw: Optional[str]) -> Optional[list[int]]:
@@ -102,9 +106,7 @@ def stock_stats(
     return {"total": sum(s["count"] for s in sources), "sources": sources}
 
 
-@router.put("/stock/saved/{item_key}")
-def save_stock_item(item_key: str, request: Request):
-    user_id = request.state.user_id
+def _write_save(user_id: int, item_key: str) -> None:
     with db.user_scope(user_id) as conn:
         db.save_stock_item(conn, user_id, item_key)
         # Saving is a user asking what the marketplaces want for this record,
@@ -113,6 +115,31 @@ def save_stock_item(item_key: str, request: Request):
         # it), a revive if it was already priced, and an expedite either way.
         db.enqueue_crawl_queue_for_saved_stock_item(conn, item_key)
         conn.commit()
+
+
+@router.put("/stock/saved/{item_key}")
+def save_stock_item(item_key: str, request: Request):
+    """Retries once on a lock failure, because a lost save is a lost click.
+
+    Making the enqueue an upsert gave this transaction a queue-row lock to
+    wait on while it holds STOCK_QUEUE_RECONCILE_LOCK_KEY. Every taker of that
+    lock now acquires it before its first row lock, so one version cannot
+    deadlock against itself -- but a rolling deploy runs two, and an instance
+    still on the old backfill takes them the other way round. The enable path
+    has always caught this and degraded (routers/settings.py), so the save was
+    the only side that could lose; with this, neither does.
+
+    Safe to redo: both statements are idempotent -- the save is ON CONFLICT DO
+    NOTHING, and the enqueue is a no-op on a row already expedited and widened
+    -- and user_scope hands back a fresh connection with its own set_config.
+    One retry, not a loop: a second failure is contention this endpoint should
+    surface rather than sit in."""
+    user_id = request.state.user_id
+    try:
+        _write_save(user_id, item_key)
+    except (psycopg.errors.DeadlockDetected, psycopg.errors.LockNotAvailable):
+        log.info("Save of %s hit a queue lock; retrying once", item_key)
+        _write_save(user_id, item_key)
     return {"saved": True}
 
 

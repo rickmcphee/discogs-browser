@@ -153,8 +153,11 @@ whether the row is already in the lane:
   place in the lane starts.
 - **`pending`, already expedited and already widened** — nothing at all. See
   `requested_at` below; this is the case that makes a repeated save a true
-  no-op. (A row expedited and *then* narrowed by a backfill is widened again,
-  as any `pending` row is.)
+  no-op. (A row expedited and *then* narrowed is widened again, as any
+  `pending` row is. The writer that can leave it in that state is
+  `defer_crawl_queue_row`, which preserves `priority`; the backfill cannot,
+  because it narrows only while reviving a `done` row and resets `priority`
+  to `0` as it does.)
 - **`in_progress`** — raise the priority and leave everything else alone,
   in a second statement.
 
@@ -377,6 +380,16 @@ this deploys against.
   the user's click and its `stock_item_saves` row with it. `register_crawler`'s
   conversion has the same shape. Reachable only since the save became an
   upsert: `ON CONFLICT DO NOTHING` took no row lock to wait on.
+
+  That rule holds within one version, and a rolling deploy runs two: an
+  instance still on the old backfill takes the row lock first, so the cycle
+  is reachable across versions for one deploy window. The enable path has
+  always caught `DeadlockDetected` and degraded — the backfill is skipped and
+  the next sync picks the crawler up — so the save was the only side that
+  could lose, as a 500 that rolls the click back. It now retries once, on a
+  fresh transaction, both of its statements being idempotent. Neither side
+  loses, which is a better answer than a phased rollout because it needs no
+  deploy discipline to be true.
 
   Fixed by making the ordering a rule rather than a coincidence: **every taker
   of `STOCK_QUEUE_RECONCILE_LOCK_KEY` acquires it before its first
