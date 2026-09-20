@@ -3,6 +3,7 @@ import io
 import os
 from datetime import datetime
 
+import psycopg
 import pytest
 
 import db
@@ -1452,10 +1453,77 @@ def test_stock_stats_empty_when_nothing_matches(pg_test_db, authed_client_factor
     assert body == {"total": 0, "sources": []}
 
 
-def test_put_stock_saved_queues_a_marketplace_crawl_for_an_item_with_no_queue_row(pg_test_db, authed_client_factory):
-    """Library-only crawling sweeps the rows of items nobody wants; saving one
-    is how it becomes wanted, so the save restores its row. Insert-if-absent:
-    a second save, or a save of an item already priced, changes nothing."""
+def test_put_stock_saved_retries_once_on_a_lock_failure(pg_test_db, authed_client_factory, monkeypatch):
+    """A rolling deploy can put one instance on the old backfill, which takes
+    the queue row before the advisory lock while the new save takes them the
+    other way round. The enable path already degrades on that; without this
+    the save was the side that lost, and a lost save is a lost click.
+
+    Both statements are idempotent, so the retry is safe to redo -- the second
+    attempt below really does write, rather than the endpoint merely
+    swallowing the error."""
+    crawler_id = _make_crawler()
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        db.replace_stock_items(conn, crawler_id, [
+            {"artist": "Artist A", "title": "Album A", "url": "https://x/1", "price": 10.0, "currency": "USD"},
+        ])
+        conn.commit()
+    item_key = db.compute_item_key("Artist A", "Album A", "https://x/1")
+    client = authed_client_factory(user["id"])
+
+    real = db.enqueue_crawl_queue_for_saved_stock_item
+    calls = []
+
+    def _deadlock_once(conn, key):
+        calls.append(key)
+        if len(calls) == 1:
+            raise psycopg.errors.DeadlockDetected("simulated cross-version lock cycle")
+        return real(conn, key)
+
+    monkeypatch.setattr(db, "enqueue_crawl_queue_for_saved_stock_item", _deadlock_once)
+    r = client.put(f"/api/stock/saved/{item_key}", headers={"X-Requested-With": "fetch"})
+
+    assert r.status_code == 200
+    assert len(calls) == 2, "the endpoint retried exactly once"
+    with db.get_admin_pool().connection() as conn:
+        saved = conn.execute(
+            "SELECT 1 FROM stock_item_saves WHERE user_id = %s AND item_key = %s",
+            [user["id"], item_key],
+        ).fetchone()
+        queued = conn.execute(
+            "SELECT priority FROM crawl_queue WHERE item_key = %s", [item_key]
+        ).fetchone()
+    assert saved is not None, "the retry committed the save the first attempt rolled back"
+    assert queued["priority"] == db.QUEUE_PRIORITY_INTERACTIVE
+
+
+def test_put_stock_saved_surfaces_a_second_lock_failure(pg_test_db, authed_client_factory, monkeypatch):
+    """One retry, not a loop: sustained contention is something this endpoint
+    reports rather than sits in."""
+    crawler_id = _make_crawler()
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        db.replace_stock_items(conn, crawler_id, [
+            {"artist": "Artist A", "title": "Album A", "url": "https://x/1", "price": 10.0, "currency": "USD"},
+        ])
+        conn.commit()
+    item_key = db.compute_item_key("Artist A", "Album A", "https://x/1")
+    client = authed_client_factory(user["id"])
+
+    def _always_deadlock(conn, key):
+        raise psycopg.errors.DeadlockDetected("simulated sustained contention")
+
+    monkeypatch.setattr(db, "enqueue_crawl_queue_for_saved_stock_item", _always_deadlock)
+    with pytest.raises(psycopg.errors.DeadlockDetected):
+        client.put(f"/api/stock/saved/{item_key}", headers={"X-Requested-With": "fetch"})
+
+
+def test_put_stock_saved_queues_an_expedited_marketplace_crawl(pg_test_db, authed_client_factory):
+    """Saving asks what the marketplaces want for this record, now: the item
+    gets a pending row at the interactive priority whether it had none (the
+    one library-only crawling swept while nobody wanted it) or had already
+    been priced. Idempotent across repeated saves."""
     crawler_id = _make_crawler()
     with db.get_admin_pool().connection() as conn:
         user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
@@ -1476,5 +1544,8 @@ def test_put_stock_saved_queues_a_marketplace_crawl_for_an_item_with_no_queue_ro
         assert r.status_code == 200
 
     with db.get_admin_pool().connection() as conn:
-        rows = conn.execute("SELECT item_key, status FROM crawl_queue ORDER BY item_key").fetchall()
-    assert sorted((r["item_key"], r["status"]) for r in rows) == sorted([(absent_key, "pending"), (done_key, "done")])
+        rows = conn.execute("SELECT item_key, status, priority FROM crawl_queue ORDER BY item_key").fetchall()
+    assert sorted((r["item_key"], r["status"], r["priority"]) for r in rows) == sorted([
+        (absent_key, "pending", db.QUEUE_PRIORITY_INTERACTIVE),
+        (done_key, "pending", db.QUEUE_PRIORITY_INTERACTIVE),
+    ])

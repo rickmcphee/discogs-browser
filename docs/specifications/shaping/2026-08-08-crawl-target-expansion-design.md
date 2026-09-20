@@ -114,6 +114,15 @@ it doesn't show it.
   within one query, not an exclusion). Stock-item and collection jobs
   still share one queue and one per-site rate limiter; this changes only
   claim order, not the rest of the "no new migration tooling" design.
+  **Amendment (2026-09-19, branch `claude/kind-darwin-gpg70g`):**
+  `(item_key IS NOT NULL)` is no longer the *leading* key — `priority DESC`
+  sits ahead of it, so a row the save endpoint expedites outranks the release
+  lane as well. That is this bullet's own principle rather than an exception to
+  it: the release lane is ahead of the stock lane because bulk work must not
+  outrank a person, and an expedited row is one person waiting on one record.
+  Everything below about priority-within-a-batch rather than exclusion is
+  unchanged. See
+  [`2026-09-19-save-jumps-the-marketplace-queue-design.md`](2026-09-19-save-jumps-the-marketplace-queue-design.md).
 - **No new migration tooling**, same as slice 1 — every schema change here
   is an idempotent `CREATE TABLE/INDEX IF NOT EXISTS` or `ADD COLUMN IF NOT
   EXISTS`/`ALTER COLUMN ... DROP NOT NULL` (all safe to re-run), consistent

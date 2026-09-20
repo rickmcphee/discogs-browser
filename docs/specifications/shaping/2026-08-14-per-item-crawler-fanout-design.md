@@ -174,6 +174,15 @@ RETURNING id, discogs_id, item_key, pending_crawler_ids
 rows (anti-starvation, priority within a batch rather than exclusion) and FIFO by
 `requested_at, id` within a kind.
 
+**Amendment (2026-09-19, branch `claude/kind-darwin-gpg70g`):** the sort has since gained a
+leading `priority DESC`, in the block above and in the one quoted near the top of this document:
+`ORDER BY priority DESC, (item_key IS NOT NULL), requested_at, id`. Both guarantees named here
+still hold among rows of equal priority, which is every row this document is about — only the
+save endpoint writes a non-zero priority. The interleaving observation at the top holds for the
+same reason: rows from one enqueue burst share a priority as well as a `requested_at`, so the sort
+still falls through to `id`. See
+[`2026-09-19-save-jumps-the-marketplace-queue-design.md`](2026-09-19-save-jumps-the-marketplace-queue-design.md).
+
 `batch_size` drops from 5 to 2. A batch is now `batch_size × N` site requests — at three enabled
 crawlers and a 30s pace, a batch of 5 is roughly five minutes of held claims, which widens the
 hung-worker stranding window documented on `claim_crawl_queue_batch` for no benefit.

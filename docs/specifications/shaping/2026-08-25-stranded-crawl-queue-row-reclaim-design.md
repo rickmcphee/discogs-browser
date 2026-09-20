@@ -131,6 +131,16 @@ Three columns written, and deliberately no others:
   requested_at, id`, so a row that has been stuck for hours sorts ahead of
   everything enqueued since. Bumping it would punish the row for having been
   stranded. Same reasoning `defer_crawl_queue_row` already carries.
+  **Amendment (2026-09-19, branch `claude/kind-darwin-gpg70g`):** that sort now
+  reads `priority DESC, (item_key IS NOT NULL), requested_at, id`, and the
+  reclaim leaves `priority` untouched for exactly the reason stated here. The
+  rule the table holds is that `priority` resets wherever `requested_at` does
+  — both say "a fresh, routine request" — so the two writers that reset it are
+  the revives in `enqueue_crawl_queue_for_stock_item` and
+  `backfill_crawl_queue_for_crawler`, and this reclaim, `defer_crawl_queue_row`
+  and `revert_crawl_queue_claim` all leave both alone. A row a user was waiting
+  on before a Machine died is still that row when it is handed back. See
+  [`2026-09-19-save-jumps-the-marketplace-queue-design.md`](2026-09-19-save-jumps-the-marketplace-queue-design.md).
 
 `FOR UPDATE SKIP LOCKED` in the subquery, not a bare `UPDATE … WHERE`: several
 workers across several Machines run this concurrently, and a plain UPDATE would
