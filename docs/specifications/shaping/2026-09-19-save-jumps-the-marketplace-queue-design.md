@@ -195,6 +195,26 @@ So the save widens unconditionally. The cost is re-running crawlers that did
 finish earlier in an in-flight pass's cycle: bounded, paid only when somebody
 clicks save, and precisely what they are asking for.
 
+**One state is outside that rule, and it is a known gap rather than an
+oversight.** A save on an `in_progress` row touches only `priority`, because
+the worker holding it has already claimed its own snapshot of
+`pending_crawler_ids` and resolves its crawler set from that. If the in-flight
+pass was itself narrowed *and it completes*, `mark_crawl_queue_done` marks the
+row `done` having refreshed only that narrowed set, and the save is consumed
+by a partial pass. Widening the row here would not help: the worker is not
+reading it any more.
+
+Closing it needs a follow-up-request signal that the terminal write consumes —
+a new column, and a `mark_crawl_queue_done` that sometimes hands the row back
+instead of completing it, on the one path in this file where taking the wrong
+branch loses a crawl result and which interacts with `defer_crawl_queue_row`
+as the other terminal write. That is a larger change than the gap warrants
+today: it needs the item to be mid-crawl *and* narrowed at the instant of the
+click, against a backlog drain, where the earlier `pending` version of this
+bug was open from an admin enabling a crawler until the queue emptied. Recorded
+here so the next person to touch this weighs it deliberately rather than
+rediscovering it.
+
 The `in_progress` case looks safe to skip and is not. A worker holding the row
 is already crawling what the user asked for — but only if that pass finishes.
 `defer_crawl_queue_row`, `revert_crawl_queue_claim` and

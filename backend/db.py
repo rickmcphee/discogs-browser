@@ -2756,6 +2756,18 @@ QUEUE_PRIORITY_INTERACTIVE = 1
 # age is what the Queue tab reports and a claim in flight has not just been
 # requested.
 #
+# Known limitation, and the one place a save does not mean "everything
+# eligible": if that in-flight pass was itself narrowed (a backfill revive, or
+# an earlier deferral) and it *completes*, the worker resolved its crawler set
+# from the snapshot it claimed, so mark_crawl_queue_done marks the row done
+# having refreshed only that narrowed set. The save is consumed by a partial
+# pass. Clearing pending_crawler_ids here would not help -- the worker is not
+# reading this row any more. Closing it needs a follow-up-request signal that
+# the terminal write consumes, which is a new column and a conditional
+# mark_crawl_queue_done, on the one path in this file where a wrong branch
+# loses a crawl result. Left open deliberately rather than overlooked; the
+# window is one claim of one item, against a backlog drain.
+#
 # The 'pending' case is the common one and the reason reviving alone would not
 # have done: with crawl_library_only off every live item already has a row, so
 # a save that only touched 'done' rows would leave the ordinary case -- a row
@@ -2780,8 +2792,11 @@ QUEUE_PRIORITY_INTERACTIVE = 1
 # overriding. On a 'done' row it is reset like every other revive.
 #
 # pending_crawler_ids is cleared unconditionally, which is a deliberate
-# reversal: a save means "price this against everything eligible", in every
-# state, and that has to hold however the row came to be narrowed. Reading a
+# reversal: a save means "price this against everything eligible" in every
+# state this statement can reach, and that has to hold however the row came to
+# be narrowed. (The state it cannot reach is a claimed row, whose worker
+# already holds its own snapshot of the narrowed set -- see the in_progress
+# note above for what that costs.) Reading a
 # narrowed 'pending' row as a partial pass whose other crawlers just ran is
 # only sometimes true -- backfill_crawl_queue_for_crawler revives a *done*
 # target as pending with ARRAY[one crawler], so its other prices are as old as
