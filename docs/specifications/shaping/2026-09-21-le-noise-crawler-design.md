@@ -455,14 +455,36 @@ yielding a row; a title with no separator yielding nothing; multi-page walking;
 every drift guard above, in both directions where it has one; and retyped
 payload fields skipping the product rather than aborting the source.
 
+From the review rounds, and each one a classification the gate got wrong
+before: the counted prefix read on both sides of the vocabulary (`5xCD`,
+`5×CD` and `5CD` dropped; `3xLP/2xCD`, `2xLP`, `2×LP` and `2x12"` kept;
+`Studio12LP CD` and `XLP CD` dropped, so neither a glued digit run nor a bare
+letter can vouch for a record); a glued inch marker not rescuing a non-vinyl
+bracket, end to end as well as in isolation; a bool, non-finite, non-positive
+or oversized-integer price answering `None` rather than a number or a raised
+`OverflowError`; and the drift message's own wording, asserted both for what
+it says and for what it must not.
+
 Each guard and rule was mutation-checked — mutated once in the crawler, with
-the suite re-run to confirm a test fails. Two mutations survived a first pass
-and both were closed by adding a test: reading the whole title instead of its
-brackets in the medium gate (closed by the captured `Lip Cream - Big Foot
-Cassette (Yellow)` product), and dropping the type check on the `images`
-container (closed by giving one product a *non-iterable* `images`, since a
-retyped-but-iterable one such as a string happens to survive the unguarded
-comprehension).
+the suite re-run to confirm a test fails. **Three** mutations survived a first
+pass across the rounds, each closed by adding a test rather than by weakening
+the mutation:
+
+- reading the whole title instead of its brackets in the medium gate, closed by
+  the captured `Lip Cream - Big Foot Cassette (Yellow)` — a record whose
+  *album* is named after a cassette;
+- dropping the type check on the `images` container, closed by giving one
+  product a **non-iterable** `images`, since a retyped-but-iterable value such
+  as a string survives the unguarded comprehension unharmed and so cannot tell
+  the guarded code from the unguarded;
+- narrowing the `variant-identity-source drift` wording, closed by asserting
+  the message text, since every test until then matched on the drift *name*
+  alone and was blind to the thing that finding was about.
+
+The shared counted prefix is deliberately **not** in that list: its tests were
+written before its mutations, so it never survived a pass. Recorded because
+three records of this work briefly disagreed on the number, and the one that
+counted a fourth was this document's summary rather than the run.
 
 ## Crawl citizenship and `robots.txt` compliance
 
