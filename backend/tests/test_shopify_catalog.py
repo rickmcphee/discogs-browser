@@ -270,3 +270,45 @@ async def test_iter_products_raises_on_an_unreadable_products_field_on_a_later_p
         return_value=httpx.Response(200, json={}))
     with pytest.raises(RuntimeError, match="products"):
         [p async for p in iter_products("https://example.myshopify.test", "vinyl")]
+
+
+@respx.mock
+async def test_iter_products_floors_the_pacing_delay_at_min_delay(tmp_config_dir, monkeypatch):
+    # `crawl_delay_seconds` is admin-editable with no lower bound, so a store
+    # whose robots.txt names a `Crawl-delay` only gets it honoured if the floor
+    # reaches the request. 2 is deliberately below the floor: without the
+    # pass-through the walk paces at 1-2s and this assertion fails, which is
+    # what keeps the guarantee from being silently droppable.
+    save_config({"crawl_delay_seconds": 2, "consecutive_failure_limit": 10})
+    sleep_calls = []
+
+    async def fake_sleep(seconds):
+        sleep_calls.append(seconds)
+
+    monkeypatch.setattr("catalog_http.sleep", fake_sleep)
+    respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "1"}).mock(
+        return_value=_page_response([]))
+    [p async for p in iter_products(
+        "https://example.myshopify.test", "vinyl", min_delay=10)]
+    assert sleep_calls
+    # BOTH ends of the jitter window, not just the upper one: flooring the
+    # value alone still permits a sleep of min_delay / 2.
+    assert all(s >= 10 for s in sleep_calls)
+
+
+@respx.mock
+async def test_iter_products_without_min_delay_paces_exactly_as_before(tmp_config_dir, monkeypatch):
+    # The other half of the contract: the parameter defaults to 0.0, so every
+    # caller that omits it is byte-for-byte unchanged.
+    save_config({"crawl_delay_seconds": 2, "consecutive_failure_limit": 10})
+    sleep_calls = []
+
+    async def fake_sleep(seconds):
+        sleep_calls.append(seconds)
+
+    monkeypatch.setattr("catalog_http.sleep", fake_sleep)
+    respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "1"}).mock(
+        return_value=_page_response([]))
+    [p async for p in iter_products("https://example.myshopify.test", "vinyl")]
+    assert sleep_calls
+    assert all(1 <= s <= 2 for s in sleep_calls)

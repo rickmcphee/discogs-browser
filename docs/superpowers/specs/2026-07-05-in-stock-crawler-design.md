@@ -903,17 +903,29 @@ CREATE TABLE stock_items (
 ### `backend/shopify_catalog.py` (shared)
 
 ```python
-async def iter_products(base_url: str, collection_slug: str) -> AsyncIterator[dict]:
+async def iter_products(base_url: str, collection_slug: str, *,
+                        min_delay: float = 0.0) -> AsyncIterator[dict]:
     ...  # paginates GET {base_url}/collections/{collection_slug}/products.json?limit=250&page=N
          # until an empty "products" LIST; a missing, null or retyped "products" field
          # raises instead of stopping the walk; retries non-2xx up to
          # consecutive_failure_limit times before raising; delay before each request
-         # from crawl_delay_seconds
+         # from crawl_delay_seconds, floored at min_delay
 
 def has_tag(product: dict, tag: str) -> bool: ...       # case-insensitive tags membership
 def strip_vendor_prefix(title: str, vendor: str) -> str: ...  # strips "{vendor} - " if present, else unchanged
 def resolve_cover_image(product: dict, variant: dict) -> Optional[str]: ...  # variant.featured_image.src, else product.images[0].src, else None
 ```
+
+**(2026-09-21 amendment:** `iter_products()` gained a keyword-only
+`min_delay`, passed straight through to `catalog_http.get_with_retry()`, which
+has taken that floor since 2026-09-02 and floors *both* ends of its jitter
+window with it. It exists for a Shopify store whose `robots.txt` names a
+`Crawl-delay` — `crawl_delay_seconds` is admin-editable with no lower bound, so
+honouring one has to be enforced by the design rather than asserted. It
+defaults to `0.0`, so every caller that omits it is byte-for-byte unchanged.
+First used by `xlrecordings.py`; see
+`2026-09-21-xl-recordings-crawler-design.md` and, for the floor's own
+reasoning, `2026-09-02-m-theory-audio-crawler-design.md`.)
 
 Delay between page requests and the consecutive-failure threshold reuse the `crawl_delay_seconds` / `consecutive_failure_limit` settings `crawl_releases()` applies to release searches: a random delay in `[crawl_delay_seconds / 2, crawl_delay_seconds]` before each request, and the same failure threshold. Retry-on-failure itself is new to `iter_products()` — `crawl_releases()` never retries a failed request, it counts the failure and moves on to the next release/crawler pair, but pagination has no next item to move on to, so a failed page is retried after another delay, counting consecutive failures until `consecutive_failure_limit` is reached (a limit of `0` means fail-fast, not unlimited retries, since this loop has no natural end the way `crawl_releases()`'s bounded release×crawler loop does). No `BotDetectedError` — a non-2xx response is a raised `httpx.HTTPError`; once the failure limit is hit it propagates and is caught by the sync loop and reported as `stock_sync_error`, matching how `_sync_collection` handles an invalid Discogs token. A 2xx page whose `products` field is missing, null or not a list raises too, for the same fail-safe reason: reading it as exhaustion would stop the walk silently, past every drift guard a crawler can write, leaving `_sync_stock` to replace a whole snapshot with a partial prefix. **(2026-08-02 amendment, superseded:** a 429 carrying a `Retry-After` header overrode that jittered delay once, for the immediately following retry only, capped at 600s. **2026-08-04:** a 429 is no longer retried at all, Retry-After-paced or not — `iter_products()` raises on first sight and it is never counted against `consecutive_failure_limit`, which now governs non-429 failures only. `catalog_http.get_with_retry()` implements that, and `test_shopify_catalog.py` pins it; the amendment list at the top of this file has recorded the supersession since it happened, but this paragraph still stated the old rule. See `2026-08-02-stock-sync-429-backoff-design.md` and its own 2026-08-04 amendment.)
 
