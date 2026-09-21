@@ -232,6 +232,21 @@ Leaving the name alone still works, because `title_key()` drops `vinyl` and
 other stores' rows for the same pressing. Only `record_key()` keeps the unfenced
 colour, and its cost is the cheap one: one judgment per colour variant.
 
+Both halves of that, run against `title_key.py` on this store's live titles:
+
+| Title | `title_key` | `record_key` |
+| --- | --- | --- |
+| `Young As The Morning Old As The Sea LP` | `as morning old sea the young` | `young as the morning old as the sea` |
+| `Young As The Morning Old As The Sea` | `as morning old sea the young` | `young as the morning old as the sea` |
+| `Clara Libre White Vinyl` | `clara libre white` | `clara libre white` |
+| `Clara Libre - White Vinyl` | `clara libre white` | `clara libre` |
+
+The first pair is the Cheapest filter still working: the unfenced `LP` is gone
+from both keys, so this store's row competes with a plainly-titled one
+elsewhere. The last pair is the whole fence question in two lines — a dash
+would fold the pressing out of `record_key`, and the only way to put one there
+is to guess where it goes.
+
 ### Artist, price, currency, image, availability
 
 - **artist** — `<artist>` verbatim, except that `Various Artists` and `Various`
