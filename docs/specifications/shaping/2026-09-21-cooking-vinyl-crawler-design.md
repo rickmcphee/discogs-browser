@@ -309,13 +309,14 @@ names a distinct way the feed can stop carrying what this crawler reads:
 | format-taxonomy | products are present but none names a vinyl format | see below |
 | bundle-detection | records are present but every one of them reads as a bundle | the store publishes no bundle today, so this is the rejection tests over-matching — a `+` or a medium word that has become part of how it writes an ordinary title |
 | stock-source | nothing was yielded while some vinyl product's `availability` is unrecognised | one genuinely sold-out product must not vouch for a catalog gone unreadable behind it |
+| price-source | rows were yielded and **none** carries a price | isolated nulls stay tolerated; a store-wide price failure re-lists the catalog unpriced, which is worse than the snapshot it replaces |
 
-"Unrecognised" there means *anything* outside `in stock`/`preorder`, an empty
-value included. Because sold-out products are dropped from the feed rather than
-flagged, the field has never carried a third value, so a third value is drift by
-construction. If the platform later starts flagging sold-out stock instead, this
-guard fires on the first sync that sees it — a false raise, but one whose
-message names the field to go and look at.
+**On the stock-source row.** "Unrecognised" means *anything* outside
+`in stock`/`preorder`, an empty value included. Because sold-out products are
+dropped from the feed rather than flagged, the field has never carried a third
+value, so a third value is drift by construction. If the platform later starts
+flagging sold-out stock instead, this guard fires on the first sync that sees
+it — a false raise, but one whose message names the field to go and look at.
 
 That message reports the **values** it did not recognise, not just how many
 products carried one, because the two ways to land here send the reader to
@@ -324,23 +325,22 @@ different places: a field that has gone missing is a feed-shape change, while
 whether it is purchasable. Saying "carry no availability" for both would send
 whoever reads it hunting for an absent element that is right there.
 
-| price-source | rows were yielded and **none** carries a price | isolated nulls stay tolerated; a store-wide price failure re-lists the catalog unpriced, which is worse than the snapshot it replaces |
+**On the order of the rows**, which is load-bearing in one place. **`name` is
+both an identity field and the input to the format gate**, so a feed that lost
+its names satisfies the format guard *and* the identity guard at once, and
+whichever fires first is the diagnosis whoever reads the log gets. The identity
+guard goes first, because a missing field is the more specific signal and the
+one this crawler can actually name; a nameless product is also counted before
+the format gate rather than after it, since the empty string fails the vinyl
+test and would otherwise leave by that door. Getting this wrong is not a silent
+failure — the crawl still raises and the snapshot still survives — but it sends
+the reader after a change in the store's format wording that never happened.
 
-The order of those rows is load-bearing in one place. **`name` is both an
-identity field and the input to the format gate**, so a feed that lost its names
-satisfies the format guard *and* the identity guard at once, and whichever fires
-first is the diagnosis whoever reads the log gets. The identity guard goes
-first, because a missing field is the more specific signal and the one this
-crawler can actually name; a nameless product is also counted before the format
-gate rather than after it, since the empty string fails the vinyl test and would
-otherwise leave by that door. Getting this wrong is not a silent failure — the
-crawl still raises and the snapshot still survives — but it sends the reader
-after a change in the store's format wording that never happened.
-
-The last three rows are conditioned on a second tally rather than on emptiness
-alone,
-exactly as in `musiconvinyl.py`: a store that has simply sold out is empty
-legitimately, so emptiness by itself may never raise.
+**Identity-source, stock-source and price-source** are each conditioned on a
+second tally rather than on emptiness alone, exactly as in `musiconvinyl.py`: a
+store that has simply sold out is empty legitimately, so those three may never
+fire on emptiness by itself. The catalog guard is the deliberate exception, and
+the next paragraph is about why.
 
 Two of these guards are judgement calls and both err the same way.
 

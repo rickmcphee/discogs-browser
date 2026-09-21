@@ -25,7 +25,7 @@
 - **`Various Artists` and `Various` both become the bare `Various`** — Discogs' entity name, and what `amazon.py` and `db._library_release_match_sql` compare against.
 - **`availability` admits the literals `in stock` and `preorder` and nothing else.** Both are purchasable; those are the only values observed; an unknown value is not assumed buyable. No pre-order marker on the title — `compute_item_key()` hashes it, and a marker that vanishes on release would re-key the row.
 - **Price rejects non-finite values**, not just unparseable ones: `float("nan")` and `float("inf")` both parse.
-- **Emptiness alone may never raise.** The identity, stock and price guards are each conditioned on a second tally, as in `musiconvinyl.py`, so a store that has simply sold out is allowed to be empty.
+- **Emptiness alone may never raise *in the identity, stock and price guards*.** Each is conditioned on a second tally, as in `musiconvinyl.py`, so a store that has simply sold out is allowed to be empty. This is deliberately not an absolute rule: the **catalog** guard does raise on a feed with no products at all, accepting that a genuine total sell-out trips it, because a raise keeps the previous snapshot while a completed-but-empty crawl wipes it. Do not "fix" that guard to match this line.
 - No comments except where the WHY is non-obvious.
 - No inventory counts in prose — see `CLAUDE.md`, "Documentation — never write down a count of things that change". Dated live-data findings are fine and are what the design doc records.
 - Registration is automatic via `main.py`'s bundled-crawler startup loop — no wiring changes anywhere else.
@@ -71,5 +71,5 @@ cd backend && TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/di
 **Step 3 — verification.**
 
 - [x] Run the new test file and confirm it passes.
-- [ ] Run the whole backend suite to confirm nothing else moved. *(Unchecked deliberately: a run is in flight on the rebased tree and the earlier one was stopped mid-run to rebase, so nothing here may claim a completed suite yet. Check it when a run has produced a result.)*
+- [x] Run the whole backend suite to confirm nothing else moved. *(CI `Backend tests` green on `52b99b7`, which is this branch's code — the only commit after it changes documentation alone. Also confirmed locally: `4814 passed, 0 failed, 155 errors`, every error in a Playwright-dependent file this container cannot run, which CI does run and passes.)*
 - [x] Pre-PR spec-drift check across `docs/superpowers/specs/` and `docs/specifications/shaping/`.
