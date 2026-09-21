@@ -29,8 +29,9 @@ storefront is unreachable to anything but a full browser: every path on it —
 an `x-amzn-waf-action: challenge` header, so an httpx-based catalog walk gets
 no data at all and a Playwright one would be solving a bot challenge on every
 page. The US storefront serves the same label's catalogue over the ordinary
-Shopify endpoints with no challenge, and prices in USD, which is also what the
-rest of this fleet's stores quote.
+Shopify endpoints with no challenge, and prices in USD. (No claim is intended
+about the rest of the fleet, which quotes whatever its stores charge in --
+Bella Union and Monorail Music are both GBP.)
 
 Recorded because it is the kind of thing a later session re-discovers the hard
 way: the UK host is not "down" and not blocking this app specifically, it is
