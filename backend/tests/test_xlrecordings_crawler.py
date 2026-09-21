@@ -326,10 +326,54 @@ async def test_vendor_beats_a_tag_that_lost_the_artists_comma(crawler):
 
 
 @respx.mock
-async def test_vendor_beats_a_tag_naming_only_one_collaborator(crawler):
+async def test_a_collaboration_is_credited_to_its_leading_artist(crawler):
+    # The library match decides this, not completeness. parse_release() keeps
+    # artists[0] alone and _library_release_match_sql() compares the artist
+    # for EQUALITY -- only the title is prefix-matched -- so the full billing
+    # is the better name and the worse key, and this field is a key.
     _mock_pages(_COLLABORATION)
     items = [item async for item in crawler.crawl_catalog()]
-    assert items[0]["artist"] == "Gil Scott-Heron & Jamie xx"
+    assert items[0]["artist"] == "Gil Scott-Heron"
+
+
+def test_a_comma_in_an_artists_name_is_not_a_collaboration_separator():
+    # The failure the rule must not cause: truncating one artist whose name
+    # merely begins with the tag. `Tyler, The Creator` is protected twice --
+    # Shopify split its comma into two tags, and a comma is not a separator.
+    assert Crawler._artist(_COMMA_ARTIST) == "Tyler, The Creator"
+    assert Crawler._artist({**_COMMA_ARTIST, "tags": ["Tyler"]}) == "Tyler, The Creator"
+
+
+@pytest.mark.parametrize("vendor,tag,expected", [
+    # Separators between two credits -- reduce to the leading one.
+    ("Gil Scott-Heron & Jamie xx", "Gil Scott-Heron", "Gil Scott-Heron"),
+    ("Someone + Another", "Someone", "Someone"),
+    ("Someone feat. Another", "Someone", "Someone"),
+    ("Someone featuring Another", "Someone", "Someone"),
+    ("Someone and Another", "Someone", "Someone"),
+    ("Someone with Another", "Someone", "Someone"),
+    ("Someone vs. Another", "Someone", "Someone"),
+    ("Someone x Another", "Someone", "Someone"),
+    # Part of a name, not a separator -- the vendor stands.
+    ("Tyler, The Creator", "Tyler", "Tyler, The Creator"),
+    # `x` needs trailing whitespace, so `xx` cannot pose as one.
+    ("Jamie xx", "Jamie", "Jamie xx"),
+    # Not a leading prefix at all.
+    ("Fontaines D.C.", "Some Other Act", "Fontaines D.C."),
+    # Already the whole billing.
+    ("Peggy Gou", "Peggy Gou", "Peggy Gou"),
+])
+def test_only_a_credit_separator_reduces_the_vendor(vendor, tag, expected):
+    product = {**_COLLABORATION, "vendor": vendor, "tags": [tag]}
+    assert Crawler._artist(product) == expected
+
+
+def test_two_tags_never_reduce_the_vendor():
+    # Two survivors may equally be one comma-split name or two collaborators,
+    # so neither can be trusted as the leading credit.
+    product = {**_COLLABORATION, "vendor": "Gil Scott-Heron & Jamie xx",
+               "tags": ["Gil Scott-Heron", "Jamie xx"]}
+    assert Crawler._artist(product) == "Gil Scott-Heron & Jamie xx"
 
 
 @respx.mock

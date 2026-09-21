@@ -43,6 +43,14 @@ _NON_ALNUM_RE = re.compile(r"[^0-9a-z]+")
 # remains. Years are matched by shape, not enumerated, or the crawler starts
 # publishing records by an artist called "2027" the January after it ships.
 _YEAR_TAG_RE = re.compile(r"^(?:19|20)\d{2}$")
+# What separates two credits in a billing, as opposed to what merely sits
+# inside one artist's name. Deliberately space-delimited and deliberately
+# WITHOUT the comma: a comma here belongs to the name (`Tyler, The Creator`),
+# which is also how Discogs writes it, so reading one as a separator would
+# truncate the artist rather than complete the match. `x` needs trailing
+# whitespace, so the `xx` of `Jamie xx` cannot pose as one.
+_COLLABORATION_SEPARATOR_RE = re.compile(
+    r"^\s*(?:&|\+|and|feat\.?|featuring|ft\.?|with|vs\.?|x)\s+", re.IGNORECASE)
 _NON_ARTIST_TAGS = frozenset(('12" singles', "preorder", "xl merch"))
 
 # The pressing descriptor is the tail of the variant title, which this store
@@ -439,10 +447,41 @@ class Crawler:
             # `vendor` went blank store-wide that guard fires and the snapshot
             # survives -- the loud failure rather than the quiet one.
             return ""
-        if not cls._is_label_vendor(vendor):
-            return vendor
         candidates = cls._artist_tags(product)
+        if not cls._is_label_vendor(vendor):
+            return cls._leading_credit(vendor, candidates)
         return candidates[0] if len(candidates) == 1 else ""
+
+    @staticmethod
+    def _leading_credit(vendor: str, candidates: List[str]) -> str:
+        """`vendor`, reduced to its first credit where the tags name one.
+
+        The library match is what decides this, not completeness.
+        discogs.parse_release() keeps `artists[0]` alone, and
+        db._library_release_match_sql() compares the artist for EQUALITY --
+        only the title is matched by prefix. So a row billed
+        `Gil Scott-Heron & Jamie xx` cannot match a catalog row holding
+        `Gil Scott-Heron`, and the record silently drops out of the
+        Collection/Wantlist filters and out of the crawl_library_only gate.
+        The full billing is the better NAME and the worse KEY, and this field
+        is a key.
+
+        Narrow on purpose, because the failure it must not cause is the
+        opposite one -- truncating a single artist whose name merely begins
+        with the tag. Three conditions have to hold together: exactly one tag
+        survives, it is a leading prefix of the vendor, and what follows it is
+        a separator between credits rather than part of a name. `Tyler, The
+        Creator` fails all three ways that matter -- it carries two tags,
+        because Shopify split its comma, and a comma is not a separator here.
+        """
+        if len(candidates) != 1:
+            return vendor
+        tag = candidates[0]
+        if not tag or not vendor.lower().startswith(tag.lower()):
+            return vendor
+        if not _COLLABORATION_SEPARATOR_RE.match(vendor[len(tag):]):
+            return vendor
+        return tag
 
     @staticmethod
     def _is_label_vendor(vendor: str) -> bool:

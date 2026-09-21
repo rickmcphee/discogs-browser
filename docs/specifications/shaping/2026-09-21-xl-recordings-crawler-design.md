@@ -94,8 +94,32 @@ even be put back:
 "We're New Here" vendor='Gil Scott-Heron & Jamie xx'  tags=['Gil Scott-Heron']
 ```
 
-The second is not a split at all: the tag simply names one of two
-collaborators. `vendor` carries both names whole.
+The two are different problems, and only the first is a split. `vendor`
+carries `Tyler, The Creator` whole and the tags cannot put it back, so there
+`vendor` is simply right.
+
+**Why a collaboration is nevertheless credited to its leading artist.** The
+second line above is not a broken tag: it names the first of two
+collaborators, and that is the one the library can match.
+`discogs.parse_release()` keeps `artists[0]` alone, and
+`db._library_release_match_sql()` compares the artist for **equality** — only
+the *title* is matched by prefix. So a row billed `Gil Scott-Heron & Jamie xx`
+cannot match a catalog row holding `Gil Scott-Heron`, and the record drops out
+of the Collection/Wantlist filters and out of the `crawl_library_only` gate
+entirely. The full billing is the better *name* and the worse *key*, and this
+field is a key.
+
+So where the tags name a leading credit, the vendor is reduced to it. The rule
+is narrow on purpose, because the failure it must not cause is the mirror
+image — truncating a single artist whose name merely begins with the tag.
+Three conditions hold together: exactly one tag survives, it is a leading
+prefix of the vendor, and what follows is a separator *between credits*
+rather than part of a name. The separator set is space-delimited and
+deliberately excludes the comma, since a comma there belongs to the name —
+which is how Discogs writes it too. `Tyler, The Creator` is therefore
+protected twice: it carries two tags, and its remainder starts with a comma.
+Over the live catalogue exactly one product is affected, the one above.
+Raised by Copilot on PR #395 as a suppressed finding.
 
 This is the same hazard Monorail's design records, with the sources swapped —
 there the title is whole and the tag is the fragment. The rule is the same
