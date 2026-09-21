@@ -475,6 +475,22 @@ def test_a_counted_prefix_is_read_on_both_sides_of_the_vocabulary():
         assert Crawler._is_other_medium(not_vinyl) is True, not_vinyl
 
 
+def test_an_underscore_separates_a_medium_token_like_any_other_punctuation():
+    # `\b` counts `_` as a word character, so a trailing one did not fire
+    # before an underscore: "(CD_Box)" was not read as a CD, and "(LP_Box CD)"
+    # found the CD but missed the LP override and dropped a vinyl bundle.
+    # Every boundary is now the "not a letter or digit" lookaround, which
+    # excludes `_` and so treats it as the separator a reader does.
+    for non_vinyl in ('A - B (CD_Box)', 'A - B (Cassette_Box)', 'A - B (2CD_Set)'):
+        assert Crawler._is_other_medium(non_vinyl) is True, non_vinyl
+    for mixed in ('A - B (LP_Box CD)', 'A - B (_vinyl_ CD)'):
+        assert Crawler._is_other_medium(mixed) is False, mixed
+    # The space-delimited spellings behaved correctly all along; these pin that
+    # unifying the boundaries did not disturb them.
+    assert Crawler._is_other_medium('A - B (CD Box)') is True
+    assert Crawler._is_other_medium('A - B (LP Box CD)') is False
+
+
 def test_a_glued_inch_marker_does_not_rescue_a_non_vinyl_bracket():
     # A quote glyph is already a non-word character, so the inch marker cannot
     # get a closing boundary from `\b` the way the word alternatives do.

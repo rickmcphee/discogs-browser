@@ -47,10 +47,23 @@ _BRACKET_RE = re.compile(r'\(([^()]*)\)')
 # naming one with no vinyl named anywhere alongside it.
 #
 # Both boundaries are spelled "not a letter or digit" rather than `\b` or an
-# ASCII class, and both halves of that matter. `[a-z]` is ASCII-only even under
-# IGNORECASE, so it would read an accented letter as a separator; `\b` cannot
-# help the inch marker at all, because a quote glyph is already a non-word
-# character and `\b` has nothing left to assert after it.
+# ASCII class, and every alternative below uses them rather than `\b` -- which
+# is the claim this comment used to make while the word alternatives still
+# ended in `\b`. Three reasons, each of which bit:
+#
+#   `[a-z]` is ASCII-only even under IGNORECASE, so it reads an accented letter
+#   as a separator.
+#
+#   `\b` cannot help the inch marker at all, because a quote glyph is already a
+#   non-word character and `\b` has nothing left to assert after it.
+#
+#   `\b` counts `_` as a word character, so a trailing one does not fire before
+#   an underscore: "(CD_Box)" was not read as a CD and was published as a
+#   record, and "(LP_Box CD)" found the CD but missed the LP override and
+#   dropped a vinyl bundle. The lookarounds exclude `_` (`[^\W_]`), so they
+#   treat it as the separator a reader does. Found by Copilot in review on
+#   PR #394 -- the comment describing the rule was written before the code
+#   fully kept it.
 _NOT_AFTER_LETTER_OR_DIGIT = r'(?<![^\W_])'
 _NOT_BEFORE_LETTER_OR_DIGIT = r'(?![^\W_])'
 
@@ -70,7 +83,8 @@ _NOT_BEFORE_LETTER_OR_DIGIT = r'(?![^\W_])'
 _COUNTED = _NOT_AFTER_LETTER_OR_DIGIT + r'(?:\d+\s*[x×]?\s*)?'
 
 _NON_VINYL_MEDIUM_RE = re.compile(
-    _COUNTED + r'(?:CDs?|Cassettes?|K7|DVDs?|Blu-?\s*Rays?|BRD)\b',
+    _COUNTED + r'(?:CDs?|Cassettes?|K7|DVDs?|Blu-?\s*Rays?|BRD)'
+    + _NOT_BEFORE_LETTER_OR_DIGIT,
     re.IGNORECASE,
 )
 # `EP` is deliberately absent: it names a record's length, not its medium, and
@@ -89,10 +103,10 @@ _NON_VINYL_MEDIUM_RE = re.compile(
 # the `x`, because here the digits belong to the SIZE: "2x12\"" counts discs,
 # "212\"" is noise. Same split `joyfulnoiserecordings.py` makes.
 _VINYL_MEDIUM_RE = re.compile(
-    _COUNTED + r'LPs?\b'
-    r'|\bvinyls?\b'
-    r'|\bpicture\s+discs?\b'
-    r'|' + _NOT_AFTER_LETTER_OR_DIGIT + r'(?:\d+\s*[x×]\s*)?(?:7|10|12)\s*["”″]'
+    _COUNTED + r'LPs?' + _NOT_BEFORE_LETTER_OR_DIGIT
+    + r'|' + _NOT_AFTER_LETTER_OR_DIGIT + r'vinyls?' + _NOT_BEFORE_LETTER_OR_DIGIT
+    + r'|' + _NOT_AFTER_LETTER_OR_DIGIT + r'picture\s+discs?' + _NOT_BEFORE_LETTER_OR_DIGIT
+    + r'|' + _NOT_AFTER_LETTER_OR_DIGIT + r'(?:\d+\s*[x×]\s*)?(?:7|10|12)\s*["”″]'
     + _NOT_BEFORE_LETTER_OR_DIGIT,
     re.IGNORECASE,
 )

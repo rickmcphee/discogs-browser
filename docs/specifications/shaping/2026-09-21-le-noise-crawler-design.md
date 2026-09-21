@@ -149,6 +149,19 @@ So the rule is *names a non-vinyl medium and names no vinyl one*, not *names a
 non-vinyl medium*. The two boxes above are the whole live population of the
 "both" case, and a bare "names a CD" gate discards them.
 
+**Every boundary in both patterns is the lookaround, never `\b`**, and the
+reason is three separate failures rather than a preference. `[a-z]` is
+ASCII-only even under `IGNORECASE`, so it reads an accented letter as a
+separator. `\b` cannot help the inch marker at all, because a quote glyph is
+already a non-word character and `\b` has nothing left to assert after it. And
+`\b` counts `_` as a word character, so a trailing one does not fire before an
+underscore — `(CD_Box)` was not read as a CD and was published as a record,
+while `(LP_Box CD)` found the CD but missed the LP override and dropped a vinyl
+bundle. The lookarounds exclude `_` (`[^\W_]`) and so treat it as the separator
+a reader does. That last one was a comment describing the rule more completely
+than the code kept it: this section claimed "not a letter or digit" while the
+word alternatives still ended in `\b`.
+
 A leading count is part of the medium token and has no word boundary before the
 letters (`2CD`, `3LP`), so neither pattern can rely on `\b` to find the start.
 Both sides share **one** counted prefix, and sharing it is the point rather than
