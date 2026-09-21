@@ -544,8 +544,11 @@ site's findings, from the `robots.txt` captured 2026-09-21:
   `/collections/`. **None of these covers
   `/collections/vinyl/products.json`**, the only path this crawler requests,
   which carries no `sort_by` and no `+` — only `limit` and `page`.
-- There is no `Crawl-delay` directive, so no `min_delay` floor is set on
-  `get_with_retry`.
+- There is no `Crawl-delay` directive, so this crawler passes no `min_delay`
+  to `iter_products()` and the floor stays at its `0.0` default. (That
+  keyword arrived on `iter_products()` with `xlrecordings.py` on 2026-09-21,
+  after this crawler was written; `get_with_retry` has taken the floor since
+  2026-09-02. Omitting it leaves this caller byte-for-byte unchanged.)
 - This crawler reads a public JSON catalog, links out to the product page, and
   never transacts.
 - Load: 100 GETs per sync, paced at `random.uniform(delay * 0.5, delay)` with
