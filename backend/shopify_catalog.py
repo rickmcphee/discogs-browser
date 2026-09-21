@@ -18,13 +18,22 @@ _PAGE_LIMIT = 250
 _MAX_PAGE = 100
 
 
-async def iter_products(base_url: str, collection_slug: str) -> AsyncIterator[dict]:
+async def iter_products(
+    base_url: str, collection_slug: str, *, min_delay: float = 0.0
+) -> AsyncIterator[dict]:
     """Paginate a Shopify collection's public products.json endpoint until exhausted.
 
     Each page is fetched through catalog_http.get_with_retry(), which paces the
     request and retries a non-429 failed page up to consecutive_failure_limit
     attempts: unlike crawl_releases(), which just moves on to the next
     release/crawler pair, pagination has no next item to fall through to.
+
+    `min_delay` is a pacing floor a crawler sets for a store whose robots.txt
+    names a `Crawl-delay`, and is passed straight through to get_with_retry(),
+    which floors both ends of its jitter window with it. `crawl_delay_seconds`
+    is admin-editable with no lower bound, so honouring such a store's request
+    has to be enforced by the design rather than asserted. Defaulting to 0
+    leaves every caller that does not set it byte-for-byte unchanged.
 
     Pagination has a hard ceiling: Shopify refuses `page` past _MAX_PAGE with an
     HTTP 400, so a collection larger than _MAX_PAGE * _PAGE_LIMIT can only be walked
@@ -63,7 +72,7 @@ async def iter_products(base_url: str, collection_slug: str) -> AsyncIterator[di
             r = await get_with_retry(
                 client, url,
                 params={"limit": _PAGE_LIMIT, "page": page},
-                delay=delay, failure_limit=failure_limit,
+                delay=delay, failure_limit=failure_limit, min_delay=min_delay,
             )
             products = r.json().get("products")
             # An empty LIST is exhaustion, and the only thing that is. A
