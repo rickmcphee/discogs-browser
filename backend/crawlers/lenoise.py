@@ -45,11 +45,31 @@ _BRACKET_RE = re.compile(r'\(([^()]*)\)')
 # non-vinyl names cannot decide on their own -- what disqualifies a product is
 # naming one with no vinyl named anywhere alongside it.
 #
-# A leading count is part of the token and has no word boundary before the
-# letters ("2CD", "3LP"), which is why each pattern carries its own `\d*`
-# rather than relying on \b to find the start.
+# Both boundaries are spelled "not a letter or digit" rather than `\b` or an
+# ASCII class, and both halves of that matter. `[a-z]` is ASCII-only even under
+# IGNORECASE, so it would read an accented letter as a separator; `\b` cannot
+# help the inch marker at all, because a quote glyph is already a non-word
+# character and `\b` has nothing left to assert after it.
+_NOT_AFTER_LETTER_OR_DIGIT = r'(?<![^\W_])'
+_NOT_BEFORE_LETTER_OR_DIGIT = r'(?![^\W_])'
+
+# A medium word with an optional disc count welded to it: "CD", "2CD", "5xCD",
+# "5×CD", and the same three for LP. Composed ONCE and shared by both patterns
+# below, which is the point -- spelling it separately is how the two sides came
+# to disagree: `\b\d*\s*` could not cross an ASCII `x`, so "(5xCD)" was not read
+# as a CD and was published as a record, while "(5×CD)" *was* read, because the
+# multiplication sign is not a word character and `\b` found a boundary the `x`
+# hid. Found by Copilot in review on PR #394.
+#
+# Two details carried over from `joyfulnoiserecordings.py`, which paid for both:
+# the boundary sits before the WHOLE prefix rather than before the word, so a
+# match cannot restart partway through a glued digit run ("Studio12LP"); and the
+# count is `\d+`, not `\d*`, so a bare letter cannot read as a multiplier
+# ("XLP"). The `x` stays optional because a store writes both "2CD" and "5xCD".
+_COUNTED = _NOT_AFTER_LETTER_OR_DIGIT + r'(?:\d+\s*[x×]?\s*)?'
+
 _NON_VINYL_MEDIUM_RE = re.compile(
-    r'\b\d*\s*(?:CDs?|Cassettes?|K7|DVDs?|Blu-?\s*Rays?|BRD)\b',
+    _COUNTED + r'(?:CDs?|Cassettes?|K7|DVDs?|Blu-?\s*Rays?|BRD)\b',
     re.IGNORECASE,
 )
 # `EP` is deliberately absent: it names a record's length, not its medium, and
@@ -57,27 +77,22 @@ _NON_VINYL_MEDIUM_RE = re.compile(
 # no non-vinyl bracket for this to override -- while including it would rescue
 # a hypothetical "(EP/CD)" that is not a record at all.
 #
-# The inch marker needs a CLOSING boundary of its own, which the word-based
-# alternatives get from their trailing `\b` and it cannot: a quote glyph is
-# already a non-word character, so `\b` has nothing to assert after it. Without
-# one, "(12\"CD)" reads `12\"` as a complete vinyl marker, the bracket names
-# vinyl AND a CD, and the two-sided rule below keeps the CD as a record. Spelled
-# as "not followed by a letter or digit" rather than `(?![a-z0-9])`, because
-# `[a-z]` is ASCII-only even under IGNORECASE and would treat an accented letter
-# as a separator. `joyfulnoiserecordings.py` carries the same guard for the same
-# reason, and records that the fleet shipped this hole twice before closing it.
-# Found by Copilot in review on PR #394.
+# The inch marker needs a CLOSING boundary the word alternatives get from their
+# trailing `\b`. Without one, "(12\"CD)" reads `12\"` as a complete vinyl marker,
+# the bracket names vinyl AND a CD, and the two-sided rule below keeps the CD as
+# a record. A genuine record bundled with a disc keeps its marker, because it
+# names a separator: "(12\"/CD)", "(12\" + CD)" and "(7\" Box Set)" all put a
+# non-letter after the quote.
 #
-# A genuine record bundled with a disc keeps its marker: "(12\"/CD)",
-# "(12\" + CD)" and "(7\" Box Set)" all put a non-letter after the quote. Only
-# the glued form, which names no separator at all, is read as the non-vinyl
-# item it most likely is.
-_NOT_BEFORE_LETTER_OR_DIGIT = r'(?![^\W_])'
+# It composes its own counted prefix instead of sharing `_COUNTED`, and requires
+# the `x`, because here the digits belong to the SIZE: "2x12\"" counts discs,
+# "212\"" is noise. Same split `joyfulnoiserecordings.py` makes.
 _VINYL_MEDIUM_RE = re.compile(
-    r'\b\d*\s*LPs?\b'
+    _COUNTED + r'LPs?\b'
     r'|\bvinyls?\b'
     r'|\bpicture\s+discs?\b'
-    r'|\b(?:7|10|12)\s*["”″]' + _NOT_BEFORE_LETTER_OR_DIGIT,
+    r'|' + _NOT_AFTER_LETTER_OR_DIGIT + r'(?:\d+\s*[x×]\s*)?(?:7|10|12)\s*["”″]'
+    + _NOT_BEFORE_LETTER_OR_DIGIT,
     re.IGNORECASE,
 )
 
@@ -399,7 +414,14 @@ class Crawler:
             return None
         try:
             price = float(raw)
-        except (TypeError, ValueError):
+        # OverflowError alongside the other two: an oversized JSON *integer*
+        # raises it rather than answering inf, and it is not a ValueError, so
+        # an unhandled one aborts the whole source over a single malformed
+        # price -- the same whole-source abort `_text` exists to prevent. An
+        # oversized *string* does not take this path; it becomes inf, which
+        # the finiteness test below rejects. Found by Copilot in review on
+        # PR #394.
+        except (TypeError, ValueError, OverflowError):
             return None
         if not math.isfinite(price) or price <= 0:
             return None

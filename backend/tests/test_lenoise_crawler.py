@@ -453,6 +453,26 @@ async def test_medium_gate_reads_the_bracket_not_the_album_name(crawler):
     assert Crawler._is_other_medium("Led Zeppelin - Live EP (2LP)") is False
 
 
+def test_a_counted_prefix_is_read_on_both_sides_of_the_vocabulary():
+    # `\b\d*\s*` cannot cross an ASCII `x`, so "5xCD" was not read as a CD and
+    # was published as a record — while "5×CD" *was* read, because the
+    # multiplication sign is not a word character and `\b` found the boundary
+    # the `x` hid. One shared counted prefix removes that asymmetry.
+    for counted in ('A - B (5xCD)', 'A - B (5\u00d7CD)', 'A - B (5CD)'):
+        assert Crawler._is_other_medium(counted) is True, counted
+    # And the vinyl side needs the same prefix, or a vinyl box with bonus discs
+    # loses its override and is dropped with the CDs it names.
+    for mixed in ('A - B (3xLP/2xCD)', 'A - B (3LP/2CD)', 'A - B (4LP+4CD)'):
+        assert Crawler._is_other_medium(mixed) is False, mixed
+    for vinyl in ('A - B (2xLP)', 'A - B (2\u00d7LP)', 'A - B (2x12")'):
+        assert Crawler._is_other_medium(vinyl) is False, vinyl
+    # The boundary sits before the WHOLE prefix, so a match cannot restart
+    # partway through a glued digit run, and the count is `\d+`, so a bare
+    # letter cannot read as a multiplier. Both would otherwise vouch for a CD.
+    for not_vinyl in ('A - B (Studio12LP CD)', 'A - B (XLP CD)'):
+        assert Crawler._is_other_medium(not_vinyl) is True, not_vinyl
+
+
 def test_a_glued_inch_marker_does_not_rescue_a_non_vinyl_bracket():
     # A quote glyph is already a non-word character, so the inch marker cannot
     # get a closing boundary from `\b` the way the word alternatives do.
@@ -694,6 +714,26 @@ def test_non_finite_and_non_positive_prices_are_not_prices():
     for raw in ("NaN", "Infinity", "-Infinity", float("nan"), float("inf"), "0.00", 0, "-5"):
         assert Crawler._price({"price": raw}) is None, raw
     assert Crawler._price({"price": "34.99"}) == 34.99
+
+
+def test_an_oversized_json_integer_price_is_not_a_price():
+    # An oversized JSON *integer* makes float() raise OverflowError, which is
+    # not a ValueError -- so leaving it unhandled aborts the whole source over
+    # one malformed price. An oversized *string* does not take that path: it
+    # becomes inf, which the finiteness test rejects.
+    for raw in (10 ** 400, -(10 ** 400)):
+        assert Crawler._price({"price": raw}) is None, raw
+    assert Crawler._price({"price": "1e400"}) is None
+
+
+@respx.mock
+async def test_an_oversized_price_does_not_abort_the_source(crawler):
+    _mock_pages([{**_TAME_IMPALA, "variants": [
+        {"title": "Default Title", "price": 10 ** 400, "available": True, "featured_image": None},
+    ]}, _STEF_CHURA])
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [(i["artist"], i["price"]) for i in items] == [
+        ("Tame Impala", None), ("Stef Chura", 34.99)]
 
 
 @respx.mock

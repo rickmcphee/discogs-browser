@@ -136,8 +136,21 @@ non-vinyl medium*. The two boxes above are the whole live population of the
 "both" case, and a bare "names a CD" gate discards them.
 
 A leading count is part of the medium token and has no word boundary before the
-letters (`2CD`, `3LP`), which is why each pattern carries its own `\d*` rather
-than relying on `\b` to find the start.
+letters (`2CD`, `3LP`), so neither pattern can rely on `\b` to find the start.
+Both sides share **one** counted prefix, and sharing it is the point rather than
+a tidiness: spelling it separately is how they came to disagree. `\b\d*\s*`
+cannot cross an ASCII `x`, so `(5xCD)` was not read as a CD and was published as
+a record — while `(5×CD)` *was* read, because the multiplication sign is not a
+word character and `\b` found the boundary the `x` hid. Fixing only the
+non-vinyl side would then have dropped `(3xLP/2xCD)`, a vinyl box, because its
+LP override was missed the same way.
+
+Two details in that prefix are carried from `joyfulnoiserecordings.py`, which
+paid for both: the boundary sits before the **whole** prefix rather than before
+the word, so a match cannot restart partway through a glued digit run
+(`Studio12LP`); and the count is `\d+`, not `\d*`, so a bare letter cannot read
+as a multiplier (`XLP`). The `x` itself stays optional, because a store writes
+both `2CD` and `5xCD`.
 
 `EP` is deliberately **not** in the vinyl vocabulary: it names a record's
 length, not its medium, and CD EPs exist. Nothing is lost by leaving it out — a
@@ -288,6 +301,13 @@ non-finite case is the one that matters most, because `nan` is not `None` — it
 counts toward `priced` as readily as a real price, so a store-wide retyping to
 `"NaN"` would satisfy `price-source drift` while publishing a catalog of prices
 no reader can use.
+
+It also catches `OverflowError`, which the siblings do not. An oversized JSON
+*integer* raises it rather than answering `inf`, and it is not a `ValueError`,
+so an unhandled one aborts the whole source over a single malformed price —
+the same whole-source abort `_text` exists to prevent, arriving through the
+one field that is parsed rather than read. An oversized *string* does not take
+that path: it becomes `inf`, which the finiteness test already rejects.
 
 `resolve_cover_image()` is called through a local wrapper that validates both
 the containers **and** the nested `src`. The shared helper reads
