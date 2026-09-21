@@ -794,3 +794,50 @@ both directions — every side locks the `crawlers` row before touching
 `stock_items` or `listings` — so no deadlock is reachable through lock
 *ordering*; the lock *strength* on the forward gate is what closes the
 separate self-upgrade hazard.
+
+## Amendment (2026-09-21, branch `claude/admiring-curie-1oqwu7`)
+
+Corrections to the **"Scale, and why it is accepted"** section above, all
+exposed rather than caused by the Le Noise crawler added on this branch. See
+[`2026-09-21-le-noise-crawler-design.md`](2026-09-21-le-noise-crawler-design.md).
+
+**The per-sync figures predate the ceiling stop and were never updated when it
+landed.** That section costs the walk at 144 GETs over 35,645 products. Since
+`iter_products()` gained its `_MAX_PAGE` stop — which the 2026-08-29 amendment
+above adopts as the standing state — the walk reaches
+`_MAX_PAGE * _PAGE_LIMIT` products and terminates there. Two of that section's
+four figures follow mechanically and are corrected here: the walk is 100 GETs,
+and the wall clock is ~37 minutes rather than ~54, since it is the GET count at
+unchanged pacing. The 35,645 remains correct as the *collection's* size, which
+is what the collection-choice table reports it as; it is no longer what a sync
+walks.
+
+**The other two figures are not corrected — they are withdrawn.** Scaling the
+~10,800 rows and ~32,000 dispatch units by the page-count ratio looks like the
+same arithmetic as above and is not. Both descend from one measured rate — the
+30.2% of sampled vinyl products carrying an in-stock variant — and that sample
+is page 1 of `/collections/all`, the *alphabetical head* of a different
+collection. The ceiling stop truncates alphabetically too, so scaling asserts
+exactly what the sample cannot establish: that the reachable window's in-stock
+rate matches the collection's overall. A rate read off the head of the alphabet
+says nothing about the tail it excludes, in either direction. Recovering these
+numbers means re-measuring the reachable `vinyl-lps` window — a full
+ceiling-length paced walk against a live store — which no document here needed
+badly enough to justify the load. Until someone runs it, both are *unknown*,
+not lower.
+
+**"By a wide margin the largest catalog in the fleet" is withdrawn on the same
+grounds**, and not because Le Noise displaced it. Le Noise walks the same
+ceiling-capped window and emits roughly 17,700 stock rows from it, measured
+over its whole reachable walk; this store's number was extrapolated from 129
+sampled products and is withdrawn above. Setting a measurement against a
+withdrawn estimate does not rank the two — the claim has nothing left to rest
+on, which is a weaker statement than Le Noise being larger and the only one
+supported. Nothing else in the section changes: the lock-held serial cost, the
+sequential catalog loop, the dropped-rather-than-queued scheduled sync and the
+operational-only mitigations are all properties of `_sync_stock` rather than of
+any one store, and they now apply to more than one ceiling-length crawl in the
+same run — which rests on both walks being ceiling-length, a mechanical fact,
+rather than on either row estimate. The deployment question that section
+raises — whether `stock_schedule` is longer than a full run — is
+correspondingly sharper.

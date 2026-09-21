@@ -340,6 +340,43 @@ class, the preprocessing pass, *and* what a caller does with the halves it
 gets back.
 
 
+**Twelfth amendment (2026-09-21, branch `claude/admiring-curie-1oqwu7`):**
+`backend/crawlers/lenoise.py` is another documented exception, and the first
+whose divergence is in the *whitespace* rule rather than the separator class
+or a pre/post-processing pass.
+
+It repeats one divergence already recorded above: no vendor fallback at all
+(`cleorecs.py`'s (3)), here because `vendor` is not one kind of thing on this
+store — the act, the act reversed (`Chura Stef`), a bare catalogue number
+(`MODVL128`), the act with its catalogue number glued on (`Talos -
+5053880405`) and a genre-first label (`Soundtrack - John Carpenter`), with
+nothing in the payload marking which. So the no-separator case is a skip.
+
+Its separator class is `[-‐–]` — hyphen-minus, **U+2010 HYPHEN** and en dash.
+That is neither this doc's `[-–]` nor the wider `[-–—]` the exceptions above
+share: it drops the em dash, which does not appear on this store at all, and
+adds U+2010, which no sibling crawler matches and which 27 of this store's
+vinyl-typed titles are punctuated with. A shared class wide enough for this
+caller and narrow enough for the others is another parameter, not a constant.
+
+The new divergence is that this caller requires whitespace on **at least one**
+side of the separator rather than on both. Every regex this doc surveys
+requires it on both, to keep a hyphenated name from being split mid-word.
+Measured over this store's reachable shelf, that rule leaves 10 titles with no
+artist, against 4 for the one-side rule, and the six it rescues (`Tokyo Blade
+-Tokyo Blade`, `Little Big Town- Mr. Sun`, `Iron Butterfly
+-In-A-Gadda-Da-Vida (Clear)` and three more) are all split correctly. The
+protection is not lost, because the only shape neither alternative admits is a
+dash with a letter hard against it on both sides — which is exactly a dash
+inside a word.
+
+The running conclusion is unchanged, with one item added to the list of parts
+that do not generalise: `split_artist_title` remains unimplemented, and what
+resists sharing is now the separator class, the preprocessing pass, what a
+caller does with the halves it gets back, *and* how much whitespace the
+separator has to be flanked by.
+
+
 ## Problem
 
 The Shopify-storefront catalog crawlers enumerated below each need to split
@@ -463,7 +500,7 @@ _, title = split_artist_title(raw_title)
 ```
 
 Widening the shared regex to accept en-dash (`–`) as well as a plain hyphen
-is a strict superset of what the other seven need — none of their titles
+is a strict superset of what the other callers need — none of their titles
 contain an en-dash today, so this changes nothing for them, and it lets
 `bigscarymonstersusa.py` drop its one-character-different local pattern
 instead of keeping a near-duplicate.
