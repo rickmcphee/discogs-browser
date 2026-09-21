@@ -165,13 +165,20 @@ _GARMENT_SIZE_RE = re.compile(
 # ordinary pressing, and priced $51.25 against the $28 the same record costs
 # on its own product page.
 _BUNDLE_RE = re.compile(r"\bbundles?\b", re.IGNORECASE)
-# Shopify's placeholder for a product with exactly one variant. Unlike the
-# sibling stores, a product carrying it here names NO format anywhere --
+# Shopify's placeholder for a product with exactly one variant. BOTH live
+# spellings, not just the long one: realgonemusic.py records finding bare
+# `Default` and `Default Title` side by side in one catalogue, and notes that
+# the sibling crawlers' `== "Default Title"` test misses the bare ones. Here
+# that miss is not a skipped row but a fabricated one -- bare `Default` is not
+# recognised, so it survives as a descriptor, the negative gate below
+# default-admits it, and the product publishes `<album> — Default` as a vinyl
+# pressing while its bogus format claim keeps the format-drift guard quiet.
+# Unlike the sibling stores, a product carrying it here names NO format anywhere --
 # `product_type` is `Album`/`Single`/`EP`, never `Vinyl` -- so it is not
 # evidence of a record and is skipped rather than admitted -- and because
 # it is the one thing that empties the format claim store-wide without
 # touching any other field, it is what the format-source guard below fires on.
-_PLACEHOLDER_VARIANT = "default title"
+_PLACEHOLDER_VARIANTS = frozenset(("default title", "default"))
 
 
 class Crawler:
@@ -559,7 +566,7 @@ class Crawler:
             title = " ".join((variant.get("title") or "").split())
             if not title:
                 continue
-            if title.lower() == _PLACEHOLDER_VARIANT:
+            if title.lower() in _PLACEHOLDER_VARIANTS:
                 # Kept as a pressing with an empty descriptor, and only as a
                 # product's sole variant: on a multi-variant product the
                 # placeholder is malformed data. _is_vinyl rejects the empty

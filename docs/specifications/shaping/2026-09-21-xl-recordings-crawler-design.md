@@ -374,6 +374,15 @@ drift is Shopify's `Default Title` placeholder — a product carrying it names
 no format anywhere, and it is the one thing that empties the format claim
 store-wide without touching any other field.
 
+**Both placeholder spellings are recognised, not just the long one.**
+Shopify emits bare `Default` as well as `Default Title`, and
+`realgonemusic.py` records finding the two side by side in one catalogue,
+noting that the sibling crawlers' `== "Default Title"` test misses the bare
+ones. Here that miss would not skip a row but *fabricate* one: unrecognised,
+the bare word survives as a descriptor, the negative gate default-admits it,
+and the product publishes `<album> — Default` as a pressing — while its bogus
+format claim keeps the format-drift guard quiet. Raised by Copilot on PR #395.
+
 **Why an available `Default Title` placeholder counts as unusable.** Being
 *kept* as a pressing is what made it dangerous. Nothing called it dropped, so
 the dropped-variant test passed it; it names no format, so the product claimed

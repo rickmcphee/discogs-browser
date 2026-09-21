@@ -800,6 +800,28 @@ async def test_a_junk_variant_entry_counts_as_a_dropped_variant(crawler):
         [item async for item in crawler.crawl_catalog()]
 
 
+@pytest.mark.parametrize("spelling", ["Default Title", "default title", "Default", "default", "DEFAULT"])
+def test_both_shopify_placeholder_spellings_are_recognised(spelling):
+    # Bare `Default` is live alongside the long spelling (realgonemusic.py
+    # found both in one catalogue). Missing it here would not skip a row, it
+    # would fabricate one: the bare word survives as a descriptor, the
+    # negative gate default-admits it, and the product publishes
+    # `<album> — Default` as a pressing.
+    product = _one_pressing(_DOPAMINE_CHAMBER, 1, title=spelling)
+    assert [descriptor for _, descriptor in Crawler._pressings(product)] == [""]
+    assert Crawler._claims_vinyl(product) is False
+    assert Crawler._items(product) == []
+
+
+@respx.mock
+@pytest.mark.parametrize("spelling", ["Default Title", "Default"])
+async def test_no_placeholder_spelling_fabricates_a_pressing(crawler, spelling):
+    _mock_pages(_one_pressing(_DOPAMINE_CHAMBER, 1, title=spelling),
+                _one_pressing(_I_HEAR_YOU, 0))
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["title"] for i in items] == ["I Hear You — Blue Vinyl LP"]
+
+
 @respx.mock
 async def test_an_available_placeholder_variant_is_unusable(crawler):
     # It is KEPT as a pressing, which is what made it dangerous: nothing
