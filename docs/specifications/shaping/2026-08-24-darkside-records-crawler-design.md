@@ -444,3 +444,23 @@ interface — one new outbound host (`shop.darksiderecords.com`).
 
 `backend/version.py`'s `VERSION` is derived from git and is not edited by
 this change.
+
+## Amendment (2026-09-21, branch `claude/admiring-curie-1oqwu7`)
+
+**The Waterloo comparison in "Queue fan-out" no longer has a number behind
+it.** That section ranks this crawler as "among the heaviest crawlers in the
+fleet, but not the heaviest" against `waterloorecords.py`'s ~10,800 rows and
+~32,000 dispatch units. Both of those figures have been withdrawn: they
+extrapolated one sampled in-stock rate across a collection that Shopify's page
+ceiling truncates alphabetically, from a sample drawn at the alphabetical head
+of a different collection, which cannot support the extrapolation in either
+direction. See the 2026-09-21 amendment to
+[`2026-08-24-waterloo-records-crawler-design.md`](2026-08-24-waterloo-records-crawler-design.md).
+
+The ranking survives on other evidence, so it stands here with its reasoning
+replaced rather than withdrawn alongside the figures. `lenoise.py`, added on
+the same branch, emits roughly 17,700 stock rows measured over its whole
+reachable walk rather than extrapolated from a sample — comfortably above this
+crawler's 4,960. The comparisons in the same paragraph against `cleorecs.py`,
+`jackpotrecords.py`, `realgonemusic.py` and `carparkrecords.py` are unaffected;
+those are measured row counts, not extrapolations.
