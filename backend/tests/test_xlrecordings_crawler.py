@@ -733,7 +733,7 @@ async def test_losing_the_format_source_raises(crawler):
     # is POSITIVE -- only a variant descriptor says a product is a record --
     # so its disappearance CAN silently empty the walk, and the guard they
     # deliberately omit is required.
-    _mock_pages(_one_pressing(_DOPAMINE_CHAMBER, 1, title="Default Title"))
+    _mock_pages(_one_pressing(_DOPAMINE_CHAMBER, 3), _one_pressing(_I_HEAR_YOU, 3))
     with pytest.raises(RuntimeError, match="format-source drift"):
         [item async for item in crawler.crawl_catalog()]
 
@@ -798,6 +798,46 @@ async def test_a_junk_variant_entry_counts_as_a_dropped_variant(crawler):
     ]})
     with pytest.raises(RuntimeError, match="variant-identity drift"):
         [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
+async def test_an_available_placeholder_variant_is_unusable(crawler):
+    # It is KEPT as a pressing, which is what made it dangerous: nothing
+    # called it dropped, while it named no format and yielded no row, so it
+    # reached no tally at all.
+    _mock_pages(_one_pressing(_DOPAMINE_CHAMBER, 1, title="Default Title"))
+    with pytest.raises(RuntimeError, match="variant-identity drift"):
+        [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
+async def test_a_sold_out_record_cannot_vouch_for_an_available_placeholder(crawler):
+    # The mixed case that defeats every other guard: the sold-out record keeps
+    # `claims_vinyl` non-zero so the format guard stays quiet, and the
+    # placeholder is neither dropped nor unreadable. Without this the walk
+    # completes empty and replace_stock_items() deletes the snapshot.
+    _mock_pages(
+        _one_pressing(_DOPAMINE_CHAMBER, 1, title="Default Title", available=True),
+        {**_I_HEAR_YOU,
+         "variants": [{**v, "available": False} for v in _I_HEAR_YOU["variants"]]},
+    )
+    with pytest.raises(RuntimeError, match="variant-identity drift"):
+        [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
+async def test_a_placeholder_proven_sold_out_does_not_raise(crawler):
+    # The exact complement of the case above: only the literal False proves a
+    # placeholder sold out, and once proven it must NOT be what makes the walk
+    # raise. Paired with a readably sold-out record, because a catalogue in
+    # which nothing claims a format is format-source drift on its own -- the
+    # point here is that the placeholder adds nothing to that.
+    _mock_pages(
+        _one_pressing(_DOPAMINE_CHAMBER, 1, title="Default Title", available=False),
+        {**_I_HEAR_YOU,
+         "variants": [{**v, "available": False} for v in _I_HEAR_YOU["variants"]]},
+    )
+    assert [item async for item in crawler.crawl_catalog()] == []
 
 
 @respx.mock

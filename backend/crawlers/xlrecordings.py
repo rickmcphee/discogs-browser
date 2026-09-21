@@ -616,6 +616,20 @@ class Crawler:
             # non-zero, every other tally stays 0, and the empty walk deletes
             # the snapshot with nothing raised.
             return True
+        for variant, descriptor in cls._pressings(product):
+            if descriptor:
+                continue
+            # A kept pressing with no descriptor is Shopify's `Default Title`
+            # placeholder, which this store never uses and which names no
+            # format at all. Being KEPT is what makes it dangerous: the loop
+            # below sees it accounted for, so nothing calls it dropped, while
+            # it claims no format and yields no row -- so it reaches no tally,
+            # and a readably sold-out record elsewhere keeps `claims_vinyl`
+            # non-zero and silences the format guard too. Only a literal False
+            # proves it sold out; anything else leaves a product that might
+            # have been an in-stock record behind an empty walk.
+            if variant.get("available") is not False:
+                return True
         kept = [variant for variant, _ in cls._pressings(product)]
         for variant in variants:
             if not isinstance(variant, dict):

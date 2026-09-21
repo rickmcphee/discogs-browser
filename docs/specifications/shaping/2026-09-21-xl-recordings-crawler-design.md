@@ -374,6 +374,17 @@ drift is Shopify's `Default Title` placeholder — a product carrying it names
 no format anywhere, and it is the one thing that empties the format claim
 store-wide without touching any other field.
 
+**Why an available `Default Title` placeholder counts as unusable.** Being
+*kept* as a pressing is what made it dangerous. Nothing called it dropped, so
+the dropped-variant test passed it; it names no format, so the product claimed
+none and the format branch exempted it; and it yields no row. It therefore
+reached no tally at all, and a readably sold-out record elsewhere kept
+`claims_vinyl` non-zero, silencing the format guard too — an empty walk with
+every guard quiet. Only a literal `False` proves such a variant sold out;
+anything else leaves a product that might have been an in-stock record behind
+an empty walk. Raised by Copilot on PR #395, at High severity, and the
+mixed placeholder-plus-sold-out case is pinned by its own test.
+
 **Why no variants at all counts as unusable.** It is availability, format and
 price absent together, so the product can neither be proven sold out nor shown
 not to have been a record. Left out of that guard it reaches no tally at all:
