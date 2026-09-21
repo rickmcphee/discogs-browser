@@ -179,6 +179,18 @@ async def test_rejects_products_that_are_not_records(name):
     "True North 2LP Heavyweight Vinyl & CD",
     "True North 2LP Heavyweight Vinyl & Black T-Shirt",
     "True North 2LP Heavyweight Vinyl & Deluxe Download with Extended Booklet",
+    # The medium carries a count glued to it, and the join is "&" or "/" --
+    # neither a bundle marker. Nothing but the medium pattern can catch these,
+    # and a pattern that cannot see a glued count publishes them at the bundle
+    # price. The first four are live on the platform's flagship store.
+    "Legend / Legend Extended (40th Anniversary Edition) Double Vinyl & 2CD",
+    "The Journey - Part 3 Double LP & 2CD",
+    "Tapping The Vein 3LP/2CD Deluxe Bookpack Boxset",
+    'Harvest (50th Anniversary Edition) 2LP/7"/2DVD Boxset',
+    "Hometime Heavyweight Vinyl & 2xCD Digipak",
+    "Hometime Heavyweight Vinyl & 3 CD Digipak",
+    "Some Album Vinyl & 2 x CD",
+    "Some Album Vinyl & 2xCassette",
 ])
 async def test_rejects_bundles_whichever_way_they_are_joined(name):
     items, _ = await _crawl(_feed(_product(name=name), _product(name="Real Record LP")))
@@ -253,6 +265,14 @@ async def test_reads_the_currency_per_product_rather_than_hardcoding_gbp():
     items, _ = await _crawl(_feed(_product(currency="EUR")))
 
     assert items[0]["currency"] == "EUR"
+
+
+async def test_an_absent_currency_falls_back_to_the_stores_own_not_to_none():
+    # frontend formatPrice() reads a null currency as USD, so None here would
+    # put a dollar sign on a sterling price.
+    items, _ = await _crawl(_feed(_product(omit=("currency",))))
+
+    assert items[0]["currency"] == "GBP"
 
 
 async def test_keeps_a_preorder_and_does_not_mark_it_in_the_title():

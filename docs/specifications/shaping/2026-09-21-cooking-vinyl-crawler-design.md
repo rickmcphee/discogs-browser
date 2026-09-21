@@ -164,6 +164,18 @@ store has to keep accurate to sell anything. It is three tests:
    "Download", which is in the list — and would drop Bright Eyes' *Digital Ash
    In A Digital Urn*; `cap` appears in no bundle at all, and the apparel
    bundles are already covered by the shirt words.
+
+   **The disc media are matched by shape, not by `\b`**, for exactly the reason
+   the vinyl word is. `\b` matches nothing between a digit and a letter, so a
+   plain `\bcds?\b` sees neither `2CD` nor `2xCD` — and since `&` is
+   deliberately not a bundle marker, and `/` is not one either, nothing else
+   catches a bundle written that way. This is not a hypothetical: with the
+   naive pattern the gate admitted nine products on the flagship store,
+   including `Legend / Legend Extended (40th Anniversary Edition) Double Vinyl
+   & 2CD`, `The Journey - Part 3 Double LP & 2CD`, `Tapping The Vein 3LP/2CD
+   Deluxe Bookpack Boxset` and `Harvest (50th Anniversary Edition)
+   2LP/7"/2DVD Boxset`, each at a boxed set's price. Applying the shape rule to
+   one half of the gate and not the other is the whole of the bug.
 3. **No `+`**, which is how this platform joins the items of a bundle.
 
 Tests 2 and 3 are both needed and neither subsumes the other. `+` catches
@@ -262,7 +274,12 @@ is to guess where it goes.
 - **currency** — read from `<currency>` per product, not hardcoded. Every
   product on every feed sampled says `GBP`, and `?cur=USD` on the feed URL
   changes nothing, but reading the field costs nothing and a hardcoded `"GBP"`
-  would misprice the store silently if that ever changed.
+  would misprice the store silently if that ever changed. An *absent* field
+  falls back to `GBP` rather than to `None`, which is not the same choice:
+  `formatPrice()` reads a null currency as USD — deliberately, since most
+  sources hardcode USD and predate the column — so `None` would put a dollar
+  sign on a sterling price. Reading the field first and falling back second
+  keeps both properties.
 - **cover_image_url** — `<imgurl>`, absolute, on `images.tmstor.es`.
 - **availability** — `in stock` and `preorder` are admitted and **nothing else
   is**. Those are the only two values across all 23,102 products sampled, and

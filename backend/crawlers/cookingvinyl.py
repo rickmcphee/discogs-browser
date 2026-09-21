@@ -52,10 +52,27 @@ _VINYL_RE = re.compile(
 # bundle (those say "Download", which is here), and would drop Bright Eyes'
 # "Digital Ash In A Digital Urn"; `cap` appears in no bundle at all, and the
 # apparel ones are already covered.
+#
+# The disc media take a count the same way a format does, and for the same
+# reason must be matched by shape rather than by \b: nothing matches between a
+# digit and a letter, so a plain \bcds?\b sees neither `2CD` nor `2xCD`. That
+# is the trap _VINYL_RE above is already built around, and leaving the other
+# half of the gate with the naive pattern published bundles at a bundle's
+# price -- `&` being deliberately not a bundle marker, and `/` not one either,
+# nothing else caught them. Not hypothetical: on the platform's flagship store
+# the naive pattern admitted `Legend / Legend Extended (40th Anniversary
+# Edition) Double Vinyl & 2CD`, `The Journey - Part 3 Double LP & 2CD`,
+# `Tapping The Vein 3LP/2CD Deluxe Bookpack Boxset`, `Harvest (50th
+# Anniversary Edition) 2LP/7"/2DVD Boxset` and five more like them.
+# (Copilot, PR #393.)
+_COUNTED = r"(?<![a-z])\d*\s*[x×]?\s*"
 _OTHER_MEDIUM_RE = re.compile(
-    r"\bcds?\b|\bcassettes?\b|\bdownloads?\b|\bt-?shirts?\b"
+    rf"{_COUNTED}cds?\b"
+    rf"|{_COUNTED}cassettes?\b"
+    rf"|{_COUNTED}dvds?\b"
+    r"|\bdownloads?\b|\bt-?shirts?\b"
     r"|\bmugs?\b|\bhoodie\b|\bsweatshirt\b|\bpolo\b|\bscarf\b"
-    r"|\bmagnets?\b|\bdvds?\b|\bblu-?\s?rays?\b",
+    r"|\bmagnets?\b|\bblu-?\s?rays?\b",
     re.IGNORECASE,
 )
 
@@ -83,6 +100,16 @@ _PURCHASABLE = frozenset({"in stock", "preorder"})
 # _library_release_match_sql. "Various Artists" satisfies neither. Same rewrite
 # as musiconvinyl.py, angryyoungandpoor.py and cleorecs.py.
 _VARIOUS_ARTISTS = frozenset({"various artists", "various"})
+
+# What a product's own `<currency>` falls back to. Not None: frontend
+# formatPrice() reads a null currency as USD (deliberately -- most sources
+# hardcode USD and predate the column), so a single product losing the field
+# would put a dollar sign on a sterling price. Every product on every feed
+# sampled says GBP and the feed ignores `?cur=`, so the store's own currency is
+# the honest fallback; the per-product value is still what is read first, so a
+# store that genuinely started pricing in euros would not be misreported.
+# (Copilot, PR #393.)
+_DEFAULT_CURRENCY = "GBP"
 
 
 class Crawler:
@@ -248,10 +275,11 @@ class Crawler:
             "title": cls._text(product, "name"),
             "format": "Vinyl",
             "price": cls._price(product),
-            # Read per product rather than hardcoded. Every product sampled
-            # says GBP and `?cur=` does not change the feed, but a hardcoded
-            # literal would misprice the store silently if that ever did.
-            "currency": cls._text(product, "currency") or None,
+            # Read per product rather than hardcoded, so a store that started
+            # pricing in another currency is reported as it prices; see
+            # _DEFAULT_CURRENCY for why the absent case falls back to the
+            # store's own currency rather than to None.
+            "currency": cls._text(product, "currency") or _DEFAULT_CURRENCY,
             "url": cls._text(product, "purl"),
             "cover_image_url": cls._text(product, "imgurl") or None,
         }
