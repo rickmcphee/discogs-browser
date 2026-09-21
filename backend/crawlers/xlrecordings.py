@@ -209,7 +209,7 @@ class Crawler:
                 # is evidence of nothing, and this test comes first for that
                 # reason.
                 pass
-            elif self._unusable_dropped_variant(product):
+            elif self._unusable_variants(product):
                 # BEFORE the vinyl claim below, because that claim rests
                 # ENTIRELY on the variant descriptors -- this store publishes
                 # no product-level format field at all. Blank the descriptors
@@ -289,8 +289,9 @@ class Crawler:
         if not yielded and variant_identity_missing:
             raise RuntimeError(
                 f"{_COLLECTION_SLUG} collection yielded no rows while "
-                f"{variant_identity_missing} product(s) dropped a variant that carries no usable "
-                "title and is not provably sold out -- variant-identity drift")
+                f"{variant_identity_missing} product(s) carry no variants at all, or dropped one "
+                "that carries no usable title without being provably sold out -- "
+                "variant-identity drift")
         if not yielded and unreadable_stock:
             # An empty result is only trustworthy when every product that
             # could have yielded a row was readable and simply out of stock.
@@ -427,7 +428,18 @@ class Crawler:
         permanently mis-keyed and unmatchable.
         """
         vendor = " ".join((product.get("vendor") or "").split())
-        if vendor and not cls._is_label_vendor(vendor):
+        if not vendor:
+            # Unreadable, NOT a claim that the label owns the record -- and so
+            # not the case the tag fallback exists for. Falling through here
+            # would silently re-credit exactly the products vendor leads for:
+            # `We're New Here` would drop from the full billing to the single
+            # collaborator its tag names, re-keying the row. Nothing would
+            # notice, because the rows still yield and so `artist_resolved`
+            # stays non-zero. Answering "" instead skips the product, and if
+            # `vendor` went blank store-wide that guard fires and the snapshot
+            # survives -- the loud failure rather than the quiet one.
+            return ""
+        if not cls._is_label_vendor(vendor):
             return vendor
         candidates = cls._artist_tags(product)
         return candidates[0] if len(candidates) == 1 else ""
@@ -538,9 +550,11 @@ class Crawler:
         )
 
     @classmethod
-    def _unusable_dropped_variant(cls, product: dict) -> bool:
-        """Did a variant get dropped for want of a usable title without being
-        provably sold out?
+    def _unusable_variants(cls, product: dict) -> bool:
+        """Did this product fail to supply variant data that can be trusted?
+
+        Two ways. It carries no variants at all, or one was dropped for want
+        of a usable title without being provably sold out.
 
         Only the literal False proves it. Without this, a blank-titled
         in-stock variant beside a sold-out sibling makes an in-stock product
@@ -550,8 +564,21 @@ class Crawler:
         dropped entry is a readable False: the two are a pair and must stay in
         that order.
         """
+        variants = product.get("variants") or []
+        if not variants:
+            # No variants is not "nothing to sell". It is the availability,
+            # the format and the price all absent at once, so the product
+            # cannot be proven sold out and cannot be shown not to have been a
+            # record. Left out, it reaches none of the tallies: it claims no
+            # format, so the branch below exempts it, and
+            # _has_readable_stock_flag -- which does answer False for it --
+            # is only ever asked about a product that claims one. One
+            # readably sold-out record elsewhere then keeps `claims_vinyl`
+            # non-zero, every other tally stays 0, and the empty walk deletes
+            # the snapshot with nothing raised.
+            return True
         kept = [variant for variant, _ in cls._pressings(product)]
-        for variant in product.get("variants") or []:
+        for variant in variants:
             if not isinstance(variant, dict):
                 # A junk entry carries no availability at all, so it can never
                 # be proven sold out. _pressings drops it before anything

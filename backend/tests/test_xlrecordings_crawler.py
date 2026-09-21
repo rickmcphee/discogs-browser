@@ -385,6 +385,26 @@ def test_a_label_vendor_with_no_tag_names_no_artist():
     assert Crawler._artist({**_RECORD_BUNDLE, "tags": []}) == ""
 
 
+def test_a_blank_vendor_names_no_artist_rather_than_falling_back_to_tags():
+    # A missing vendor is unreadable, not a claim that the label owns the
+    # record, so it is NOT the case the tag fallback exists for. Falling
+    # through would silently re-credit the very products vendor leads for.
+    assert Crawler._artist({**_COLLABORATION, "vendor": ""}) == ""
+    assert Crawler._artist({**_COLLABORATION, "vendor": "   "}) == ""
+    assert Crawler._artist({**_COLLABORATION, "vendor": None}) == ""
+
+
+@respx.mock
+async def test_a_blanked_vendor_raises_rather_than_re_crediting_the_catalogue(crawler):
+    # The failure this trades for: skipping the product makes a store-wide
+    # loss of `vendor` trip the artist-source guard, where re-crediting from
+    # the tags would have completed the walk and re-keyed every row whose
+    # vendor said more than its tag.
+    _mock_pages({**_COLLABORATION, "vendor": ""}, {**_COMMA_ARTIST, "vendor": ""})
+    with pytest.raises(RuntimeError, match="artist-source drift"):
+        [item async for item in crawler.crawl_catalog()]
+
+
 def test_a_non_string_tag_is_ignored_rather_than_crashing():
     product = {**_I_HEAR_YOU, "vendor": "XLRecordingsProd",
                "tags": [None, 2024, "Peggy Gou"]}
@@ -732,6 +752,31 @@ async def test_a_junk_variant_entry_counts_as_a_dropped_variant(crawler):
         "not a mapping",
         {**_DOPAMINE_CHAMBER["variants"][0], "available": False},
     ]})
+    with pytest.raises(RuntimeError, match="variant-identity drift"):
+        [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
+async def test_a_product_carrying_no_variants_at_all_is_unusable(crawler):
+    # No variants is availability, format and price absent at once: the
+    # product cannot be proven sold out, and cannot be shown not to have been
+    # a record. It must not be what an empty walk rests on.
+    _mock_pages({**_DOPAMINE_CHAMBER, "variants": []})
+    with pytest.raises(RuntimeError, match="variant-identity drift"):
+        [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
+async def test_a_readably_sold_out_record_cannot_vouch_for_a_variant_less_one(crawler):
+    # The partial case, and the one that actually deletes a snapshot: a
+    # genuinely sold-out record keeps `claims_vinyl` non-zero, so the
+    # format-source guard stays quiet, and without this the walk would
+    # complete empty with nothing raised.
+    _mock_pages(
+        {**_I_HEAR_YOU,
+         "variants": [{**v, "available": False} for v in _I_HEAR_YOU["variants"]]},
+        {**_DOPAMINE_CHAMBER, "variants": []},
+    )
     with pytest.raises(RuntimeError, match="variant-identity drift"):
         [item async for item in crawler.crawl_catalog()]
 

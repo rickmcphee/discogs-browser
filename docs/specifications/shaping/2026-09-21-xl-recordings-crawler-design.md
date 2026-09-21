@@ -111,6 +111,18 @@ a row against the user's library, so a guess produces a row that is both
 permanently mis-keyed and unmatchable — and, being a plausible-looking row, it
 is one nobody goes looking for.
 
+**Why a blank `vendor` consults nothing.** The tag fallback is for the case
+where `vendor` *positively identifies the label*, which is a claim that
+somebody else's name belongs on the record. A missing `vendor` is not that
+claim — it is no information — and treating it as one is a silent
+re-crediting of exactly the products `vendor` leads for: `We're New Here`
+drops from the full billing to the single collaborator its tag names, which
+re-keys the row. Nothing notices, because the rows still yield and so the
+artist-source guard stays quiet. A blank `vendor` therefore names no artist
+and the product is skipped, which turns a store-wide loss of the field into
+that guard firing, with the snapshot intact. Raised by Copilot on PR #395 as a
+suppressed finding.
+
 **Why the label test is a prefix, not two literals.** `XL Recordings UK` is
 not a live vendor value. Matching the normalised prefix `xlrecordings` means a
 storefront the label opens later is read as the label, rather than published
@@ -312,7 +324,7 @@ names a distinct way the payload can stop carrying what this crawler reads.
 | price-source drift | rows came out and **none** carries a price |
 | artist-source drift | nothing yielded, and no product named an artist in `vendor` or its tags |
 | identity-source drift | nothing yielded, and some product carries no title, or is a record carrying no handle or no readable artist |
-| variant-identity drift | nothing yielded, and some product dropped a variant that carries no usable title and is not provably sold out |
+| variant-identity drift | nothing yielded, and some product carries no variants at all, or dropped one that carries no usable title without being provably sold out |
 | stock-source drift | nothing yielded, and some record carries no readable availability flag |
 | format-source drift | nothing yielded, and no product has a variant naming a record |
 
@@ -337,6 +349,16 @@ variant descriptor says a product is a record. The realistic shape of that
 drift is Shopify's `Default Title` placeholder — a product carrying it names
 no format anywhere, and it is the one thing that empties the format claim
 store-wide without touching any other field.
+
+**Why no variants at all counts as unusable.** It is availability, format and
+price absent together, so the product can neither be proven sold out nor shown
+not to have been a record. Left out of that guard it reaches no tally at all:
+it claims no format, so the format branch exempts it, and
+`_has_readable_stock_flag` — which does answer `False` for it — is only ever
+asked about a product that *claims* a format. One readably sold-out record
+elsewhere then keeps `claims_vinyl` non-zero, every other tally stays `0`, and
+the empty walk deletes the snapshot with nothing raised. Also raised by
+Copilot on PR #395 as a suppressed finding.
 
 The one empty outcome that must **not** raise is a catalogue that has simply
 sold out: every product readable, every pressing a readable `False`.
