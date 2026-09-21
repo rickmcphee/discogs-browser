@@ -656,7 +656,7 @@ async def test_an_isolated_null_price_is_tolerated(crawler):
 
 @respx.mock
 async def test_an_isolated_unreadable_product_is_tolerated(crawler):
-    # Each of the four "no rows AND" guards is gated on an empty outcome: one
+    # Every "no rows AND" guard is gated on an empty outcome: one
     # broken product among real rows is an ordinary skipped row.
     _mock_pages([{**_STEF_CHURA, "handle": None}, _NO_SEPARATOR,
                  {**_TAME_IMPALA, "variants": None}, _POLICE])

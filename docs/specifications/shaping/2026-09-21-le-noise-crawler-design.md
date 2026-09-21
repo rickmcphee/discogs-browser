@@ -388,7 +388,7 @@ names a distinct way the payload can stop carrying what this crawler reads:
 | `stock-source drift` | no rows, and **any** kept variant's `available` was not a literal bool |
 | `price-source drift` | rows were emitted and **none** carries a price |
 
-Three ordering rules inside that set, each of which was wrong first:
+The ordering inside that set carries its own rules, each of which was wrong first:
 
 - **The entry and kind guards are asked before the format guard.** A walk of
   nothing but malformed entries has no readable kind either, and a store-wide
@@ -404,7 +404,7 @@ Three ordering rules inside that set, each of which was wrong first:
   would otherwise answer every variants-level failure with the wrong
   diagnosis.
 
-The four "no rows **and**" guards are gated on an empty outcome deliberately:
+Every "no rows **and**" guard is gated on an empty outcome deliberately:
 one broken product among real rows is an ordinary skipped row, not drift. The
 price guard is the mirror image — it fires only when *no* row at all carries a
 price, so isolated nulls stay tolerated.

@@ -38,7 +38,7 @@
 - **No pre-order handling.** Pre-orders report `available: true` and are purchasable at the listed price, so they are stock; a title marker would re-title every row on ship day and orphan its `item_key`.
 - **`resolve_cover_image()` is called through a local type-guarding wrapper**, because the shared helper passes a retyped field straight to `.get()` and a raise there aborts the whole source over display-only artwork.
 - **Identity is guarded before the artist, and variants before both** — a product that lost its title lost its artist source too, and one whose variants are unreadable has no readable stock flag either, so the wrong guard would otherwise answer.
-- **The four "no rows AND" guards fire only on an empty outcome**; `price-source drift` fires only when no row at all carries a price.
+- **Every "no rows AND" guard fires only on an empty outcome**; `price-source drift` fires only when no row at all carries a price.
 - No comments except where the WHY is non-obvious.
 - Registration is automatic via `main.py`'s bundled-crawler startup loop — no wiring changes anywhere else.
 - Every commit carries the AI-attribution trailer block required by this repo's `CLAUDE.md`, created via `git commit -F <message-file>`, not `-m`.
