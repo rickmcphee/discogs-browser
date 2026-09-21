@@ -794,3 +794,31 @@ both directions — every side locks the `crawlers` row before touching
 `stock_items` or `listings` — so no deadlock is reachable through lock
 *ordering*; the lock *strength* on the forward gate is what closes the
 separate self-upgrade hazard.
+
+## Amendment (2026-09-21, branch `claude/admiring-curie-1oqwu7`)
+
+Two corrections to the **"Scale, and why it is accepted"** section above, both
+exposed rather than caused by the Le Noise crawler added on this branch. See
+[`2026-09-21-le-noise-crawler-design.md`](2026-09-21-le-noise-crawler-design.md).
+
+**The per-sync figures predate the ceiling stop and were never updated when it
+landed.** That section costs the walk at 144 GETs over 35,645 products. Since
+`iter_products()` gained its `_MAX_PAGE` stop — which the 2026-08-29 amendment
+above adopts as the standing state — the walk reaches
+`_MAX_PAGE * _PAGE_LIMIT` products and terminates there, so it is 100 GETs,
+and every figure derived from 35,645 (the ~54 minutes of wall clock, the
+~10,800 rows, the ~32,000 dispatch units) is proportionally lower. The
+35,645 remains correct as the *collection's* size, which is what the
+collection-choice table reports it as; it is no longer what a sync walks.
+
+**"By a wide margin the largest catalog in the fleet" no longer holds.** Le
+Noise walks the same ceiling-capped window and emits roughly 17,700 stock rows
+from it — measured over its whole reachable walk, not sampled — which is more
+than this store's ~10,800 estimate even before the correction above scales
+that estimate down. Nothing else in the section changes: the lock-held serial
+cost, the sequential catalog loop, the dropped-rather-than-queued scheduled
+sync and the operational-only mitigations are all properties of `_sync_stock`
+rather than of any one store, and they now apply to more than one
+ceiling-length crawl in the same run. The deployment question that section
+raises — whether `stock_schedule` is longer than a full run — is
+correspondingly sharper.
