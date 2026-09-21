@@ -625,9 +625,11 @@ async def test_an_unusable_price_is_none_rather_than_a_number(crawler, price):
 
 @pytest.mark.parametrize("price", [float("nan"), float("inf"), float("-inf")])
 def test_a_non_finite_price_is_rejected(price):
-    # Unreachable through a response body -- json.dumps refuses to encode
-    # these -- but json.loads accepts the bare `NaN`/`Infinity` tokens a
-    # server is free to send, so _price still has to answer for them.
+    # Unreachable through a response body here, because httpx encodes with
+    # allow_nan=False and refuses them -- Python's own json.dumps would emit
+    # the non-standard `NaN`/`Infinity` tokens instead. Either way a server is
+    # free to send those tokens and the default decoder accepts them, so
+    # _price still has to answer for the values that come back.
     assert Crawler._price({"price": price}) is None
 
 
