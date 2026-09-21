@@ -305,9 +305,9 @@ names a distinct way the feed can stop carrying what this crawler reads:
 | --- | --- | --- |
 | transport | the body is not XML, or its root is not `rss`, or it holds no `merchant` | the endpoint has been retired, renamed or replaced by a challenge page |
 | catalog | the feed parsed but carries no `product` | see below |
+| identity-source | nothing was yielded while some product is missing `artist`, `name` or `purl` | a skipped row leaves the crawl looking sold out |
 | format-taxonomy | products are present but none names a vinyl format | see below |
 | bundle-detection | records are present but every one of them reads as a bundle | the store publishes no bundle today, so this is the rejection tests over-matching — a `+` or a medium word that has become part of how it writes an ordinary title |
-| identity-source | nothing was yielded while some vinyl product is missing `artist`, `name` or `purl` | a skipped row leaves the crawl looking sold out |
 | stock-source | nothing was yielded while some vinyl product's `availability` is unrecognised | one genuinely sold-out product must not vouch for a catalog gone unreadable behind it |
 
 "Unrecognised" there means *anything* outside `in stock`/`preorder`, an empty
@@ -326,7 +326,19 @@ whoever reads it hunting for an absent element that is right there.
 
 | price-source | rows were yielded and **none** carries a price | isolated nulls stay tolerated; a store-wide price failure re-lists the catalog unpriced, which is worse than the snapshot it replaces |
 
-The last three are conditioned on a second tally rather than on emptiness alone,
+The order of those rows is load-bearing in one place. **`name` is both an
+identity field and the input to the format gate**, so a feed that lost its names
+satisfies the format guard *and* the identity guard at once, and whichever fires
+first is the diagnosis whoever reads the log gets. The identity guard goes
+first, because a missing field is the more specific signal and the one this
+crawler can actually name; a nameless product is also counted before the format
+gate rather than after it, since the empty string fails the vinyl test and would
+otherwise leave by that door. Getting this wrong is not a silent failure — the
+crawl still raises and the snapshot still survives — but it sends the reader
+after a change in the store's format wording that never happened.
+
+The last three rows are conditioned on a second tally rather than on emptiness
+alone,
 exactly as in `musiconvinyl.py`: a store that has simply sold out is empty
 legitimately, so emptiness by itself may never raise.
 

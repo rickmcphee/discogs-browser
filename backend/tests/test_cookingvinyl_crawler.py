@@ -125,6 +125,38 @@ async def test_sends_an_identifying_user_agent_rather_than_httpx_default():
     assert sent.startswith("DiscogsCollectionBrowser/")
 
 
+# --- the category is never the gate ---------------------------------------
+
+@pytest.mark.parametrize("category,label", [
+    ("166", "the blanket Apparel & Accessories value the flagship store uses"),
+    ("543522", "the Music CDs value"),
+    ("855", "the parent Music & Sound Recordings value"),
+    ("", "an empty category"),
+])
+async def test_a_record_is_yielded_whatever_its_google_product_category_says(category, label):
+    # The single most important property of the gate, and the one a category
+    # conjunction would silently break: `google_product_category` is
+    # store-configured, and the platform's flagship publishes its entire
+    # catalog -- LPs included -- under a blanket 166. A gate that consulted it
+    # would empty the snapshot the day this store did the same. Without this
+    # test the suite stays green through exactly that change, since every
+    # other product here defaults to the vinyl category.
+    items, _ = await _crawl(_feed(_product(name="Clara Libre White Vinyl", category=category)))
+
+    assert [item["title"] for item in items] == ["Clara Libre White Vinyl"], label
+
+
+async def test_a_non_record_is_rejected_even_when_the_category_says_records():
+    # The mirror: the category cannot rescue a product the name rejects
+    # either, so the name really is the whole gate in both directions.
+    items, _ = await _crawl(_feed(
+        _product(name="True North CD", category="543523"),
+        _product(name="Real Record LP", category="166"),
+    ))
+
+    assert [item["title"] for item in items] == ["Real Record LP"]
+
+
 # --- the format gate ------------------------------------------------------
 
 @pytest.mark.parametrize("name", [
@@ -343,6 +375,27 @@ async def test_raises_when_no_product_names_a_vinyl_format():
             _product(name="True North CD"),
             _product(name="Classic Logo T-Shirt (Black)"),
         ))
+
+
+async def test_a_feed_that_lost_its_names_reports_identity_not_format_drift():
+    # An empty name fails the vinyl test too, so both guards are true at once
+    # and the order decides the diagnosis. The missing field is the specific
+    # signal; reporting it as a store that stopped naming formats would send
+    # the operator looking at the wrong thing entirely.
+    with pytest.raises(RuntimeError, match="identity-source drift"):
+        await _crawl(_feed(
+            _product(name="", omit=("name",)),
+            _product(name="", omit=("name",)),
+        ))
+
+
+async def test_a_nameless_product_beside_real_records_is_an_ordinary_skip():
+    items, _ = await _crawl(_feed(
+        _product(omit=("name",)),
+        _product(name="Real Record LP"),
+    ))
+
+    assert [item["title"] for item in items] == ["Real Record LP"]
 
 
 async def test_raises_when_every_record_reads_as_a_bundle():

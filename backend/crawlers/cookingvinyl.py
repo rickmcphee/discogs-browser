@@ -146,6 +146,17 @@ class Crawler:
         for product in products:
             products_seen += 1
             name = self._text(product, "name")
+            if not name:
+                # Before the format gate, because a product with no name
+                # cannot be classified at all: the empty string fails
+                # _VINYL_RE, so left to leave by that gate it would be
+                # reported as a store that stopped naming formats. That is
+                # the wrong place to send whoever reads the log, and it is
+                # the opposite of what the guard table promises -- `name` is
+                # one of the three identity fields. Without this the name
+                # half of _has_identity() is unreachable. (Copilot, PR #393.)
+                identity_missing += 1
+                continue
             if not _VINYL_RE.search(name):
                 continue
             # Counted apart from the bundle rejection below, so the two guards
@@ -192,6 +203,22 @@ class Crawler:
             # keeps the previous snapshot and costs one tick on this site's
             # failure breaker, where wiping a good snapshot has no ceiling.
             raise RuntimeError(f"{_FEED_PATH} carried no products -- feed emptied, or product-element drift")
+        if not yielded and identity_missing:
+            # `artist`, `name` and `purl` are identity, not display: item_key
+            # hashes the row's title and URL, so a product missing one is
+            # skipped rather than emitted under a fresh identity that would
+            # orphan the judgments and saves keyed on its old one. Skipped rows
+            # leave the walk looking sold out, which is why this and the stock
+            # guard below are gated on having yielded nothing at all.
+            #
+            # Ahead of the format guard, not after it: a feed that lost its
+            # names has also lost every format word, so both are true at once
+            # and whichever fires first is the diagnosis the operator gets.
+            # The missing field is the more specific signal, and the one this
+            # crawler can actually name. (Copilot, PR #393.)
+            raise RuntimeError(
+                f"{_FEED_PATH} yielded no rows while {identity_missing} product(s) "
+                "carry no artist, name or product URL -- identity-source drift")
         if vinyl_named == 0:
             # A vinyl label's store whose every observed product has been a
             # record does not stop naming records, so zero reads as a change in
@@ -207,16 +234,6 @@ class Crawler:
             raise RuntimeError(
                 f"all {vinyl_named} vinyl product(s) in {_FEED_PATH} read as bundles "
                 "-- bundle-detection drift")
-        if not yielded and identity_missing:
-            # `artist`, `name` and `purl` are identity, not display: item_key
-            # hashes the row's title and URL, so a product missing one is
-            # skipped rather than emitted under a fresh identity that would
-            # orphan the judgments and saves keyed on its old one. Skipped rows
-            # leave the walk looking sold out, which is why this and the stock
-            # guard below are gated on having yielded nothing at all.
-            raise RuntimeError(
-                f"{_FEED_PATH} yielded no rows while {identity_missing} vinyl product(s) "
-                "carry no artist, name or product URL -- identity-source drift")
         if not yielded and unrecognised_availability:
             # An empty result is only trustworthy when every product that could
             # have yielded a row was readable and simply unavailable. Counting
