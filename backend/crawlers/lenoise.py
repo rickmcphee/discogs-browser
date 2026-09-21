@@ -56,11 +56,28 @@ _NON_VINYL_MEDIUM_RE = re.compile(
 # CD EPs exist. Nothing is lost by leaving it out -- a bare "(EP)" product has
 # no non-vinyl bracket for this to override -- while including it would rescue
 # a hypothetical "(EP/CD)" that is not a record at all.
+#
+# The inch marker needs a CLOSING boundary of its own, which the word-based
+# alternatives get from their trailing `\b` and it cannot: a quote glyph is
+# already a non-word character, so `\b` has nothing to assert after it. Without
+# one, "(12\"CD)" reads `12\"` as a complete vinyl marker, the bracket names
+# vinyl AND a CD, and the two-sided rule below keeps the CD as a record. Spelled
+# as "not followed by a letter or digit" rather than `(?![a-z0-9])`, because
+# `[a-z]` is ASCII-only even under IGNORECASE and would treat an accented letter
+# as a separator. `joyfulnoiserecordings.py` carries the same guard for the same
+# reason, and records that the fleet shipped this hole twice before closing it.
+# Found by Copilot in review on PR #394.
+#
+# A genuine record bundled with a disc keeps its marker: "(12\"/CD)",
+# "(12\" + CD)" and "(7\" Box Set)" all put a non-letter after the quote. Only
+# the glued form, which names no separator at all, is read as the non-vinyl
+# item it most likely is.
+_NOT_BEFORE_LETTER_OR_DIGIT = r'(?![^\W_])'
 _VINYL_MEDIUM_RE = re.compile(
     r'\b\d*\s*LPs?\b'
     r'|\bvinyls?\b'
     r'|\bpicture\s+discs?\b'
-    r'|\b(?:7|10|12)\s*["”″]',
+    r'|\b(?:7|10|12)\s*["”″]' + _NOT_BEFORE_LETTER_OR_DIGIT,
     re.IGNORECASE,
 )
 
@@ -186,15 +203,20 @@ class Crawler:
                 f"{_COLLECTION_SLUG} collection names a non-vinyl medium -- "
                 "medium-bracket drift")
         if not yielded and unreadable_variants:
-            # A `variants` collection that is absent, empty or retyped, or whose
-            # entries are not mappings. Those discards are otherwise invisible,
+            # A `variants` collection that is absent, empty or retyped, or one
+            # holding an entry that is not a mapping -- which is why the message
+            # says "unreadable variant data" rather than "no readable variants":
+            # a product counted here may well have a readable variant beside the
+            # broken one, and the narrower wording sent a reader looking for an
+            # empty collection that was never the cause. Found by Copilot in
+            # review on PR #394. Those discards are otherwise invisible,
             # and invisible is destructive: Shopify dropping the collection
             # store-wide leaves every product with no price and no stock flag,
             # and the guards below cannot see it because such a product reaches
             # none of their tallies.
             raise RuntimeError(
                 f"{_COLLECTION_SLUG} collection yielded no rows while "
-                f"{unreadable_variants} product(s) carry no readable variants -- "
+                f"{unreadable_variants} product(s) carry unreadable variant data -- "
                 "variant-identity-source drift")
         if not yielded and identity_missing:
             # `title` and `handle` are identity, not display: item_key hashes the

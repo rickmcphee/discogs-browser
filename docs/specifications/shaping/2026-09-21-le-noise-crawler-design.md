@@ -144,6 +144,23 @@ length, not its medium, and CD EPs exist. Nothing is lost by leaving it out — 
 bare `(EP)` product has no non-vinyl bracket for it to override — while
 including it would rescue a hypothetical `(EP/CD)` that is not a record at all.
 
+The inch marker needs a **closing boundary of its own**, which the word-based
+alternatives get from their trailing `\b` and it cannot: a quote glyph is
+already a non-word character, so `\b` has nothing left to assert after it.
+Without one, `(12"CD)` reads `12"` as a complete vinyl marker, the bracket
+names vinyl *and* a CD, and the two-sided rule above keeps the CD as a record —
+the exact inversion the second gate exists to prevent. It is spelled *not
+followed by a letter or digit* rather than `(?![a-z0-9])`, because `[a-z]` is
+ASCII-only even under `IGNORECASE` and would read an accented letter as a
+separator. `joyfulnoiserecordings.py` carries the same guard for the same
+reason, and records that the fleet shipped this hole twice before closing it.
+
+A genuine record bundled with a disc keeps its marker, because it names a
+separator: `(12"/CD)`, `(12" + CD)` and `(12", CD)` all put a non-letter after
+the quote and are still kept. Only the glued form is read as the non-vinyl item
+it most likely is. Live, this changes nothing — the only bracket on the whole
+reachable shelf carrying an inch mark is `7" Box Set`.
+
 ### The artist: the title, and nothing else
 
 Titles are `Artist - Album (Pressing)`, split on the first qualifying dash.
@@ -318,7 +335,7 @@ names a distinct way the payload can stop carrying what this crawler reads:
 | collection empty | the walk yielded no products at all |
 | `format-taxonomy drift` | no product carries the `vinyl` product_type |
 | `medium-bracket drift` | every vinyl-typed product reads as another medium |
-| `variant-identity-source drift` | no rows, and some product's `variants` collection was absent, empty, retyped, or held an entry that was not a mapping |
+| `variant-identity-source drift` | no rows, and some product's `variants` collection was absent, empty, retyped, or held an entry that was not a mapping. Its message says *unreadable variant data* rather than *no readable variants*, because a product counted here may well have a readable variant beside the broken one |
 | `identity-source drift` | no rows, and some record lost its `title` or `handle` |
 | `artist-source drift` | no rows, and some record's title stopped carrying an artist |
 | `stock-source drift` | no rows, and **any** kept variant's `available` was not a literal bool |

@@ -453,6 +453,32 @@ async def test_medium_gate_reads_the_bracket_not_the_album_name(crawler):
     assert Crawler._is_other_medium("Led Zeppelin - Live EP (2LP)") is False
 
 
+def test_a_glued_inch_marker_does_not_rescue_a_non_vinyl_bracket():
+    # A quote glyph is already a non-word character, so the inch marker cannot
+    # get a closing boundary from `\b` the way the word alternatives do.
+    # Without one, "12\"" reads as a complete vinyl marker inside "12\"CD", the
+    # bracket names vinyl *and* a CD, and the two-sided rule keeps the CD.
+    for glued in ('A - B (12"CD)', 'A - B (7"Cassette)', 'A - B (12"2CD)'):
+        assert Crawler._is_other_medium(glued) is True, glued
+    # A genuine record bundled with a disc names a separator, so its marker
+    # still reads and the two-sided rule still keeps it.
+    for separated in ('A - B (12"/CD)', 'A - B (12" + CD)', 'A - B (12", CD)'):
+        assert Crawler._is_other_medium(separated) is False, separated
+    # And a bracket that names only a size is untouched.
+    assert Crawler._is_other_medium('A - B (7" Box Set)') is False
+
+
+@respx.mock
+async def test_a_glued_inch_marker_product_is_dropped_end_to_end(crawler):
+    _mock_pages([
+        {**_JOE_JACKSON_CD, "title": 'Joe Jackson - Hope And Fury (12"CD)',
+         "handle": "joe-jackson-hope-and-fury-12-cd"},
+        _STEF_CHURA,
+    ])
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["artist"] for i in items] == ["Stef Chura"]
+
+
 @respx.mock
 async def test_sold_out_product_yields_nothing(crawler):
     _mock_pages([_PEARL_JAM_SOLD_OUT, _STEF_CHURA])
@@ -625,8 +651,14 @@ async def test_a_dropped_variant_entry_is_not_silently_readable(crawler):
         {"title": "Default Title", "price": "34.99", "available": False, "featured_image": None},
         None,
     ]}])
-    with pytest.raises(RuntimeError, match="variant-identity-source drift"):
+    with pytest.raises(RuntimeError, match="variant-identity-source drift") as raised:
         [item async for item in crawler.crawl_catalog()]
+    # The diagnostic has to describe what was actually counted. This product
+    # has a perfectly readable variant beside the broken one, so "no readable
+    # variants" would send a reader looking for an empty collection that was
+    # never the cause. Found by Copilot in review on PR #394.
+    assert "unreadable variant data" in str(raised.value)
+    assert "no readable variants" not in str(raised.value)
 
 
 @respx.mock
