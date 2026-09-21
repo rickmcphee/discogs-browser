@@ -91,8 +91,8 @@ The alternatives were considered and rejected:
   tag filtering is HTML-only here. The genre tags also do not cover every
   product, so they were never a true partition.
 - **The product sitemap** lists every product, but reaching their data means
-  one request per product, which is three orders of magnitude more load than
-  the walk.
+  one request per product — 41,615 requests against the walk's 100, so about
+  400× the load.
 
 ### The format gates
 
