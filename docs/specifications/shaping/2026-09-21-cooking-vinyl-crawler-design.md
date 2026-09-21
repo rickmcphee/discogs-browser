@@ -300,6 +300,13 @@ construction. If the platform later starts flagging sold-out stock instead, this
 guard fires on the first sync that sees it — a false raise, but one whose
 message names the field to go and look at.
 
+That message reports the **values** it did not recognise, not just how many
+products carried one, because the two ways to land here send the reader to
+different places: a field that has gone missing is a feed-shape change, while
+`on backorder` is the platform introducing a state and needing a decision about
+whether it is purchasable. Saying "carry no availability" for both would send
+whoever reads it hunting for an absent element that is right there.
+
 | price-source | rows were yielded and **none** carries a price | isolated nulls stay tolerated; a store-wide price failure re-lists the catalog unpriced, which is worse than the snapshot it replaces |
 
 The last three are conditioned on a second tally rather than on emptiness alone,

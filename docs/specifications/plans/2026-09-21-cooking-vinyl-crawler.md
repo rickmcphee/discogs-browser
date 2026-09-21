@@ -53,7 +53,7 @@ cd backend && TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/di
 - [x] `Crawler` with `site_name = "Cooking Vinyl"`, `base_url = "https://cookingvinyl.tmstor.es"`, `crawler_type = "catalog"`, `genre = "rock"`, and a one-sentence `genre_summary` for the Settings tooltip.
 - [x] `crawl_catalog()` reads `crawl_delay_seconds` and `consecutive_failure_limit` from `load_config()`, opens an `httpx.AsyncClient` on `base_url`, and makes one `get_with_retry` call to `_FEED_PATH` with the identifying `User-Agent` header.
 - [x] Parse with `xml.etree.ElementTree`. A `ParseError`, a root that is not `rss`, or a missing `merchant` element raises the transport guard.
-- [x] Walk `merchant/product`, tally `products_seen`, `vinyl_named`, `publishable`, `identity_missing`, `unreadable_availability`, `yielded`, `priced`, and yield one item dict per admitted product. `vinyl_named` is counted before the bundle rejection and `publishable` after it, so the two guards over them can say which of the two emptied the walk.
+- [x] Walk `merchant/product`, tally `products_seen`, `vinyl_named`, `publishable`, `identity_missing`, `unrecognised_availability`, `yielded`, `priced`, and yield one item dict per admitted product. `vinyl_named` is counted before the bundle rejection and `publishable` after it, so the two guards over them can say which of the two emptied the walk.
 - [x] `report_page(1, yielded)` after the walk — one request, so `report_page` is the whole progress signal.
 - [x] Every guard in the design doc's table, in that order, each with the message the operator needs.
 
@@ -71,5 +71,5 @@ cd backend && TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/di
 **Step 3 — verification.**
 
 - [x] Run the new test file and confirm it passes.
-- [x] Run the whole backend suite to confirm nothing else moved.
+- [ ] Run the whole backend suite to confirm nothing else moved. *(Unchecked deliberately: a run is in flight on the rebased tree and the earlier one was stopped mid-run to rebase, so nothing here may claim a completed suite yet. Check it when a run has produced a result.)*
 - [x] Pre-PR spec-drift check across `docs/superpowers/specs/` and `docs/specifications/shaping/`.

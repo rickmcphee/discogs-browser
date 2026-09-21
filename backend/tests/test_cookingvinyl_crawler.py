@@ -342,8 +342,16 @@ async def test_raises_when_nothing_yielded_and_a_record_lost_its_identity():
 
 
 async def test_raises_when_nothing_yielded_and_a_record_lost_its_availability():
-    with pytest.raises(RuntimeError, match="stock-source drift"):
+    with pytest.raises(RuntimeError, match=r"unrecognised availability \(\(empty\)\)"):
         await _crawl(_feed(_product(name="No Availability LP", omit=("availability",))))
+
+
+async def test_the_stock_guard_names_the_value_it_did_not_recognise():
+    # A missing field and a value the platform has newly introduced both reach
+    # this guard, and they send whoever reads it to different places -- so the
+    # message reports the value rather than asserting the field was absent.
+    with pytest.raises(RuntimeError, match=r"unrecognised availability \(on backorder\)"):
+        await _crawl(_feed(_product(name="Backordered LP", availability="on backorder")))
 
 
 async def test_raises_when_no_row_at_all_carries_a_price():

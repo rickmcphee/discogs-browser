@@ -113,7 +113,8 @@ class Crawler:
         vinyl_named = 0
         publishable = 0
         identity_missing = 0
-        unreadable_availability = 0
+        unrecognised_availability = 0
+        unrecognised_values = set()
         items = []
         for product in products:
             products_seen += 1
@@ -136,12 +137,14 @@ class Crawler:
             if not self._has_identity(product):
                 identity_missing += 1
                 continue
-            if self._text(product, "availability").lower() not in _PURCHASABLE:
+            availability = self._text(product, "availability").lower()
+            if availability not in _PURCHASABLE:
                 # Sold-out products are absent from the feed rather than
                 # flagged, so it has never carried a value outside
                 # _PURCHASABLE -- which makes any other value, an empty one
                 # included, drift rather than a shelf that sold out.
-                unreadable_availability += 1
+                unrecognised_availability += 1
+                unrecognised_values.add(availability or "(empty)")
                 continue
             items.append(self._item(product))
 
@@ -187,15 +190,21 @@ class Crawler:
             raise RuntimeError(
                 f"{_FEED_PATH} yielded no rows while {identity_missing} vinyl product(s) "
                 "carry no artist, name or product URL -- identity-source drift")
-        if not yielded and unreadable_availability:
+        if not yielded and unrecognised_availability:
             # An empty result is only trustworthy when every product that could
             # have yielded a row was readable and simply unavailable. Counting
             # the unreadable ones rather than the readable ones is what catches
             # the partial case: one genuinely sold-out product must not vouch
             # for a catalog that has gone unreadable behind it.
+            #
+            # The values are named, not just counted: a missing field and a
+            # value the platform has newly introduced ("on backorder") both
+            # land here, and they send whoever reads this to different places.
+            # (Copilot, PR #393.)
             raise RuntimeError(
-                f"{_FEED_PATH} yielded no rows while {unreadable_availability} vinyl product(s) "
-                "carry no availability -- stock-source drift")
+                f"{_FEED_PATH} yielded no rows while {unrecognised_availability} vinyl product(s) "
+                f"carry an unrecognised availability ({', '.join(sorted(unrecognised_values))}) "
+                "-- stock-source drift")
         if yielded and not priced:
             # Rows without the emptiness: _price answers None for a value it
             # cannot use, so a price field removed or retyped store-wide
