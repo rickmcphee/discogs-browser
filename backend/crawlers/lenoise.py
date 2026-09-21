@@ -1,3 +1,4 @@
+import math
 import re
 from typing import AsyncIterator, Optional
 
@@ -131,8 +132,8 @@ class Crawler:
             if self._is_other_medium(_text(product.get("title"))):
                 continue
             records += 1
-            variants = self._variants(product)
-            if not variants:
+            variants, unreadable_entries = self._variants(product)
+            if unreadable_entries or not variants:
                 unreadable_variants += 1
             # One bracket per record for every way a product that WOULD have
             # yielded a row failed to, counted once against the first reason
@@ -144,8 +145,14 @@ class Crawler:
                 identity_missing += 1
             elif self._split_title(_text(product.get("title"))) is None:
                 artist_missing += 1
-            elif not any(v.get("available") is True or v.get("available") is False
-                         for v in variants):
+            # all(), not any(): one readable variant must not vouch for the
+            # corrupt ones beside it. A product whose variants are
+            # [{"available": False}, {"available": "maybe"}] yields no row, and
+            # under any() it incremented nothing -- so a store-wide retyping of
+            # part of every variants array emptied the walk in silence, past
+            # every guard, and the completed-but-empty walk deleted the
+            # snapshot. Found by Copilot in review on PR #394.
+            elif not all(isinstance(v.get("available"), bool) for v in variants):
                 unreadable_stock += 1
             item = self._item(product)
             if item is not None:
@@ -310,11 +317,23 @@ class Crawler:
         return artist, album
 
     @staticmethod
-    def _variants(product: dict) -> list:
+    def _variants(product: dict):
+        """(the product's mapping variants, the number of entries that were not).
+
+        The drop count is returned rather than discarded because a dropped
+        entry is otherwise invisible to every guard in `crawl_catalog`: a
+        product whose variants are `[{"available": False}, None]` keeps one
+        readable variant, so the collection is neither empty nor unreadable,
+        and it yields no row while incrementing nothing. Shopify retyping part
+        of every variants array store-wide would empty the walk in exactly that
+        silence, and a completed-but-empty walk deletes the snapshot. Found by
+        Copilot in review on PR #394.
+        """
         variants = product.get("variants")
         if not isinstance(variants, (list, tuple)):
-            return []
-        return [v for v in variants if isinstance(v, dict)]
+            return [], 0
+        kept = [v for v in variants if isinstance(v, dict)]
+        return kept, len(variants) - len(kept)
 
     @classmethod
     def _pick_variant(cls, product: dict) -> Optional[dict]:
@@ -334,7 +353,7 @@ class Crawler:
         Only the literal True admits a variant: the string "false" is truthy, so
         a falsiness test would publish a sold-out record as in stock.
         """
-        available = [v for v in cls._variants(product) if v.get("available") is True]
+        available = [v for v in cls._variants(product)[0] if v.get("available") is True]
         if not available:
             return None
         priced = [v for v in available if cls._price(v) is not None]
@@ -346,10 +365,23 @@ class Crawler:
 
     @staticmethod
     def _price(variant: dict) -> Optional[float]:
-        try:
-            return float(variant["price"])
-        except (KeyError, TypeError, ValueError):
+        raw = variant.get("price")
+        # bool before float(): bool is an int subclass, so True would price a
+        # record at 1. nan is the other one a truthiness check cannot catch --
+        # and it counts toward `priced` as readily as a real price, so a
+        # store-wide retyping to "NaN" would satisfy `price-source drift` while
+        # publishing a catalog of prices no reader can use. Found by Copilot in
+        # review on PR #394; this is the parser the recent sibling catalog
+        # crawlers already share.
+        if isinstance(raw, bool):
             return None
+        try:
+            price = float(raw)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(price) or price <= 0:
+            return None
+        return price
 
     @staticmethod
     def _cover(product: dict, variant: dict) -> Optional[str]:
@@ -362,9 +394,22 @@ class Crawler:
         is display-only. Guarded here rather than in `shopify_catalog`, because
         every Shopify crawler in the fleet reads that helper and this is one
         store's payload, not a fleet-wide change to make from inside a crawler.
+
+        Type-checking the two CONTAINERS is not enough: the helper returns
+        whatever sits at `src` without looking at it, so a nested
+        `{"src": 123}` comes back as the row's `cover_image_url` in breach of
+        the `Optional[str]` contract, and `replace_stock_items()` then hands an
+        int to a Postgres TEXT column -- killing the whole refresh over
+        display-only artwork, which is the failure this boundary exists to
+        prevent, arriving one level deeper. So `src` has to be a non-empty
+        string too, and an image without one is passed over rather than allowed
+        to answer. Found by Copilot in review on PR #394, as it was on PR #337
+        for `joyfulnoiserecordings.py`.
         """
-        images = product.get("images")
-        images = [i for i in images if isinstance(i, dict)] if isinstance(images, (list, tuple)) else []
-        if not isinstance(variant.get("featured_image"), dict):
+        raw = product.get("images")
+        raw = raw if isinstance(raw, (list, tuple)) else []
+        images = [i for i in raw if _text(i.get("src") if isinstance(i, dict) else None)]
+        featured = variant.get("featured_image")
+        if not (isinstance(featured, dict) and _text(featured.get("src"))):
             variant = {**variant, "featured_image": None}
         return resolve_cover_image({**product, "images": images}, variant)

@@ -255,7 +255,7 @@ record ships, orphaning the saves and judgments keyed on the old `item_key`.
 | `artist` | title's artist half |
 | `title` | title's album half, pressing bracket intact |
 | `format` | `"Vinyl"`, unconditionally, as every sibling catalog crawler does |
-| `price` | cheapest in-stock variant's `price`, `None` when unparseable |
+| `price` | cheapest in-stock variant's `price`, `None` when not a usable one |
 | `currency` | `"CAD"` |
 | `url` | `https://lenoise.ca/products/{handle}` |
 | `cover_image_url` | `resolve_cover_image()`, variant image first |
@@ -263,14 +263,29 @@ record ships, orphaning the saves and judgments keyed on the old `item_key`.
 `currency` is hardcoded because `products.json` carries none to read: the
 storefront sets `cart_currency=CAD`, and the store is in Montreal.
 
-`resolve_cover_image()` is called through a local wrapper that type-checks its
-two collections first. The shared helper reads `variant["featured_image"].get()`
-and `product["images"][0].get()` behind `or` guards, which catch a missing or
-null field but pass a *retyped* one straight to `.get()` — and a raise there
-aborts the whole source over one product's artwork, which is display-only.
-Guarded in this crawler rather than in `shopify_catalog` because every Shopify
-crawler in the fleet reads that helper, and this is one store's payload rather
-than a fleet-wide change to make from inside a crawler.
+`price` is read through the parser the recent sibling catalog crawlers share
+rather than a bare `float()`. `float()` accepts three things that are not
+prices: a bool (`bool` is an `int` subclass, so `True` prices a record at 1),
+a non-finite string (`"NaN"`, `"Infinity"`), and zero or a negative. The
+non-finite case is the one that matters most, because `nan` is not `None` — it
+counts toward `priced` as readily as a real price, so a store-wide retyping to
+`"NaN"` would satisfy `price-source drift` while publishing a catalog of prices
+no reader can use.
+
+`resolve_cover_image()` is called through a local wrapper that validates both
+the containers **and** the nested `src`. The shared helper reads
+`variant["featured_image"].get()` and `product["images"][0].get()` behind `or`
+guards, which catch a missing or null field but pass a *retyped* one straight to
+`.get()` — and a raise there aborts the whole source over one product's artwork,
+which is display-only. Checking the two containers is not enough on its own:
+the helper returns whatever sits at `src` without looking at it, so a nested
+`{"src": 123}` reaches the row's `cover_image_url` in breach of the
+`Optional[str]` contract, and `replace_stock_items()` then hands an int to a
+Postgres TEXT column — the same refresh-killing failure, one level deeper. So an
+image whose `src` is not a non-empty string is passed over rather than allowed
+to answer. Guarded in this crawler rather than in `shopify_catalog` because
+every Shopify crawler in the fleet reads that helper, and this is one store's
+payload rather than a fleet-wide change to make from inside a crawler.
 
 ### Replay over the live catalog
 
@@ -303,10 +318,10 @@ names a distinct way the payload can stop carrying what this crawler reads:
 | collection empty | the walk yielded no products at all |
 | `format-taxonomy drift` | no product carries the `vinyl` product_type |
 | `medium-bracket drift` | every vinyl-typed product reads as another medium |
-| `variant-identity-source drift` | no rows, and some product's `variants` could not be read |
+| `variant-identity-source drift` | no rows, and some product's `variants` collection was absent, empty, retyped, or held an entry that was not a mapping |
 | `identity-source drift` | no rows, and some record lost its `title` or `handle` |
 | `artist-source drift` | no rows, and some record's title stopped carrying an artist |
-| `stock-source drift` | no rows, and some record's `available` flag was unreadable |
+| `stock-source drift` | no rows, and **any** kept variant's `available` was not a literal bool |
 | `price-source drift` | rows were emitted and **none** carries a price |
 
 Two ordering rules inside that set, each of which was wrong first:
@@ -326,7 +341,17 @@ price, so isolated nulls stay tolerated.
 
 The stock guard counts **unreadable** products rather than readable ones,
 because that is what catches the partial case: one genuinely sold-out record
-must not vouch for a catalog that has gone unreadable behind it.
+must not vouch for a catalog that has gone unreadable behind it. The same
+reasoning runs one level down, inside a single product, and getting it wrong
+there was a live hole Copilot found on PR #394. Readability is judged over
+**every** kept variant with `all()`, not `any()` — under `any()`, the sold-out
+variant in `[{"available": False}, {"available": "maybe"}]` certified the
+corrupt one beside it. And a variant entry that is not a mapping at all is
+**counted** as it is dropped rather than silently discarded: with
+`[{"available": False}, None]` the collection is neither empty nor unreadable,
+so before the count existed such a product yielded no row while incrementing
+nothing, and a store-wide retyping of part of every variants array would have
+emptied the walk in exactly that silence.
 
 ## Scale
 
@@ -394,10 +419,13 @@ every drift guard above, in both directions where it has one; and retyped
 payload fields skipping the product rather than aborting the source.
 
 Each guard and rule was mutation-checked — mutated once in the crawler, with
-the suite re-run to confirm a test fails. One mutation survived the first pass
-(reading the whole title instead of its brackets in the medium gate); the
-captured `Lip Cream - Big Foot Cassette (Yellow)` product was added as a test
-and it is caught.
+the suite re-run to confirm a test fails. Two mutations survived a first pass
+and both were closed by adding a test: reading the whole title instead of its
+brackets in the medium gate (closed by the captured `Lip Cream - Big Foot
+Cassette (Yellow)` product), and dropping the type check on the `images`
+container (closed by giving one product a *non-iterable* `images`, since a
+retyped-but-iterable one such as a string happens to survive the unguarded
+comprehension).
 
 ## Crawl citizenship and `robots.txt` compliance
 

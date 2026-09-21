@@ -616,6 +616,89 @@ async def test_an_isolated_unreadable_product_is_tolerated(crawler):
     assert [i["artist"] for i in items] == ["Police"]
 
 
+@respx.mock
+async def test_a_dropped_variant_entry_is_not_silently_readable(crawler):
+    # [{sold out}, None] keeps one readable variant, so the collection is
+    # neither empty nor unreadable -- and before the drop was counted, this
+    # yielded no row while incrementing nothing at all.
+    _mock_pages([{**_STEF_CHURA, "variants": [
+        {"title": "Default Title", "price": "34.99", "available": False, "featured_image": None},
+        None,
+    ]}])
+    with pytest.raises(RuntimeError, match="variant-identity-source drift"):
+        [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
+async def test_one_readable_variant_never_vouches_for_a_corrupt_sibling(crawler):
+    # Readability is judged with all(), not any(): the sold-out variant reads
+    # perfectly, and under any() it certified the "maybe" beside it.
+    _mock_pages([{**_STEF_CHURA, "variants": [
+        {"title": "Default Title", "price": "34.99", "available": False, "featured_image": None},
+        {"title": "Default Title", "price": "34.99", "available": "maybe", "featured_image": None},
+    ]}])
+    with pytest.raises(RuntimeError, match="stock-source drift"):
+        [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
+async def test_an_isolated_corrupt_variant_is_tolerated(crawler):
+    # Both guards above stay gated on an empty outcome.
+    _mock_pages([{**_TAME_IMPALA, "variants": [
+        {"title": "Default Title", "price": "42.99", "available": False, "featured_image": None},
+        None,
+    ]}, _STEF_CHURA])
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["artist"] for i in items] == ["Stef Chura"]
+
+
+def test_a_boolean_price_does_not_price_a_record_at_one():
+    # bool is an int subclass, so float(True) is 1.0.
+    assert Crawler._price({"price": True}) is None
+    assert Crawler._price({"price": False}) is None
+
+
+def test_non_finite_and_non_positive_prices_are_not_prices():
+    for raw in ("NaN", "Infinity", "-Infinity", float("nan"), float("inf"), "0.00", 0, "-5"):
+        assert Crawler._price({"price": raw}) is None, raw
+    assert Crawler._price({"price": "34.99"}) == 34.99
+
+
+@respx.mock
+async def test_a_catalog_priced_entirely_in_nan_raises(crawler):
+    # nan counts toward `priced` as readily as a real price would, so without
+    # the finiteness check this satisfied price-source drift while publishing
+    # a catalog of prices no reader can use.
+    _mock_pages([{**_STEF_CHURA, "variants": [
+        {"title": "Default Title", "price": "NaN", "available": True, "featured_image": None},
+    ]}])
+    with pytest.raises(RuntimeError, match="price-source drift"):
+        [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
+async def test_a_non_string_image_src_never_reaches_cover_image_url(crawler):
+    # resolve_cover_image() returns whatever sits at `src`, so a retyped one
+    # would hand an int to a Postgres TEXT column and kill the whole refresh
+    # over display-only artwork.
+    _mock_pages([
+        {**_STEF_CHURA, "images": [{"src": 123}]},
+        {**_TAME_IMPALA, "images": [{"src": ""}, {"src": "https://cdn.shopify.com/second.jpg"}]},
+        {**_POLICE, "images": [{"src": "https://cdn.shopify.com/police.jpg"}], "variants": [
+            {"title": "Default Title", "price": "39.99", "available": True,
+             "featured_image": {"src": 456}},
+        ]},
+    ])
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [(i["artist"], i["cover_image_url"]) for i in items] == [
+        ("Stef Chura", None),
+        # The unusable first image is passed over rather than allowed to answer.
+        ("Tame Impala", "https://cdn.shopify.com/second.jpg"),
+        # A retyped variant image falls back to the product's own.
+        ("Police", "https://cdn.shopify.com/police.jpg"),
+    ]
+
+
 # --- payload type safety ----------------------------------------------------
 
 @respx.mock
@@ -626,6 +709,10 @@ async def test_a_retyped_field_skips_the_product_instead_of_aborting(crawler):
         {**_TAME_IMPALA, "title": 12345},
         {**_POLICE, "product_type": ["Vinyl"]},
         {**_JOHN_CARPENTER, "images": "not-a-list"},
+        # Not merely retyped but non-iterable: `images or []` leaves this
+        # intact and the comprehension over it raises, taking the whole source
+        # down over display-only artwork.
+        {**_IRON_BUTTERFLY, "images": 123},
         {**_MOLECULE, "variants": [{"title": "Default Title", "price": "32.99",
                                     "available": True, "featured_image": "not-a-dict"}]},
         _STEF_CHURA,
@@ -633,6 +720,7 @@ async def test_a_retyped_field_skips_the_product_instead_of_aborting(crawler):
     items = [item async for item in crawler.crawl_catalog()]
     assert [(i["artist"], i["cover_image_url"]) for i in items] == [
         ("John Carpenter", None),
+        ("Iron Butterfly", None),
         ("Molecule", "https://cdn.shopify.com/nazare.jpg"),
         ("Stef Chura", "https://cdn.shopify.com/s/files/1/0250/3344/1364/files/a1674265645_10.jpg?v=1789936803"),
     ]
