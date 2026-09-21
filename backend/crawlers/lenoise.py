@@ -1,5 +1,6 @@
 import math
 import re
+import unicodedata
 from typing import AsyncIterator, Optional
 
 from shopify_catalog import iter_products, resolve_cover_image
@@ -132,7 +133,18 @@ def _text(value) -> str:
     on a raise -- is not a defence: it freezes the store at its previous
     snapshot for as long as the one bad product is published.
     """
-    return " ".join(value.split()) if isinstance(value, str) else ""
+    if not isinstance(value, str):
+        return ""
+    # NFC before anything reads it, because the medium boundaries are spelled
+    # "not a letter or digit" and a COMBINING MARK is neither: in NFD,
+    # "(Caf\u00e9LP CD)" decomposes to "Cafe" + U+0301 + "LP", the mark opens a
+    # boundary the composed form does not, `LP` matches, and the bracket keeps a
+    # CD as a record -- while the identical string in NFC drops it. Two
+    # canonically equivalent titles classifying oppositely is the bug; which way
+    # round they go is incidental. Normalised on the way in rather than at each
+    # comparison, so matching and emitting agree and no later reader has to
+    # remember. Found by Copilot in review on PR #394.
+    return unicodedata.normalize("NFC", " ".join(value.split()))
 
 
 class Crawler:
@@ -148,6 +160,8 @@ class Crawler:
 
     async def crawl_catalog(self) -> AsyncIterator[dict]:
         products_seen = 0
+        unreadable_products = 0
+        unreadable_kind = 0
         vinyl_typed = 0
         records = 0
         identity_missing = 0
@@ -158,6 +172,31 @@ class Crawler:
         priced = 0
         async for product in iter_products(self.base_url, _COLLECTION_SLUG):
             products_seen += 1
+            # `iter_products()` type-checks the products CONTAINER but yields
+            # each entry unchanged, so a null or scalar entry reaches the
+            # helpers below and raises on `.get()` -- aborting the whole source
+            # over one malformed product, which is the abort `_text` exists to
+            # prevent arriving one level up. Found by Copilot in review on
+            # PR #394.
+            if not isinstance(product, dict):
+                unreadable_products += 1
+                continue
+            kind = _text(product.get("product_type"))
+            # An absent, empty or retyped kind is NOT the same as a valid
+            # non-vinyl one, and reading them alike is what let the second
+            # silently vanish: a product typed `[]` is skipped exactly as a CD
+            # is, reaching no tally. If the only in-stock records were retyped
+            # that way while a correctly typed one happened to be sold out,
+            # `vinyl_typed` and `records` stay non-zero, nothing raises, and the
+            # completed-but-empty walk deletes the snapshot. A named non-vinyl
+            # string stays ignored, as it should be.
+            if not kind:
+                unreadable_kind += 1
+                continue
+            # Through `_is_vinyl_type` rather than comparing `kind` here, so the
+            # comparison lives in exactly one place. Spelled out twice, the copy
+            # in `_item` goes dead the moment this one filters first -- and a
+            # gate nothing can observe is a gate nothing tests.
             if not self._is_vinyl_type(product):
                 continue
             vinyl_typed += 1
@@ -201,6 +240,23 @@ class Crawler:
             raise RuntimeError(
                 f"{_COLLECTION_SLUG} collection returned no products -- renamed, "
                 "removed, or payload drift")
+        if not yielded and unreadable_products:
+            # Asked before the kind and format guards below: a walk of nothing
+            # but malformed entries has no readable kind either, so either of
+            # those would otherwise answer a payload-shape failure with a
+            # vocabulary diagnosis.
+            raise RuntimeError(
+                f"{_COLLECTION_SLUG} collection yielded no rows while "
+                f"{unreadable_products} entr(ies) are not products at all -- "
+                "product-entry drift")
+        if not yielded and unreadable_kind:
+            # Likewise ahead of format-taxonomy, which would read a store-wide
+            # retyping of `product_type` as a renamed vinyl kind -- true as far
+            # as it goes, and the wrong thing to go looking for.
+            raise RuntimeError(
+                f"{_COLLECTION_SLUG} collection yielded no rows while "
+                f"{unreadable_kind} product(s) carry no readable product_type -- "
+                "kind-source drift")
         if not vinyl_typed:
             # The whole shelf losing the `Vinyl` product_type is the store's
             # format vocabulary having moved, not a sold-out catalog:

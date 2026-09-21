@@ -1,3 +1,5 @@
+import unicodedata
+
 import httpx
 import pytest
 import respx
@@ -769,6 +771,79 @@ async def test_a_non_string_image_src_never_reaches_cover_image_url(crawler):
         # A retyped variant image falls back to the product's own.
         ("Police", "https://cdn.shopify.com/police.jpg"),
     ]
+
+
+@respx.mock
+async def test_a_non_product_entry_is_skipped_rather_than_aborting(crawler):
+    # iter_products() type-checks the products CONTAINER but yields each entry
+    # unchanged, so a null or scalar reaches the helpers and raises on .get(),
+    # taking the whole source down over one malformed product.
+    _mock_pages([None, "not a product", 42, _STEF_CHURA])
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["artist"] for i in items] == ["Stef Chura"]
+
+
+@respx.mock
+async def test_a_walk_of_non_products_raises(crawler):
+    _mock_pages([None, "not a product", 42])
+    with pytest.raises(RuntimeError, match="product-entry drift"):
+        [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
+async def test_an_unreadable_product_type_is_not_a_silent_non_vinyl(crawler):
+    # The shape this counter exists for: the only in-stock records are retyped
+    # while a correctly typed one happens to be sold out. Without the tally,
+    # vinyl_typed and records stay non-zero, nothing raises, and the
+    # completed-but-empty walk deletes the previous snapshot.
+    _mock_pages([
+        {**_TAME_IMPALA, "product_type": []},
+        {**_STEF_CHURA, "product_type": {}},
+        _PEARL_JAM_SOLD_OUT,
+    ])
+    with pytest.raises(RuntimeError, match="kind-source drift"):
+        [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
+async def test_a_named_non_vinyl_product_type_stays_silently_ignored(crawler):
+    # The other half of the rule: a valid non-vinyl string is not drift, so a
+    # shelf of CDs beside one record yields that record and raises nothing.
+    _mock_pages([_YOKO_ONO_CD, _STEF_CHURA])
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["artist"] for i in items] == ["Stef Chura"]
+
+
+@respx.mock
+async def test_an_isolated_unreadable_product_type_is_tolerated(crawler):
+    _mock_pages([{**_TAME_IMPALA, "product_type": None}, _STEF_CHURA])
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["artist"] for i in items] == ["Stef Chura"]
+
+
+@respx.mock
+async def test_canonically_equivalent_titles_classify_identically(crawler):
+    # In NFD a combining mark is not a letter, so it opens a boundary the
+    # composed form does not: "(CaféLP CD)" decomposed matched `LP`, the
+    # bracket named vinyl as well as a CD, and the two-sided rule kept the CD.
+    nfd = unicodedata.normalize("NFD", 'Caf\u00e9 Band - Album (Caf\u00e9LP CD)')
+    nfc = unicodedata.normalize("NFC", nfd)
+    assert nfd != nfc
+    # A real record rides alongside, so the medium-bracket guard does not fire
+    # on a page whose every product reads as another medium — that would mask
+    # the classification this test is about.
+    for title in (nfd, nfc):
+        _mock_pages([{**_TAME_IMPALA, "title": title, "handle": "cafe-band-album"},
+                     _STEF_CHURA])
+        items = [item async for item in crawler.crawl_catalog()]
+        assert [i["artist"] for i in items] == ["Stef Chura"], title
+    # And the artist a row carries is composed, whichever form arrived.
+    for title in (unicodedata.normalize("NFD", 'Caf\u00e9 Band - Album'),
+                  unicodedata.normalize("NFC", 'Caf\u00e9 Band - Album')):
+        _mock_pages([{**_STEF_CHURA, "title": title, "handle": "cafe-band-album"}])
+        items = [item async for item in crawler.crawl_catalog()]
+        assert items[0]["artist"] == "Caf\u00e9 Band"
+        assert "\u0301" not in items[0]["artist"]
 
 
 # --- payload type safety ----------------------------------------------------

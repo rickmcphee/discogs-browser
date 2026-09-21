@@ -102,6 +102,20 @@ The alternatives were considered and rejected:
 `Vinyl`. It is compared **lowercased** because the store's casing is not
 consistent: `VInyl` is live on real records, and an exact match drops them.
 
+An **absent, empty or retyped** kind is not the same thing as a valid
+non-vinyl one, and reading them alike is what let the second vanish silently:
+a product typed `[]` was skipped exactly as a `CD` is, reaching no tally. If
+the only in-stock records were retyped that way while a correctly typed one
+happened to be sold out, `vinyl_typed` and `records` stay non-zero, nothing
+raises, and the completed-but-empty walk deletes the snapshot. The unreadable
+kind is now counted (`kind-source drift`); a named non-vinyl string stays
+ignored, as it should be.
+
+The comparison itself lives in exactly one place, `_is_vinyl_type`. Spelled
+out both in the walk and in `_item`, the copy in `_item` goes dead the moment
+the walk filters first — and a gate nothing can observe is a gate nothing
+tests, which is how the mutation check found the duplication.
+
 #### Gate two: the title's bracket, because gate one leaks
 
 The shelf carries CDs and cassettes that are typed `Vinyl`. Over the reachable
@@ -293,6 +307,17 @@ record ships, orphaning the saves and judgments keyed on the old `item_key`.
 `currency` is hardcoded because `products.json` carries none to read: the
 storefront sets `cart_currency=CAD`, and the store is in Montreal.
 
+Everything read through `_text()` is **normalised to NFC**, because the medium
+boundaries are spelled "not a letter or digit" and a combining mark is neither.
+In NFD, `(CaféLP CD)` decomposes to `Cafe` + U+0301 + `LP`; the mark opens a
+boundary the composed form does not, `LP` matches, the bracket names vinyl as
+well as a CD, and the two-sided rule keeps the CD — while the identical string
+in NFC drops it. Two canonically equivalent titles classifying oppositely is
+the bug; which way round they go is incidental. Normalising on the way in
+rather than at each comparison is what keeps matching and emitting in
+agreement, so no later reader has to remember. Live, the store already serves
+NFC throughout the reachable shelf, so this changes nothing today.
+
 `price` is read through the parser the recent sibling catalog crawlers share
 rather than a bare `float()`. `float()` accepts three things that are not
 prices: a bool (`bool` is an `int` subclass, so `True` prices a record at 1),
@@ -355,13 +380,21 @@ names a distinct way the payload can stop carrying what this crawler reads:
 | collection empty | the walk yielded no products at all |
 | `format-taxonomy drift` | no product carries the `vinyl` product_type |
 | `medium-bracket drift` | every vinyl-typed product reads as another medium |
+| `product-entry drift` | no rows, and some walked entry was not a product at all. `iter_products()` type-checks the products *container* but yields each entry unchanged, so a null or scalar reaches the helpers and raises on `.get()` — aborting the whole source over one malformed product |
+| `kind-source drift` | no rows, and some product's `product_type` was absent, empty or retyped — as distinct from a valid non-vinyl string, which stays silently ignored |
 | `variant-identity-source drift` | no rows, and some product's `variants` collection was absent, empty, retyped, or held an entry that was not a mapping. Its message says *unreadable variant data* rather than *no readable variants*, because a product counted here may well have a readable variant beside the broken one |
 | `identity-source drift` | no rows, and some record lost its `title` or `handle` |
 | `artist-source drift` | no rows, and some record's title stopped carrying an artist |
 | `stock-source drift` | no rows, and **any** kept variant's `available` was not a literal bool |
 | `price-source drift` | rows were emitted and **none** carries a price |
 
-Two ordering rules inside that set, each of which was wrong first:
+Three ordering rules inside that set, each of which was wrong first:
+
+- **The entry and kind guards are asked before the format guard.** A walk of
+  nothing but malformed entries has no readable kind either, and a store-wide
+  retyping of `product_type` leaves `vinyl_typed` at zero — so `format-taxonomy
+  drift` would answer a payload-shape failure with a vocabulary diagnosis,
+  which is true as far as it goes and the wrong thing to go looking for.
 
 - **Identity is asked before the artist.** `title` is identity *and* the
   artist's own source, so a product that has lost it has lost both, and
