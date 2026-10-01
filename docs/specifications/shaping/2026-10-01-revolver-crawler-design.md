@@ -72,10 +72,15 @@ still satisfies. A multi-variant product emits one row per in-stock pressing
 as `… — <variant>`, and Shopify's `Default Title` placeholder only counts as
 a pressing when it is the product's sole variant.
 
-`record_key` folds the plain `LP (Colour Vinyl)` suffix away. It does not
-fold a bracket written with an en dash inside it (`(Exclusive – Limited to
-500, …)`) or the `— <variant>` suffix, so those pressings are judged
-separately. That costs an extra judgment, which is the cheap direction.
+Whether `record_key` folds a pressing away depends on its vocabulary, not
+its punctuation. `EVERYTHING UNDER THE SUN LP (Smoke Vinyl)`, `Y LP — Red` and
+`Y LP (Exclusive – Orange Vinyl)` all fold to the plain album. A segment
+carrying words outside the pressing vocabulary does not:
+`(Exclusive – Limited to 500, Pink Splatter Vinyl)` keeps `to 500`, and
+`— Custard Tart` keeps the colour's name. Those pressings are judged
+separately, which costs an extra judgment, the cheap direction. (Corrected
+after Copilot's review of PR #408. The first draft blamed the en dash and
+the variant suffix themselves.)
 
 ## Drift guards
 
