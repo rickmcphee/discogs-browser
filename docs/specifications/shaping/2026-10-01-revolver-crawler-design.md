@@ -40,7 +40,11 @@ Three gates, cheapest first.
    `(... w/B-Side Screen Print)`). The album itself is never read, since
    albums are free to be called `EVERY TRICK IN THE BOOK` or `TEARS ON
    TAPE`. The artist half is read, because a bundle can put its quoted
-   album late and leave the merch where the artist would be.
+   album late and leave the merch where the artist would be. There a merch
+   word counts only beside the bundle's own joiner (`w/`, `+`), since an act
+   can be named with one (PEEL DREAM MAGAZINE). An inch marker is vinyl
+   evidence only when nothing is glued after its quote, so a `12"x12"`
+   poster or a `(12"CD)` cannot vouch for a disc.
 3. **Variant titles, negatively.** A variant is a colour (`Custard Tart`) or
    a signing (`Unsigned`); only one naming merch or another medium is
    dropped, such as a zine sold on the same product as the pressings.
@@ -82,6 +86,7 @@ raises instead:
 | Guard | Fires when |
 | --- | --- |
 | no products | the collection returns nothing |
+| product-source drift | nothing yielded while products are not mappings, carry a non-string `product_type`, or are vinyl-typed with a non-string title |
 | format-taxonomy drift | no product carries an admitted `product_type` |
 | artist-source drift | no vinyl-typed product has a quoted album |
 | variant-source drift | nothing yielded while records carry a `variants` collection that is not a list of titled mappings, or holds one bad entry |

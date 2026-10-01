@@ -128,6 +128,10 @@ async def test_other_product_types_are_rejected():
     "MASTODON ‘BLOOD MOUNTAIN’ LP (Exclusive – Orange Vinyl) w/ SIGNED 12\"x12\" PAUL ROMANO PRINT",
     "THE LIVING '1982' WHITE LP & EXCLUSIVE T-SHIRT BUNDLE",
     "MIKE MCCREADY ‘FAREWELL TO SEASONS’ LP (Exclusive – Limited to 500, \"Poltergeist\" Vinyl) + 12\"x12\" DELUXE GRAPHIC NOVEL",
+    # A poster's dimensions are not a record size, and a glued disc is a disc.
+    "X 'Y' CD + 12\"x12\" POSTER",
+    "X 'Y' (12\"CD)",
+    "X 'Y' 7\"Cassette",
     # Merch that parses into the artist half.
     "PUSCIFER x Revolver Special Collector's Edition Magazine w/ 'Global Probing, Live from Prescott' 2LP (Coke Bottle Clear w/Black Smoke)",
 ])
@@ -142,6 +146,9 @@ def test_off_shelf_products_are_rejected(title):
     "BAD RELIGION ‘THE DISSENT OF MAN’ LP + CD",
     "ALICE COOPER 'ROAD' 2LP + DVD",
     "SYSTEM OF A DOWN ‘TOXICITY’ 25TH ANNIVERSARY LP + 7\"",
+    # A band can be named with a merch word; only a bundle joiner makes it merch.
+    "PEEL DREAM MAGAZINE 'ROSE MAIN READING ROOM' LP",
+    "X 'Y' 12\" + CD",
     # Merch words inside the pressing bracket describe the vinyl.
     "KITTIE 'SPIT' LP (Leopard Print Vinyl)",
     "SPEED ‘ALL MY ANGELS’ EP (Beer Marble Vinyl w/B-Side Screen Print)",
@@ -294,6 +301,36 @@ async def test_unreadable_variants_beside_a_sold_out_record_raise(variants):
 async def test_a_store_wide_variant_drift_is_diagnosed_as_such():
     with pytest.raises(RuntimeError, match="variant-source drift"):
         await _crawl(_product("X 'Y' LP", variants="bad"))
+
+
+@pytest.mark.parametrize("title", ["Black 12\"x12\" Sleeve CD", "Red 12\"CD", "7\"Cassette"])
+def test_variant_gate_does_not_read_a_glued_or_measured_inch_as_vinyl(title):
+    product = _product("X 'Y' LP", variants=[{"title": title, "price": "1", "available": True}])
+    assert Crawler._vinyl_variants(product) == []
+
+
+@respx.mock
+@pytest.mark.parametrize("bad", [
+    None, "junk",
+    {**_product("X 'Y' LP", handle="y"), "product_type": []},
+    {**_product("X 'Y' LP", handle="y"), "product_type": None},
+    {**_product("X 'Y' LP", handle="y"), "title": 7},
+])
+async def test_unreadable_products_beside_a_sold_out_record_raise(bad):
+    with pytest.raises(RuntimeError, match="product-source drift"):
+        await _crawl(_SOLD_OUT, bad)
+
+
+@respx.mock
+async def test_legitimately_excluded_products_beside_a_sold_out_record_complete_empty():
+    # An empty type, a non-vinyl type and an unquoted string title are all
+    # readable reasons to skip, not drift.
+    assert await _crawl(
+        _SOLD_OUT,
+        _product("THE BLED 'HIS FIRST CRUSH' BUNDLE", product_type="", handle="a"),
+        _product("X 'Y' CD", product_type="CD", handle="b"),
+        _product("STAND BY ME SOUNDTRACK LP", handle="c"),
+    ) == []
 
 
 @respx.mock

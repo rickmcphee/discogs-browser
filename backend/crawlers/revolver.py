@@ -52,9 +52,14 @@ _B = r"(?<![^\W_])"
 _E = r"(?![^\W_])"
 _COUNT = r"(?:\d+\s*[x×]?\s*)?"
 
+# The inch marker takes the closing boundary too, though a quote glyph is
+# already a non-word character: without it `12"x12" POSTER` reads as a record
+# size and vouches for a CD beside it, and so does a glued `(12"CD)`. A record
+# bundled with a disc still names a separator after the quote (`12" + CD`).
+# Found by Copilot in review on PR #408.
 _VINYL_RE = re.compile(
     _B + _COUNT + r"(?:LPs?|vinyls?|picture\s+discs?)" + _E
-    + r"|" + _B + _COUNT + r"(?:7|10|12)\s*[\"”″]",
+    + r"|" + _B + _COUNT + r"(?:7|10|12)\s*[\"”″]" + _E,
     re.IGNORECASE,
 )
 # `EP` is deliberately absent above: it names a record's length, not its
@@ -79,6 +84,10 @@ _MERCH_RE = re.compile(
 )
 
 _BRACKET_RE = re.compile(r"\([^()]*\)")
+
+# How a bundle joins its merch to the record in the title: `... Magazine w/
+# 'Album' 2LP`, `... BOOK + 'Album' LP`.
+_BUNDLE_JOIN_RE = re.compile(_B + r"w/|\+")
 
 
 def _text(value) -> str:
@@ -112,13 +121,22 @@ class Crawler:
         identity_missing = 0
         unreadable_stock = 0
         unreadable_variants = 0
+        unreadable_products = 0
         yielded = 0
         priced = 0
         # The store's edge 429s a page-2 request that carries page 1's session
         # cookies; see iter_products' `refuse_cookies`.
         async for product in iter_products(self.base_url, _COLLECTION_SLUG, refuse_cookies=True):
             products_seen += 1
-            if not isinstance(product, dict):
+            # A product this crawler cannot even classify -- not a mapping, a
+            # `product_type` that is not a string, or a vinyl-typed product
+            # whose title is not one -- reaches none of the tallies below, so
+            # one readable sold-out record beside it would let the walk
+            # complete empty. Counted here, before any gate filters. An empty
+            # string type is live and legitimate (an untyped bundle), so only
+            # a non-string counts. Found by Copilot in review on PR #408.
+            if self._is_unreadable_product(product):
+                unreadable_products += 1
                 continue
             # Nested rather than sibling tallies: only a product that passes
             # every gate before it could have yielded a row, so only that
@@ -162,6 +180,13 @@ class Crawler:
             raise RuntimeError(
                 f"{_COLLECTION_SLUG} collection returned no products -- renamed, "
                 "removed, or payload drift")
+        if not yielded and unreadable_products:
+            # Ahead of the vocabulary guards below, which a payload-shape
+            # failure would otherwise satisfy with the wrong diagnosis.
+            raise RuntimeError(
+                f"{_COLLECTION_SLUG} collection yielded no rows while "
+                f"{unreadable_products} product(s) could not be read at all -- "
+                "product-source drift")
         if vinyl_typed == 0:
             raise RuntimeError(
                 f"none of the {products_seen} products in the {_COLLECTION_SLUG} "
@@ -276,7 +301,9 @@ class Crawler:
         TAPE`. The artist is read because a bundle can put its quoted album
         late in the title, leaving the merch in what parses as the artist
         (`PUSCIFER x Revolver Special Collector's Edition Magazine w/ 'Global
-        Probing...' 2LP`).
+        Probing...' 2LP`). There a merch word counts only beside the bundle's
+        own joiner (`w/`, `+`), because an act can be named with one: PEEL
+        DREAM MAGAZINE is a band. Found by Copilot in review on PR #408.
 
         Merch is looked for outside the extra's brackets only, because inside
         them the store describes the pressing, and a pressing can be named
@@ -287,9 +314,17 @@ class Crawler:
         it: `LP + CD` and `2LP + DVD` are records with an extra, `CD` and
         `CASSETTE` typed as LPs are not.
         """
-        if _MERCH_RE.search(artist) or _MERCH_RE.search(_BRACKET_RE.sub(" ", extra)):
+        if _MERCH_RE.search(artist) and _BUNDLE_JOIN_RE.search(artist):
+            return True
+        if _MERCH_RE.search(_BRACKET_RE.sub(" ", extra)):
             return True
         return bool(_NON_VINYL_MEDIUM_RE.search(extra)) and not _VINYL_RE.search(extra)
+
+    @classmethod
+    def _is_unreadable_product(cls, product) -> bool:
+        if not isinstance(product, dict) or not isinstance(product.get("product_type"), str):
+            return True
+        return cls._is_vinyl_type(product) and not isinstance(product.get("title"), str)
 
     @staticmethod
     def _has_unreadable_variants(product: dict) -> bool:
