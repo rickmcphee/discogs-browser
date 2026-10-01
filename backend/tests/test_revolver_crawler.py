@@ -130,6 +130,8 @@ async def test_other_product_types_are_rejected():
     "MIKE MCCREADY ‘FAREWELL TO SEASONS’ LP (Exclusive – Limited to 500, \"Poltergeist\" Vinyl) + 12\"x12\" DELUXE GRAPHIC NOVEL",
     # A poster's dimensions are not a record size, and a glued disc is a disc.
     "X 'Y' CD + 12\"x12\" POSTER",
+    "X 'Y' CD + 12\" x 12\" POSTER",
+    "X 'Y' CD + 12\" × 12\" POSTER",
     "X 'Y' (12\"CD)",
     "X 'Y' 7\"Cassette",
     # Merch that parses into the artist half.
@@ -149,6 +151,8 @@ def test_off_shelf_products_are_rejected(title):
     # A band can be named with a merch word; only a bundle joiner makes it merch.
     "PEEL DREAM MAGAZINE 'ROSE MAIN READING ROOM' LP",
     "X 'Y' 12\" + CD",
+    # A disc count is not a dimension: two 12-inch records and a CD.
+    "X 'Y' 2x12\" + CD",
     # Merch words inside the pressing bracket describe the vinyl.
     "KITTIE 'SPIT' LP (Leopard Print Vinyl)",
     "SPEED ‘ALL MY ANGELS’ EP (Beer Marble Vinyl w/B-Side Screen Print)",
@@ -303,7 +307,7 @@ async def test_a_store_wide_variant_drift_is_diagnosed_as_such():
         await _crawl(_product("X 'Y' LP", variants="bad"))
 
 
-@pytest.mark.parametrize("title", ["Black 12\"x12\" Sleeve CD", "Red 12\"CD", "7\"Cassette"])
+@pytest.mark.parametrize("title", ["Black 12\"x12\" Sleeve CD", "Black 12\" x 12\" Sleeve CD", "Black 12″ × 12″ Sleeve CD", "Red 12\"CD", "7\"Cassette"])
 def test_variant_gate_does_not_read_a_glued_or_measured_inch_as_vinyl(title):
     product = _product("X 'Y' LP", variants=[{"title": title, "price": "1", "available": True}])
     assert Crawler._vinyl_variants(product) == []

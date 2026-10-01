@@ -66,6 +66,18 @@ _VINYL_RE = re.compile(
 # medium, so as vinyl evidence it would keep a `CD EP` or `CASSETTE EP` typed
 # as an LP. A vinyl EP here says so in its own bracket (`EP (Grey Vinyl)`).
 # Found by Copilot in review on PR #408.
+# A whole dimension -- `12"x12"`, `12" x 12"`, `12″×12″` -- is artwork or a
+# sleeve, never a record, and neither half may vouch for a disc beside it.
+# Both numbers need an inch mark, which is what leaves `2x12"` (two records)
+# alone. Stripped before vinyl evidence is looked for. Found by Copilot in
+# review on PR #408.
+_DIMENSION_RE = re.compile(r'\d+\s*["”″]\s*[x×]\s*\d+\s*["”″]', re.IGNORECASE)
+
+
+def _names_vinyl(text: str) -> bool:
+    return bool(_VINYL_RE.search(_DIMENSION_RE.sub(" ", text)))
+
+
 _NON_VINYL_MEDIUM_RE = re.compile(
     _B + _COUNT + r"(?:CDs?|cassettes?|tapes?|DVDs?|blu-?\s*rays?)" + _E,
     re.IGNORECASE,
@@ -318,7 +330,7 @@ class Crawler:
             return True
         if _MERCH_RE.search(_BRACKET_RE.sub(" ", extra)):
             return True
-        return bool(_NON_VINYL_MEDIUM_RE.search(extra)) and not _VINYL_RE.search(extra)
+        return bool(_NON_VINYL_MEDIUM_RE.search(extra)) and not _names_vinyl(extra)
 
     @classmethod
     def _is_unreadable_product(cls, product) -> bool:
@@ -361,7 +373,7 @@ class Crawler:
                 continue
             if _MERCH_RE.search(title):
                 continue
-            if _NON_VINYL_MEDIUM_RE.search(title) and not _VINYL_RE.search(title):
+            if _NON_VINYL_MEDIUM_RE.search(title) and not _names_vinyl(title):
                 continue
             pairs.append((variant, title))
         return pairs

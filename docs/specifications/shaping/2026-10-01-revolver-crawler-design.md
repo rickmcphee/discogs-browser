@@ -43,7 +43,7 @@ Three gates, cheapest first.
    album late and leave the merch where the artist would be. There a merch
    word counts only beside the bundle's own joiner (`w/`, `+`), since an act
    can be named with one (PEEL DREAM MAGAZINE). An inch marker is vinyl
-   evidence only when nothing is glued after its quote, so a `12"x12"`
+   evidence only when nothing is glued after its quote, and a whole dimension (`12" x 12"`) is stripped first, so a `12"x12"`
    poster or a `(12"CD)` cannot vouch for a disc.
 3. **Variant titles, negatively.** A variant is a colour (`Custard Tart`) or
    a signing (`Unsigned`); only one naming merch or another medium is
