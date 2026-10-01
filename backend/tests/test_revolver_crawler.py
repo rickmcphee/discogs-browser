@@ -328,3 +328,17 @@ def test_site_metadata():
     assert Crawler.crawler_type == "catalog"
     assert Crawler.genre == "metal"
     assert Crawler.genre_summary
+
+
+@respx.mock
+async def test_the_walk_never_sends_the_session_cookie_page_one_set():
+    # The store's edge answers 429 to a page-2 request carrying page 1's
+    # session cookies (observed live 2026-10-01), so the crawler walks with a
+    # jar that refuses them.
+    respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "1"}).mock(
+        return_value=httpx.Response(200, json={"products": [_SMOKE]},
+                                    headers={"set-cookie": "_shopify_essential=abc; Path=/"}))
+    page2 = respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "2"}).mock(
+        return_value=httpx.Response(200, json={"products": []}))
+    assert len([i async for i in Crawler().crawl_catalog()]) == 1
+    assert "cookie" not in page2.calls.last.request.headers
