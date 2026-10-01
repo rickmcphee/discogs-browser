@@ -99,7 +99,9 @@ _BRACKET_RE = re.compile(r"\([^()]*\)")
 
 # How a bundle joins its merch to the record in the title: `... Magazine w/
 # 'Album' 2LP`, `... BOOK + 'Album' LP`.
-_BUNDLE_JOIN_RE = re.compile(_B + r"w/|\+")
+# IGNORECASE because titles keep the store's own casing: `W/` is as much a
+# joiner as `w/`. Found by Copilot in review on PR #408.
+_BUNDLE_JOIN_RE = re.compile(_B + r"w/|\+", re.IGNORECASE)
 
 
 def _text(value) -> str:

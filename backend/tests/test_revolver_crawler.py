@@ -135,6 +135,7 @@ async def test_other_product_types_are_rejected():
     "X 'Y' (12\"CD)",
     "X 'Y' 7\"Cassette",
     # Merch that parses into the artist half.
+    "PUSCIFER x Revolver Special Collector's Edition Magazine W/ 'Global Probing, Live from Prescott' 2LP (Coke Bottle Clear w/Black Smoke)",
     "PUSCIFER x Revolver Special Collector's Edition Magazine w/ 'Global Probing, Live from Prescott' 2LP (Coke Bottle Clear w/Black Smoke)",
 ])
 def test_off_shelf_products_are_rejected(title):
@@ -150,6 +151,9 @@ def test_off_shelf_products_are_rejected(title):
     "SYSTEM OF A DOWN ‘TOXICITY’ 25TH ANNIVERSARY LP + 7\"",
     # A band can be named with a merch word; only a bundle joiner makes it merch.
     "PEEL DREAM MAGAZINE 'ROSE MAIN READING ROOM' LP",
+    "ISSUES 'BEAUTIFUL OBLIVION' LP",
+    "MAGAZINE 'REAL LIFE' LP",
+    "THE BOOKS 'THE LEMON OF PINK' LP",
     "X 'Y' 12\" + CD",
     # A disc count is not a dimension: two 12-inch records and a CD.
     "X 'Y' 2x12\" + CD",
