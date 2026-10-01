@@ -34,7 +34,8 @@ Three gates, cheapest first.
    magazine, shirt, graphic novel or print (`... LP + REVOLVER WINTER
    ISSUE`, `... LP w/ SIGNED 12"x12" PAUL ROMANO PRINT`). A non-vinyl
    medium disqualifies only when no vinyl one is named beside it, so `LP +
-   CD` and `2LP + DVD` stay. Brackets are skipped for merch words because
+   CD` and `2LP + DVD` stay. `EP` is not vinyl evidence, since it names a
+   length rather than a medium, so `CD EP` is rejected. Brackets are skipped for merch words because
    inside them the store names the pressing (`(Leopard Print Vinyl)`,
    `(... w/B-Side Screen Print)`). The album itself is never read, since
    albums are free to be called `EVERY TRICK IN THE BOOK` or `TEARS ON
@@ -83,12 +84,17 @@ raises instead:
 | no products | the collection returns nothing |
 | format-taxonomy drift | no product carries an admitted `product_type` |
 | artist-source drift | no vinyl-typed product has a quoted album |
+| variant-source drift | nothing yielded while records carry a `variants` collection that is not a list of titled mappings, or holds one bad entry |
 | format-source drift | every parsed product reads as merch, another medium, or has no pressing variant |
 | identity-source drift | nothing yielded while records lack a `handle` |
 | stock-source drift | nothing yielded while records carry a non-boolean `available` |
 | price-source drift | rows yielded, none priced |
 
-The last three are conditioned on a second tally, so a shelf that has
+The variant guard is counted before the variant gate filters anything,
+because that gate drops a malformed entry silently, and one sold-out record
+beside it would otherwise vouch for an empty walk (found by Copilot on
+PR #408). It is asked ahead of the format guard so a store-wide variant
+drift is named as such. The identity, stock and variant guards are conditioned on a second tally, so a shelf that has
 simply sold out is still allowed to be empty.
 
 ## Verification

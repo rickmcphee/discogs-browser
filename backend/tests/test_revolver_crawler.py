@@ -120,6 +120,9 @@ async def test_other_product_types_are_rejected():
     # Another medium typed as an LP.
     "SORXE 'MATTER & VOID' CD",
     "MY CHEMICAL ROMANCE 'DANGER DAYS: TRUE LIVES OF THE FABULOUS KILLJOYS' CASSETTE (Deluxe, Petrol Blue))",
+    # EP names a length, not a medium, so it cannot vouch for another one.
+    "X 'Y' CD EP",
+    "X 'Y' CASSETTE EP (Red Shell)",
     # Merch bundles typed as an LP.
     "HEALTH ‘CONFLICT DLC’ LP (Exclusive – Limited to 400, Coke Bottle Clear Vinyl) + REVOLVER WINTER ISSUE",
     "MASTODON ‘BLOOD MOUNTAIN’ LP (Exclusive – Orange Vinyl) w/ SIGNED 12\"x12\" PAUL ROMANO PRINT",
@@ -135,6 +138,7 @@ def test_off_shelf_products_are_rejected(title):
 
 @pytest.mark.parametrize("title", [
     # A record with a disc or a second record beside it is still a record.
+    "SEPULTURA 'THE CLOUD OF UNKNOWING' EP + CD (Oxblood Vinyl)",
     "BAD RELIGION ‘THE DISSENT OF MAN’ LP + CD",
     "ALICE COOPER 'ROAD' 2LP + DVD",
     "SYSTEM OF A DOWN ‘TOXICITY’ 25TH ANNIVERSARY LP + 7\"",
@@ -268,6 +272,34 @@ async def test_unreadable_stock_raises_even_beside_a_sold_out_record():
             _product("X 'Y' LP", handle="y", variants=[{"title": "Default Title", "price": "1", "available": "true"}]),
             _product("X 'Z' LP", handle="z", variants=[{"title": "Default Title", "price": "1", "available": False}]),
         )
+
+
+_SOLD_OUT = _product("X 'Z' LP", handle="sold-out", variants=[
+    {"title": "Default Title", "price": "1", "available": False}])
+
+
+@respx.mock
+@pytest.mark.parametrize("variants", [
+    "bad", None, [], [None], [{"price": "1", "available": True}],
+    [{"title": "", "price": "1", "available": True}],
+    # A readable sold-out pressing must not vouch for a malformed sibling.
+    [{"title": "Red", "price": "1", "available": False}, None],
+])
+async def test_unreadable_variants_beside_a_sold_out_record_raise(variants):
+    with pytest.raises(RuntimeError, match="variant-source drift"):
+        await _crawl(_SOLD_OUT, {**_product("X 'Y' LP", handle="y"), "variants": variants})
+
+
+@respx.mock
+async def test_a_store_wide_variant_drift_is_diagnosed_as_such():
+    with pytest.raises(RuntimeError, match="variant-source drift"):
+        await _crawl(_product("X 'Y' LP", variants="bad"))
+
+
+@respx.mock
+async def test_unreadable_variants_among_yielded_rows_do_not_raise():
+    items = await _crawl(_SMOKE, _product("X 'Y' LP", handle="y", variants="bad"))
+    assert len(items) == 1
 
 
 @respx.mock

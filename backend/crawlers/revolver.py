@@ -53,10 +53,14 @@ _E = r"(?![^\W_])"
 _COUNT = r"(?:\d+\s*[x×]?\s*)?"
 
 _VINYL_RE = re.compile(
-    _B + _COUNT + r"(?:LPs?|EPs?|vinyls?|picture\s+discs?)" + _E
+    _B + _COUNT + r"(?:LPs?|vinyls?|picture\s+discs?)" + _E
     + r"|" + _B + _COUNT + r"(?:7|10|12)\s*[\"”″]",
     re.IGNORECASE,
 )
+# `EP` is deliberately absent above: it names a record's length, not its
+# medium, so as vinyl evidence it would keep a `CD EP` or `CASSETTE EP` typed
+# as an LP. A vinyl EP here says so in its own bracket (`EP (Grey Vinyl)`).
+# Found by Copilot in review on PR #408.
 _NON_VINYL_MEDIUM_RE = re.compile(
     _B + _COUNT + r"(?:CDs?|cassettes?|tapes?|DVDs?|blu-?\s*rays?)" + _E,
     re.IGNORECASE,
@@ -107,6 +111,7 @@ class Crawler:
         records = 0
         identity_missing = 0
         unreadable_stock = 0
+        unreadable_variants = 0
         yielded = 0
         priced = 0
         async for product in iter_products(self.base_url, _COLLECTION_SLUG):
@@ -123,6 +128,15 @@ class Crawler:
                     artist_ok += 1
                     artist, _album, extra = parsed
                     if not self._is_off_shelf(artist, extra):
+                        # Counted before the variant gate filters anything:
+                        # `_vinyl_variants` drops a malformed collection or
+                        # entry silently, so a product made unreadable that
+                        # way would otherwise reach no tally at all, and one
+                        # sold-out record beside it would let the walk
+                        # complete empty. Found by Copilot in review on
+                        # PR #408.
+                        if self._has_unreadable_variants(product):
+                            unreadable_variants += 1
                         variants = self._vinyl_variants(product)
                         if variants:
                             records += 1
@@ -157,6 +171,14 @@ class Crawler:
             raise RuntimeError(
                 f"no vinyl product in the {_COLLECTION_SLUG} collection has a title "
                 "of the form ARTIST 'ALBUM' -- artist-source drift")
+        if not yielded and unreadable_variants:
+            # Asked ahead of the format guard below: a walk whose variant data
+            # has gone unreadable store-wide also has no record variant, and
+            # the format guard would name the wrong cause.
+            raise RuntimeError(
+                f"{_COLLECTION_SLUG} collection yielded no rows while "
+                f"{unreadable_variants} record(s) carry unreadable variant data "
+                "-- variant-source drift")
         if records == 0:
             raise RuntimeError(
                 f"every vinyl product in the {_COLLECTION_SLUG} collection reads as "
@@ -266,6 +288,18 @@ class Crawler:
         if _MERCH_RE.search(artist) or _MERCH_RE.search(_BRACKET_RE.sub(" ", extra)):
             return True
         return bool(_NON_VINYL_MEDIUM_RE.search(extra)) and not _VINYL_RE.search(extra)
+
+    @staticmethod
+    def _has_unreadable_variants(product: dict) -> bool:
+        """True when `variants` is not a non-empty list of titled mappings.
+
+        Any one bad entry counts, not only a wholly bad collection: a readable
+        sold-out pressing must not vouch for a malformed sibling beside it.
+        """
+        raw = product.get("variants")
+        if not isinstance(raw, list) or not raw:
+            return True
+        return any(not (isinstance(v, dict) and _text(v.get("title"))) for v in raw)
 
     @classmethod
     def _vinyl_variants(cls, product: dict) -> list:
