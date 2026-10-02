@@ -377,6 +377,30 @@ caller does with the halves it gets back, *and* how much whitespace the
 separator has to be flanked by.
 
 
+**Thirteenth amendment (2026-10-01, branch `claude/revolver-vinyl-crawler-lqud25`):**
+`backend/crawlers/revolver.py` is another quoted-album crawler with no dash
+split at all, the same shape as `iodinerecords.py`: `vendor` is the
+distributor (`AEC`, `Redeye`, `WARNER`), so the artist is whatever precedes
+the quoted album, and a title with no quoted album is skipped rather than
+split on a dash.
+
+Its divergence is in where the album **ends**. Every quoted-album parser
+surveyed above closes the album at the *first* qualifying quote — `[^"]+`,
+or a lazy `.+?` before a closing quote followed by whitespace. This store
+writes its albums in single quotes and lets apostrophes followed by a space
+sit inside them (`'INFEST THE RATS' NEST'`, `'ROCK 'N' ROLL BABY'`, `'LET
+GOD SORT EM' OUT'`), so a lazy close cuts every one of those short. Its
+album is greedy instead, closing at the *last* quote followed by whitespace.
+Measured over the whole live shelf (3,104 products), greedy split every such
+title correctly; the only product it reads worse than lazy is a single
+record bundling two albums under one title, which neither rule can split. It
+also accepts `’` as an *opening* quote (`’12x5’`), which no sibling does.
+
+The running conclusion is unchanged: a shared quoted-album parser would now
+need the quote class, the opening-quote set *and* the album's greediness as
+parameters.
+
+
 ## Problem
 
 The Shopify-storefront catalog crawlers enumerated below each need to split

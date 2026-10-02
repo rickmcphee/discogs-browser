@@ -1,3 +1,4 @@
+from http.cookiejar import CookieJar, DefaultCookiePolicy
 from typing import AsyncIterator, Optional
 import httpx
 from catalog_http import get_with_retry
@@ -19,7 +20,8 @@ _MAX_PAGE = 100
 
 
 async def iter_products(
-    base_url: str, collection_slug: str, *, min_delay: float = 0.0
+    base_url: str, collection_slug: str, *, min_delay: float = 0.0,
+    refuse_cookies: bool = False,
 ) -> AsyncIterator[dict]:
     """Paginate a Shopify collection's public products.json endpoint until exhausted.
 
@@ -34,6 +36,16 @@ async def iter_products(
     is admin-editable with no lower bound, so honouring such a store's request
     has to be enforced by the design rather than asserted. Defaulting to 0
     leaves every caller that does not set it byte-for-byte unchanged.
+
+    `refuse_cookies` walks with a cookie jar that stores nothing, for a store
+    whose edge throttles a follow-up page carrying the session cookies the
+    first page set. products.json is stateless, so the cookies buy the walk
+    nothing. Confirmed live against shop.revolvermag.com on 2026-10-01: one
+    client keeping page 1's cookies drew a 429 (`retry-after: 60`) on page 2
+    every time, at 20s pacing, while the same connection with its jar
+    cleared read pages 1-3 cleanly. A refusing jar rather than clearing per
+    page, so get_with_retry's own retries cannot carry a cookie either.
+    Defaulting to False leaves every caller that does not set it unchanged.
 
     Pagination has a hard ceiling: Shopify refuses `page` past _MAX_PAGE with an
     HTTP 400, so a collection larger than _MAX_PAGE * _PAGE_LIMIT can only be walked
@@ -66,7 +78,8 @@ async def iter_products(
     failure_limit = int(cfg.get("consecutive_failure_limit", 10))
 
     page = 1
-    async with httpx.AsyncClient() as client:
+    cookies = CookieJar(policy=DefaultCookiePolicy(allowed_domains=[])) if refuse_cookies else None
+    async with httpx.AsyncClient(cookies=cookies) as client:
         while True:
             url = f"{base_url}/collections/{collection_slug}/products.json"
             r = await get_with_retry(
