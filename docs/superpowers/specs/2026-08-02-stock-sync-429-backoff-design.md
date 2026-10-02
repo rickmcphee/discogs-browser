@@ -2,6 +2,8 @@
 
 _2026-08-02_
 
+**Amendment (2026-10-01, branch `claude/revolver-vinyl-crawler-lqud25`):** not every Shopify 429 is the IP-wide platform-edge throttle this document describes. `shop.revolvermag.com` answers a `products.json` page-2 request with `429` (`retry-after: 60`) whenever it carries the session cookies page 1 set — every time, at 20s pacing — while the same connection with its cookie jar cleared, or a fresh client per page, reads pages 1-3 cleanly from the same address in the same minutes. `iter_products()` keeps one client and its jar across a walk, so such a store failed on page 2 of every sync. It now takes an opt-in `refuse_cookies`, which walks with a jar whose policy stores nothing; `revolver.py` sets it. Everything else here is unchanged: a 429 is still never retried, and the flag defaults to off, so no other store's walk changes.
+
 **Amendment (2026-09-01, branch `claude/stock-crawl-timeout-j15zt4`):** the
 retry loop this spec describes inside `iter_products()`'s except block —
 paced non-429 retries bounded by `consecutive_failure_limit`, immediate raise
