@@ -18,6 +18,14 @@ STOCK_SYNC_LOCK_KEY = 2026081601
 # ceiling plus one maximally slow item is still comfortably inside the window.
 SYNC_CHECKPOINT_MAX_SECONDS = 120
 
+# Backoff for resuming a stock sync that aborted on a platform-wide 429: the
+# stores it skipped are retried this long after the abort, doubling for each
+# consecutive aborted run up to the cap. Minutes-to-hours on purpose -- the
+# throttle outlasts any per-request retry window (see the 2026-08-04 and
+# 2026-10-03 amendments to 2026-08-02-stock-sync-429-backoff-design.md).
+STOCK_RESUME_BASE_DELAY = 30 * 60
+STOCK_RESUME_MAX_DELAY = 8 * 60 * 60
+
 
 async def _shielded(coro):
     """Runs `coro` to completion even if the awaiting task is cancelled
@@ -130,6 +138,9 @@ class CrawlManager:
         # at import, before any event loop exists -- the same reason
         # _site_locks is populated on first use.
         self._stock_start_lock: Optional[asyncio.Lock] = None
+        # Consecutive stock runs that ended in a 429 abort; sets the delay
+        # before the next resume. In-process, like the per-site breaker.
+        self._stock_abort_streak = 0
         # The same job for start_sync and start_plex_match, which exclude each
         # other and so have to share one. Lazily created for the same reason.
         self._sync_start_locks: dict[int, asyncio.Lock] = {}
@@ -1639,7 +1650,9 @@ class CrawlManager:
             "source_elapsed_seconds": None if source_started is None else int(now - source_started),
         }
 
-    async def start_stock_sync(self, crawler_id: Optional[int] = None) -> dict:
+    async def start_stock_sync(
+        self, crawler_id: Optional[int] = None, crawler_ids: Optional[list[int]] = None,
+    ) -> dict:
         """Returns `{"started": bool, "on_another_instance": bool, **state}`.
 
         Not a bare bool: this method is the only place that knows *which* of
@@ -1711,7 +1724,7 @@ class CrawlManager:
                     "source": None, "elapsed_seconds": None, "source_elapsed_seconds": None,
                 }
 
-            self._stock_task = asyncio.create_task(self._sync_stock(crawler_id, lock_conn))
+            self._stock_task = asyncio.create_task(self._sync_stock(crawler_id, lock_conn, crawler_ids))
             return {"started": True, "on_another_instance": False, **self.stock_sync_state()}
 
     async def _run_catalog_crawler(self, crawler) -> list[dict]:
@@ -1780,7 +1793,25 @@ class CrawlManager:
             reset_page_reporter(token)
             reset_detail_reporter(detail_token)
 
-    async def _sync_stock(self, crawler_id: Optional[int] = None, lock_conn=None):
+    async def resume_stock_sync(self, crawler_ids: list[int]) -> None:
+        """The scheduled resume of an aborted run. Rejected because a sync is
+        already running -- here or on the other Machine -- it tries again at
+        the base delay rather than being dropped: the running sync may be a
+        single-store one that covers none of these."""
+        import scheduler
+
+        result = await self.start_stock_sync(crawler_ids=crawler_ids)
+        if not result["started"]:
+            log.info(
+                "Stock sync resume deferred by %s: a stock sync is already running",
+                _format_duration(STOCK_RESUME_BASE_DELAY),
+            )
+            scheduler.schedule_stock_resume(crawler_ids, STOCK_RESUME_BASE_DELAY)
+
+    async def _sync_stock(
+        self, crawler_id: Optional[int] = None, lock_conn=None,
+        crawler_ids: Optional[list[int]] = None,
+    ):
         # Imports, the broadcast, and the log line all live inside this try
         # (not above it) so lock_conn's release in the finally below covers
         # every exit path, including one of these raising before the sync
@@ -1808,6 +1839,15 @@ class CrawlManager:
                 )
             if crawler_id is not None:
                 enabled = [c for c in enabled if c["id"] == crawler_id]
+            if crawler_ids is not None:
+                # In the order given, not the query's (it has no ORDER BY): a
+                # resume replays its aborted run's order, and a reshuffle can
+                # slot a healthy store between two throttled ones and reset
+                # the 429 streak the abort depends on.
+                position = {cid: i for i, cid in enumerate(crawler_ids)}
+                enabled = sorted(
+                    (c for c in enabled if c["id"] in position), key=lambda c: position[c["id"]],
+                )
             crawlers = load_enabled_crawlers(enabled)
             if not crawlers:
                 await self._broadcast({
@@ -1819,10 +1859,14 @@ class CrawlManager:
 
             total_synced = 0
             consecutive_429_sites: list[str] = []
+            # Every source a 429 kept from syncing this run, not just the
+            # current streak: an isolated 429 the streak later reset past is
+            # just as unsynced, and an abort's resume should cover it too.
+            rate_limited = []
             failed_sources: list[str] = []
             skipped_sources: list[str] = []
             disabled_sources: list[str] = []
-            for crawler in crawlers:
+            for index, crawler in enumerate(crawlers):
                 # Same per-site breaker the release path uses, reusing its
                 # state and its consecutive_failure_limit setting: a site that
                 # hard-blocks us (Amoeba's Cloudflare 403s) was otherwise
@@ -1879,6 +1923,7 @@ class CrawlManager:
                         # 2026-08-04 amendment.
                         log.warning("[%s] Stock crawl rate-limited (HTTP 429): %s", crawler._db_site_name, e)
                         consecutive_429_sites.append(crawler._db_site_name)
+                        rate_limited.append(crawler)
                     else:
                         log.error("[%s] Stock crawl failed: %s", crawler._db_site_name, e, exc_info=True)
                         await self._record_site_result(crawler._db_id, succeeded=False)
@@ -1896,10 +1941,14 @@ class CrawlManager:
                             "likely a platform-wide rate limit, not grinding the rest of the run into it",
                             len(consecutive_429_sites), ", ".join(consecutive_429_sites),
                         )
+                        resume = rate_limited + list(crawlers[index + 1:])
+                        delay = self._schedule_stock_resume([c._db_id for c in resume])
                         await self._broadcast({
                             "status": "stock_sync_aborted",
                             "error": "Too many consecutive rate-limited catalog sites",
                             "sources": list(consecutive_429_sites),
+                            "resume_in_seconds": delay,
+                            "resume_sources": [c._db_site_name for c in resume],
                         })
                         return
                     continue
@@ -1960,6 +2009,12 @@ class CrawlManager:
                     swept, " or nobody wants" if library_only else "",
                 )
 
+            self._stock_abort_streak = 0
+            if crawler_id is None and crawler_ids is None:
+                # Every store a pending resume would retry was just visited.
+                import scheduler
+                if scheduler.cancel_stock_resume():
+                    log.info("Cancelled the pending stock sync resume: this run covered its stores")
             await self._broadcast({"status": "stock_sync_complete", "synced": total_synced, "crawler_id": crawler_id})
             # The failed/skipped tail is why "complete: 0 items" alone was
             # misleading: the ERROR explaining the zero is a different level,
@@ -1991,6 +2046,25 @@ class CrawlManager:
             # Releases the session-scoped advisory lock start_stock_sync took.
             if lock_conn is not None:
                 lock_conn.close()
+
+    def _schedule_stock_resume(self, crawler_ids: list[int]) -> int:
+        """Schedules the resume of an aborted run's skipped stores and
+        returns its delay in seconds, doubling per consecutive abort."""
+        import scheduler
+
+        self._stock_abort_streak += 1
+        delay = min(
+            STOCK_RESUME_BASE_DELAY * 2 ** (self._stock_abort_streak - 1),
+            STOCK_RESUME_MAX_DELAY,
+        )
+        scheduler.schedule_stock_resume(crawler_ids, delay)
+        # INFO for the same exact-level log filter reason as the swept-rows
+        # line in _sync_stock: this is the line saying when the gap closes.
+        log.info(
+            "Stock sync will resume %d skipped stores in %s (aborted run %d in a row)",
+            len(crawler_ids), _format_duration(delay), self._stock_abort_streak,
+        )
+        return delay
 
     def judgment_running(self, user_id: int) -> bool:
         """Whether *this process* is running a judgment task for the user.
