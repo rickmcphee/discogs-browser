@@ -14,7 +14,7 @@ import scheduler
 @pytest.fixture(autouse=True)
 def _clear_jobs():
     yield
-    for job_id in ("crawl", "stock_sync"):
+    for job_id in ("crawl", "stock_sync", scheduler.STOCK_RESUME_JOB_ID):
         if scheduler._scheduler.get_job(job_id):
             scheduler._scheduler.remove_job(job_id)
 
@@ -117,3 +117,38 @@ async def test_configure_stock_job_invokes_start_stock_sync():
         job = scheduler._scheduler.get_job("stock_sync")
         await job.func()
         mock_manager.start_stock_sync.assert_awaited_once()
+
+
+def test_schedule_stock_resume_runs_once_after_the_delay():
+    from datetime import datetime, timedelta, timezone
+    from apscheduler.triggers.date import DateTrigger
+
+    before = datetime.now(timezone.utc)
+    scheduler.schedule_stock_resume([3, 1], 1800)
+    job = scheduler._scheduler.get_job(scheduler.STOCK_RESUME_JOB_ID)
+    assert isinstance(job.trigger, DateTrigger)
+    # A late event loop must not discard it.
+    assert job.misfire_grace_time is None
+    assert before + timedelta(seconds=1800) <= job.trigger.run_date <= datetime.now(timezone.utc) + timedelta(seconds=1800)
+
+
+def test_schedule_stock_resume_replaces_a_pending_resume():
+    scheduler.schedule_stock_resume([1, 2], 60)
+    scheduler.schedule_stock_resume([2], 120)
+    jobs = [j for j in scheduler._scheduler.get_jobs() if j.id == scheduler.STOCK_RESUME_JOB_ID]
+    assert len(jobs) == 1
+
+
+async def test_schedule_stock_resume_job_invokes_resume_stock_sync_with_its_ids():
+    with patch("crawl_manager.crawl_manager") as mock_manager:
+        mock_manager.resume_stock_sync = AsyncMock()
+        scheduler.schedule_stock_resume([3, 1], 60)
+        await scheduler._scheduler.get_job(scheduler.STOCK_RESUME_JOB_ID).func()
+        mock_manager.resume_stock_sync.assert_awaited_once_with([3, 1])
+
+
+def test_cancel_stock_resume():
+    assert scheduler.cancel_stock_resume() is False
+    scheduler.schedule_stock_resume([1], 60)
+    assert scheduler.cancel_stock_resume() is True
+    assert scheduler._scheduler.get_job(scheduler.STOCK_RESUME_JOB_ID) is None

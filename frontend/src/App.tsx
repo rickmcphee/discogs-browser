@@ -1059,7 +1059,11 @@ export default function App() {
         setStockSyncTarget(null)
         setStockSyncStarting(null)
         const sources = event.sources?.length ? ` (${event.sources.join(', ')})` : ''
-        setSyncStatus(`In-stock sync stopped: ${event.error}${sources}`, event.id ?? null)
+        const resumeCount = event.resume_sources?.length ?? 0
+        const resume = event.resume_in_seconds
+          ? ` — retrying ${resumeCount === 1 ? '1 store' : `${resumeCount} stores`} in ${formatElapsed(event.resume_in_seconds)}`
+          : ''
+        setSyncStatus(`In-stock sync stopped: ${event.error}${sources}${resume}`, event.id ?? null)
         return
       }
       if (event.status === 'stock_judgment_started') {
