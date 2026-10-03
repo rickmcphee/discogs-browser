@@ -1840,8 +1840,14 @@ class CrawlManager:
             if crawler_id is not None:
                 enabled = [c for c in enabled if c["id"] == crawler_id]
             if crawler_ids is not None:
-                wanted = set(crawler_ids)
-                enabled = [c for c in enabled if c["id"] in wanted]
+                # In the order given, not the query's (it has no ORDER BY): a
+                # resume replays its aborted run's order, and a reshuffle can
+                # slot a healthy store between two throttled ones and reset
+                # the 429 streak the abort depends on.
+                position = {cid: i for i, cid in enumerate(crawler_ids)}
+                enabled = sorted(
+                    (c for c in enabled if c["id"] in position), key=lambda c: position[c["id"]],
+                )
             crawlers = load_enabled_crawlers(enabled)
             if not crawlers:
                 await self._broadcast({

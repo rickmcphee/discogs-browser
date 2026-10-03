@@ -127,6 +127,8 @@ def test_schedule_stock_resume_runs_once_after_the_delay():
     scheduler.schedule_stock_resume([3, 1], 1800)
     job = scheduler._scheduler.get_job(scheduler.STOCK_RESUME_JOB_ID)
     assert isinstance(job.trigger, DateTrigger)
+    # A late event loop must not discard it.
+    assert job.misfire_grace_time is None
     assert before + timedelta(seconds=1800) <= job.trigger.run_date <= datetime.now(timezone.utc) + timedelta(seconds=1800)
 
 

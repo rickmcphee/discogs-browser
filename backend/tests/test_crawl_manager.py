@@ -6843,7 +6843,7 @@ async def test_sync_stock_crawler_ids_limits_the_run_to_those_sources_in_order(
 
     await manager._sync_stock(crawler_ids=[ids["Third"], ids["First"]])
 
-    assert seen == ["First", "Third"]
+    assert seen == ["Third", "First"]
 
 
 async def test_resume_stock_sync_rejected_reschedules_at_the_base_delay(manager, monkeypatch, stock_resume_jobs):

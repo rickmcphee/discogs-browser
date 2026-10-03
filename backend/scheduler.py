@@ -115,7 +115,12 @@ def schedule_stock_resume(crawler_ids: list[int], delay_seconds: float):
         # that queue, so a second resume would sit beside the first.
         if _scheduler.get_job(STOCK_RESUME_JOB_ID):
             _scheduler.remove_job(STOCK_RESUME_JOB_ID)
-        _scheduler.add_job(_run, DateTrigger(run_date=run_date), id=STOCK_RESUME_JOB_ID)
+        # misfire_grace_time=None: the default one-second grace discards a
+        # one-off job the event loop reaches late, and nothing else would
+        # bring these stores back before the next cron run.
+        _scheduler.add_job(
+            _run, DateTrigger(run_date=run_date), id=STOCK_RESUME_JOB_ID, misfire_grace_time=None,
+        )
 
 
 def cancel_stock_resume() -> bool:
