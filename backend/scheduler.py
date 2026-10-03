@@ -1,7 +1,9 @@
 import threading
+from datetime import datetime, timedelta, timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.date import DateTrigger
 from logging_config import get_logger
 
 log = get_logger("scheduler")
@@ -90,3 +92,35 @@ def configure_stock(cron_expression: str):
             _scheduler.remove_job("stock_sync")
         _scheduler.add_job(_run, trigger, id="stock_sync")
     log.debug("Stock sync scheduled: %s", cron_expression)
+
+
+STOCK_RESUME_JOB_ID = "stock_sync_resume"
+
+
+def schedule_stock_resume(crawler_ids: list[int], delay_seconds: float):
+    """One-off stock sync of just `crawler_ids`, `delay_seconds` from now,
+    replacing any resume already pending -- see the 2026-10-03 amendment to
+    2026-08-02-stock-sync-429-backoff-design.md for why one is enough."""
+    ids = list(crawler_ids)
+
+    async def _run():
+        from crawl_manager import crawl_manager
+        log.info("Resuming rate-limited stock sync for %d stores", len(ids))
+        await crawl_manager.resume_stock_sync(ids)
+
+    run_date = datetime.now(timezone.utc) + timedelta(seconds=delay_seconds)
+    with _lock:
+        # Remove-then-add rather than replace_existing: before start() the
+        # scheduler only queues jobs, and replace_existing is not applied to
+        # that queue, so a second resume would sit beside the first.
+        if _scheduler.get_job(STOCK_RESUME_JOB_ID):
+            _scheduler.remove_job(STOCK_RESUME_JOB_ID)
+        _scheduler.add_job(_run, DateTrigger(run_date=run_date), id=STOCK_RESUME_JOB_ID)
+
+
+def cancel_stock_resume() -> bool:
+    with _lock:
+        if _scheduler.get_job(STOCK_RESUME_JOB_ID):
+            _scheduler.remove_job(STOCK_RESUME_JOB_ID)
+            return True
+    return False

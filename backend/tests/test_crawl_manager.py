@@ -5037,7 +5037,7 @@ async def test_stock_sync_not_running_initially(manager):
 async def test_start_stock_sync_returns_true_when_idle(pg_test_db, manager):
     conns = []
 
-    async def _fake_sync(crawler_id=None, lock_conn=None):
+    async def _fake_sync(crawler_id=None, lock_conn=None, crawler_ids=None):
         conns.append(lock_conn)
         await asyncio.sleep(0)
         lock_conn.close()
@@ -5067,7 +5067,7 @@ async def test_start_stock_sync_takes_its_lock_on_the_unpooled_dsn(pg_test_db, m
     monkeypatch.setattr(db.config, "DIRECT_APP_DATABASE_URL", os.environ["TEST_DATABASE_URL"])
     monkeypatch.setattr(db.config, "APP_DATABASE_URL", "postgresql://nobody:nobody@127.0.0.1:1/nope")
 
-    async def _instant(crawler_id=None, lock_conn=None):
+    async def _instant(crawler_id=None, lock_conn=None, crawler_ids=None):
         lock_conn.close()
 
     manager._sync_stock = _instant  # type: ignore
@@ -5080,7 +5080,7 @@ async def test_start_stock_sync_takes_its_lock_on_the_unpooled_dsn(pg_test_db, m
 async def test_start_stock_sync_returns_false_when_already_running(pg_test_db, manager):
     event = asyncio.Event()
 
-    async def _fake_sync(crawler_id=None, lock_conn=None):
+    async def _fake_sync(crawler_id=None, lock_conn=None, crawler_ids=None):
         await event.wait()
         lock_conn.close()
 
@@ -5095,7 +5095,7 @@ async def test_start_stock_sync_returns_false_when_already_running(pg_test_db, m
 
 
 async def test_stock_sync_running_false_after_completion(pg_test_db, manager):
-    async def _instant(crawler_id=None, lock_conn=None):
+    async def _instant(crawler_id=None, lock_conn=None, crawler_ids=None):
         lock_conn.close()
 
     manager._sync_stock = _instant  # type: ignore
@@ -5110,7 +5110,7 @@ async def test_start_stock_sync_returns_false_when_another_instance_holds_the_lo
     # on the same cron tick and interleave replace_stock_items().
     calls = []
 
-    async def _fake_sync(crawler_id=None, lock_conn=None):
+    async def _fake_sync(crawler_id=None, lock_conn=None, crawler_ids=None):
         calls.append(lock_conn)
 
     manager._sync_stock = _fake_sync  # type: ignore
@@ -5144,7 +5144,7 @@ async def test_concurrent_starts_on_one_process_are_not_reported_as_another_inst
     diagnosis, and the UI now states it out loud."""
     event = asyncio.Event()
 
-    async def _fake_sync(crawler_id=None, lock_conn=None):
+    async def _fake_sync(crawler_id=None, lock_conn=None, crawler_ids=None):
         await event.wait()
         lock_conn.close()
 
@@ -5655,7 +5655,7 @@ def test_format_duration(seconds, expected):
 async def test_start_stock_sync_forwards_crawler_id_to_sync_stock(pg_test_db, manager):
     calls = []
 
-    async def _fake_sync(crawler_id=None, lock_conn=None):
+    async def _fake_sync(crawler_id=None, lock_conn=None, crawler_ids=None):
         calls.append(crawler_id)
         lock_conn.close()
 
@@ -5663,6 +5663,19 @@ async def test_start_stock_sync_forwards_crawler_id_to_sync_stock(pg_test_db, ma
     await manager.start_stock_sync(42)
     await asyncio.sleep(0.01)
     assert calls == [42]
+
+
+async def test_start_stock_sync_forwards_crawler_ids_to_sync_stock(pg_test_db, manager):
+    calls = []
+
+    async def _fake_sync(crawler_id=None, lock_conn=None, crawler_ids=None):
+        calls.append(crawler_ids)
+        lock_conn.close()
+
+    manager._sync_stock = _fake_sync  # type: ignore
+    await manager.start_stock_sync(crawler_ids=[3, 1])
+    await asyncio.sleep(0.01)
+    assert calls == [[3, 1]]
 
 
 async def test_sync_stock_with_crawler_id_filters_to_that_crawler_only(pg_schema):
@@ -6676,6 +6689,187 @@ async def test_sync_stock_does_not_broadcast_stock_sync_error_for_a_lone_429(pg_
     assert "stock_sync_complete" in statuses
 
 
+@pytest.fixture(autouse=True)
+def stock_resume_jobs():
+    """Removes any resume an aborted _sync_stock queued on the module-level
+    scheduler, so it cannot outlive the test that scheduled it. Autouse: every
+    test that drives a 429 abort schedules one, not just the ones about it."""
+    import scheduler
+    yield scheduler
+    scheduler.cancel_stock_resume()
+
+
+def _register_catalog_sources(names):
+    with db.get_admin_pool().connection() as conn:
+        for name in names:
+            db.register_crawler(conn, name, f"/path/{name}.py", crawler_type="catalog")
+        conn.commit()
+        return {row["site_name"]: row["id"] for row in conn.execute("SELECT id, site_name FROM crawlers").fetchall()}
+
+
+def _scripted_catalog_crawler(ids, name, outcome):
+    """A catalog crawler that either raises a 429 ("429") or yields one item ("ok")."""
+    class _Crawler:
+        crawler_type = "catalog"
+
+        def __init__(self):
+            self._db_id = ids[name]
+            self._db_site_name = name
+
+        async def crawl_catalog(self):
+            if outcome == "429":
+                request = httpx.Request("GET", "https://example.test/products.json")
+                raise httpx.HTTPStatusError("429", request=request, response=httpx.Response(429))
+            yield {"artist": name, "title": "T", "price": 1.0, "currency": "USD", "url": f"https://x/{name}"}
+
+    return _Crawler()
+
+
+def _resume_job_ids(scheduler):
+    job = scheduler._scheduler.get_job(scheduler.STOCK_RESUME_JOB_ID)
+    if job is None:
+        return None
+    closure = dict(zip(job.func.__code__.co_freevars, (c.cell_contents for c in job.func.__closure__)))
+    return closure["ids"]
+
+
+async def test_sync_stock_abort_schedules_a_resume_of_rate_limited_and_unvisited_sources(
+    pg_schema, manager, monkeypatch, stock_resume_jobs,
+):
+    import crawler as crawler_module
+    from crawl_manager import STOCK_RESUME_BASE_DELAY
+
+    names = ["Early 429", "Synced", "Run For Cover", "Equal Vision", "Never Attempted"]
+    ids = _register_catalog_sources(names)
+    outcomes = ["429", "ok", "429", "429", "ok"]
+    monkeypatch.setattr(crawler_module, "load_enabled_crawlers", lambda enabled: [
+        _scripted_catalog_crawler(ids, n, o) for n, o in zip(names, outcomes)
+    ])
+
+    await manager._sync_stock()
+
+    aborted = next(e for e in manager.recent_events() if e["status"] == "stock_sync_aborted")
+    assert aborted["sources"] == ["Run For Cover", "Equal Vision"]
+    assert aborted["resume_in_seconds"] == STOCK_RESUME_BASE_DELAY
+    # The isolated 429 the streak reset past is resumed too; the store that
+    # synced is not.
+    expected = ["Early 429", "Run For Cover", "Equal Vision", "Never Attempted"]
+    assert aborted["resume_sources"] == expected
+    assert _resume_job_ids(stock_resume_jobs) == [ids[n] for n in expected]
+
+
+async def test_sync_stock_resume_delay_doubles_per_consecutive_abort_up_to_the_cap(
+    pg_schema, manager, monkeypatch, stock_resume_jobs,
+):
+    import crawler as crawler_module
+    from crawl_manager import STOCK_RESUME_BASE_DELAY, STOCK_RESUME_MAX_DELAY
+
+    names = ["Run For Cover", "Equal Vision"]
+    ids = _register_catalog_sources(names)
+    monkeypatch.setattr(crawler_module, "load_enabled_crawlers", lambda enabled: [
+        _scripted_catalog_crawler(ids, n, "429") for n in names
+    ])
+
+    delays = []
+    for _ in range(6):
+        await manager._sync_stock()
+        delays.append(next(
+            e for e in reversed(manager.recent_events()) if e["status"] == "stock_sync_aborted"
+        )["resume_in_seconds"])
+
+    assert delays[:4] == [STOCK_RESUME_BASE_DELAY * m for m in (1, 2, 4, 8)]
+    assert delays[-1] == STOCK_RESUME_MAX_DELAY
+    assert max(delays) == STOCK_RESUME_MAX_DELAY
+
+
+async def test_sync_stock_full_run_completing_cancels_the_resume_and_resets_the_backoff(
+    pg_schema, manager, monkeypatch, stock_resume_jobs,
+):
+    import crawler as crawler_module
+    from crawl_manager import STOCK_RESUME_BASE_DELAY
+
+    names = ["Run For Cover", "Equal Vision"]
+    ids = _register_catalog_sources(names)
+    outcome = {"value": "429"}
+    monkeypatch.setattr(crawler_module, "load_enabled_crawlers", lambda enabled: [
+        _scripted_catalog_crawler(ids, n, outcome["value"]) for n in names
+    ])
+
+    await manager._sync_stock()
+    await manager._sync_stock()
+    assert _resume_job_ids(stock_resume_jobs) is not None
+
+    outcome["value"] = "ok"
+    await manager._sync_stock()
+    assert _resume_job_ids(stock_resume_jobs) is None
+
+    outcome["value"] = "429"
+    await manager._sync_stock()
+    aborted = next(e for e in reversed(manager.recent_events()) if e["status"] == "stock_sync_aborted")
+    assert aborted["resume_in_seconds"] == STOCK_RESUME_BASE_DELAY
+
+
+async def test_sync_stock_restricted_run_completing_leaves_the_pending_resume(
+    pg_schema, manager, monkeypatch, stock_resume_jobs,
+):
+    import crawler as crawler_module
+
+    names = ["Run For Cover", "Equal Vision", "Other"]
+    ids = _register_catalog_sources(names)
+    stock_resume_jobs.schedule_stock_resume([ids["Run For Cover"], ids["Equal Vision"]], 60)
+    monkeypatch.setattr(crawler_module, "load_enabled_crawlers", lambda enabled: [
+        _scripted_catalog_crawler(ids, "Other", "ok")
+    ])
+
+    await manager._sync_stock(crawler_id=ids["Other"])
+
+    assert _resume_job_ids(stock_resume_jobs) == [ids["Run For Cover"], ids["Equal Vision"]]
+
+
+async def test_sync_stock_crawler_ids_limits_the_run_to_those_sources_in_order(
+    pg_schema, manager, monkeypatch, stock_resume_jobs,
+):
+    import crawler as crawler_module
+
+    names = ["First", "Second", "Third"]
+    ids = _register_catalog_sources(names)
+    seen = []
+
+    def _load(enabled):
+        seen.extend(row["site_name"] for row in enabled)
+        return []
+
+    monkeypatch.setattr(crawler_module, "load_enabled_crawlers", _load)
+
+    await manager._sync_stock(crawler_ids=[ids["Third"], ids["First"]])
+
+    assert seen == ["First", "Third"]
+
+
+async def test_resume_stock_sync_rejected_reschedules_at_the_base_delay(manager, monkeypatch, stock_resume_jobs):
+    from crawl_manager import STOCK_RESUME_BASE_DELAY
+
+    monkeypatch.setattr(manager, "start_stock_sync", AsyncMock(return_value={"started": False}))
+    scheduled = []
+    monkeypatch.setattr(stock_resume_jobs, "schedule_stock_resume", lambda ids, delay: scheduled.append((ids, delay)))
+
+    await manager.resume_stock_sync([4, 2])
+
+    manager.start_stock_sync.assert_awaited_once_with(crawler_ids=[4, 2])
+    assert scheduled == [([4, 2], STOCK_RESUME_BASE_DELAY)]
+    assert manager._stock_abort_streak == 0
+
+
+async def test_resume_stock_sync_started_schedules_nothing(manager, monkeypatch, stock_resume_jobs):
+    monkeypatch.setattr(manager, "start_stock_sync", AsyncMock(return_value={"started": True}))
+    scheduled = []
+    monkeypatch.setattr(stock_resume_jobs, "schedule_stock_resume", lambda ids, delay: scheduled.append((ids, delay)))
+
+    await manager.resume_stock_sync([4, 2])
+
+    assert scheduled == []
+
+
 async def test_run_judgment_phase_broadcasts_complete_when_nothing_unjudged(pg_schema, caplog):
     with db.get_admin_pool().connection() as conn:
         alice = db.create_user(conn, discogs_user_id=3, discogs_username="alice3")
@@ -6986,7 +7180,7 @@ async def test_start_stock_sync_runs_while_a_users_judgment_is_in_flight(manager
     stock_event = asyncio.Event()
     judgment_event = asyncio.Event()
 
-    async def _fake_sync_stock(crawler_id=None, lock_conn=None):
+    async def _fake_sync_stock(crawler_id=None, lock_conn=None, crawler_ids=None):
         await stock_event.wait()
         lock_conn.close()
 
@@ -7014,7 +7208,7 @@ async def test_start_judgment_only_is_refused_while_a_stock_sync_runs(manager, j
     # one in progress pays to judge items that are about to be deleted.
     stock_event = asyncio.Event()
 
-    async def _fake_sync_stock(crawler_id=None, lock_conn=None):
+    async def _fake_sync_stock(crawler_id=None, lock_conn=None, crawler_ids=None):
         await stock_event.wait()
         lock_conn.close()
 

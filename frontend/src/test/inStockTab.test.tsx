@@ -719,6 +719,26 @@ describe('In Stock tab', () => {
     expect(screen.getByRole('button', { name: /Dismiss/i })).toBeInTheDocument()
   })
 
+  it('says when an aborted stock sync will retry its skipped stores', async () => {
+    render(<App />)
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
+    const source = getLastCrawlSource()
+    source.emit({ status: 'stock_sync_started', id: 1 })
+    source.emit({
+      status: 'stock_sync_aborted',
+      error: 'Too many consecutive rate-limited catalog sites',
+      sources: ['Run For Cover', 'Equal Vision'],
+      resume_in_seconds: 3600,
+      resume_sources: ['Run For Cover', 'Equal Vision', 'Never Attempted'],
+      id: 2,
+    })
+    await waitFor(() =>
+      expect(
+        screen.getByText(/\(Run For Cover, Equal Vision\) — retrying 3 stores in 1h 0m/)
+      ).toBeInTheDocument()
+    )
+  })
+
   it('does not clear stockSyncTarget when a non-terminal per-crawler stock_sync_error fires mid-bulk-sync', async () => {
     getCrawlers.mockResolvedValue([CATALOG_CRAWLER])
     render(<App />)
