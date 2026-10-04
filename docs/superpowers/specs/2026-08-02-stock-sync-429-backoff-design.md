@@ -2,6 +2,18 @@
 
 _2026-08-02_
 
+**Amendment (2026-10-03, branch `claude/stock-sync-429-resume`): an aborted run now resumes itself, with exponential backoff.** The 2026-08-04 amendment's "known, accepted gap" — nothing comes back for the stores an abort skipped, so they wait for the next cron run, possibly a day away — is closed for the abort case. The reversal it records still stands: a 429 is never retried *within* a run, because the platform-edge throttle outlasts any window a per-request retry could pace. The backoff added here works at the timescale that throttle actually clears on — tens of minutes to hours — and at run granularity rather than request granularity.
+
+- On abort, `_sync_stock` schedules a one-off resume run (APScheduler job id `stock_sync_resume`, `scheduler.schedule_stock_resume`) covering exactly the stores this run did not sync because of the throttle: every store that hit a 429 in this run (the two that triggered the abort, plus any earlier isolated 429 the streak later reset past) and every store the loop had not reached yet. Stores that synced, failed for another reason, were cooling down, or were disabled are not included. The resume run re-applies the same per-source checks (breaker, live enabled set) as any run, and keeps the original store order.
+- The delay is `STOCK_RESUME_BASE_DELAY` (30 minutes) doubled for each consecutive aborted run, capped at `STOCK_RESUME_MAX_DELAY` (8 hours): 30m, 1h, 2h, 4h, 8h, 8h, … The streak resets when any run completes without aborting.
+- A resume run that aborts again schedules its own, narrower resume at the next step of the backoff. There is only ever one pending resume: scheduling replaces any existing one, and an abort's list is always the right one to keep, because whatever the replaced resume covered was either visited by the aborting run or is in its list again.
+- An unrestricted run (scheduled or "sync all") that completes without aborting cancels any pending resume — it just visited every store the resume would have.
+- A resume that fires while a stock sync is already running (here or on the other Machine) is rescheduled at the base delay rather than dropped, without advancing the streak.
+- `stock_sync_aborted` now carries `resume_in_seconds` and `resume_sources`, and the status bar says when the skipped stores will be retried.
+- Still in-process, like the per-site breaker: a restart forgets the pending resume and the streak, and the next scheduled run covers those stores as it did before this change. The backoff constants are fixed, not admin-configurable, matching this spec's original non-goal.
+
+**Amendment (2026-10-01, branch `claude/revolver-vinyl-crawler-lqud25`):** not every Shopify 429 is the IP-wide platform-edge throttle this document describes. `shop.revolvermag.com` answers a `products.json` page-2 request with `429` (`retry-after: 60`) whenever it carries the session cookies page 1 set — every time, at 20s pacing — while the same connection with its cookie jar cleared, or a fresh client per page, reads pages 1-3 cleanly from the same address in the same minutes. `iter_products()` keeps one client and its jar across a walk, so such a store failed on page 2 of every sync. It now takes an opt-in `refuse_cookies`, which walks with a jar whose policy stores nothing; `revolver.py` sets it. Everything else here is unchanged: a 429 is still never retried, and the flag defaults to off, so no other store's walk changes.
+
 **Amendment (2026-09-01, branch `claude/stock-crawl-timeout-j15zt4`):** the
 retry loop this spec describes inside `iter_products()`'s except block —
 paced non-429 retries bounded by `consecutive_failure_limit`, immediate raise

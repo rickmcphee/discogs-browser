@@ -312,3 +312,35 @@ async def test_iter_products_without_min_delay_paces_exactly_as_before(tmp_confi
     [p async for p in iter_products("https://example.myshopify.test", "vinyl")]
     assert sleep_calls
     assert all(1 <= s <= 2 for s in sleep_calls)
+
+
+def _mock_cookie_setting_walk():
+    # Page 1 sets a session cookie the way a Shopify storefront does; the
+    # routes record what page 2 was sent.
+    page1 = respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "1"}).mock(
+        return_value=httpx.Response(
+            200, json={"products": [{"id": 1}]},
+            headers={"set-cookie": "_shopify_essential=abc; Path=/"}))
+    page2 = respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "2"}).mock(
+        return_value=_page_response([]))
+    return page1, page2
+
+
+@respx.mock
+async def test_iter_products_refuse_cookies_sends_no_cookie_on_later_pages(tmp_config_dir):
+    save_config({"crawl_delay_seconds": 0, "consecutive_failure_limit": 10})
+    _, page2 = _mock_cookie_setting_walk()
+    products = [p async for p in iter_products(
+        "https://example.myshopify.test", "vinyl", refuse_cookies=True)]
+    assert products == [{"id": 1}]
+    assert "cookie" not in page2.calls.last.request.headers
+
+
+@respx.mock
+async def test_iter_products_keeps_cookies_by_default(tmp_config_dir):
+    # The other half of the contract: every caller that omits the flag walks
+    # exactly as before, cookies and all.
+    save_config({"crawl_delay_seconds": 0, "consecutive_failure_limit": 10})
+    _, page2 = _mock_cookie_setting_walk()
+    [p async for p in iter_products("https://example.myshopify.test", "vinyl")]
+    assert page2.calls.last.request.headers.get("cookie") == "_shopify_essential=abc"

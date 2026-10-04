@@ -88,6 +88,9 @@ export interface CrawlEvent {
   screenshots?: string[]
   source?: string
   sources?: string[]
+  // On stock_sync_aborted: when, and for which stores, the run resumes.
+  resume_in_seconds?: number
+  resume_sources?: string[]
   judged?: number
   // Listings that got a verdict without a model call, because another
   // listing of the same record already had one. Evidence that judgments
