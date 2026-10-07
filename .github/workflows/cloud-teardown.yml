@@ -1,0 +1,64 @@
+name: Tear down hosted deployment
+
+# Manual only, and irreversible: destroys the Fly.io app named in
+# backend/fly.toml (its Machines, volumes, certificates and secrets) and,
+# when a Neon project id is given, the Neon project and every database in it.
+# Run it only after the data has been copied out of Neon and checked on the
+# NAS -- scripts/migrate-from-neon.sh, and the runbook in
+# docs/specifications/shaping/2026-10-07-undeploy-hosted-infrastructure-design.md.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_fly_app:
+        description: "Type the Fly app name from backend/fly.toml to confirm destroying it"
+        required: true
+        type: string
+      neon_project_id:
+        description: "Neon project id to delete as well (needs the NEON_API_KEY secret). Leave blank to keep Neon."
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency: fly-deploy-group
+
+jobs:
+  teardown:
+    name: Destroy hosted infrastructure
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Check confirmation
+        id: app
+        env:
+          CONFIRM: ${{ inputs.confirm_fly_app }}
+        run: |
+          app="$(sed -n 's/^app *= *"\(.*\)"$/\1/p' backend/fly.toml)"
+          if [ -z "$app" ] || [ "$CONFIRM" != "$app" ]; then
+            echo "::error::confirm_fly_app must be exactly '$app' (from backend/fly.toml)"
+            exit 1
+          fi
+          echo "name=$app" >> "$GITHUB_OUTPUT"
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # v1.6
+      - name: Destroy Fly app
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          APP: ${{ steps.app.outputs.name }}
+        run: flyctl apps destroy "$APP" --yes
+      - name: Delete Neon project
+        if: inputs.neon_project_id != ''
+        env:
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+          PROJECT: ${{ inputs.neon_project_id }}
+        run: |
+          if [ -z "$NEON_API_KEY" ]; then
+            echo "::error::NEON_API_KEY secret is not set; delete the project from the Neon console instead"
+            exit 1
+          fi
+          curl --fail-with-body -sS -X DELETE \
+            -H "Authorization: Bearer $NEON_API_KEY" \
+            -H "Accept: application/json" \
+            "https://console.neon.tech/api/v2/projects/$PROJECT"
