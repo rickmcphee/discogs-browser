@@ -1,5 +1,7 @@
 # Grouping is about deploy count, not PR count: every merge to main is a push,
-# and every push to main runs the Fly deploy job. Ungrouped, the first run after
+# and every push to main runs the Fly deploy job (while FLY_DEPLOY_ENABLED is
+# set; the hosted deployment is retired for now, see
+# docs/specifications/shaping/2026-10-07-undeploy-hosted-infrastructure-design.md). Ungrouped, the first run after
 # this file landed opened 12 PRs, which is 12 sequential production deploys.
 #
 # Minor and patch updates are grouped per ecosystem -- one PR, one deploy.

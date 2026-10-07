@@ -123,7 +123,10 @@ every deploy, since the value changes every time. At the end, a new version
 dirties one trivial layer.
 
 `.github/workflows/fly-deploy.yml`'s deploy job computes the string and passes
-it through:
+it through (that job has run only when the `FLY_DEPLOY_ENABLED` repository
+variable is `true` since 2026-10-07 — see
+[`2026-10-07-undeploy-hosted-infrastructure-design.md`](2026-10-07-undeploy-hosted-infrastructure-design.md);
+`bootstrap.sh` computes the same string for the self-hosted image):
 
 ```yaml
 - name: Deploy
