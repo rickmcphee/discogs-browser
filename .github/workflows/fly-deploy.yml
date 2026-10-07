@@ -62,10 +62,17 @@ jobs:
         working-directory: frontend
         run: npm run build
 
+  # Off by default: the hosted Fly.io + Neon deployment was torn down and the
+  # app now runs self-hosted on the NAS, redeployed by hand with bootstrap.sh.
+  # The job stays so a hosted deploy can come back without rewriting it --
+  # set the repository variable FLY_DEPLOY_ENABLED to "true" (Settings ->
+  # Secrets and variables -> Actions -> Variables) once fly.toml's app and
+  # the FLY_API_TOKEN secret point at a live app again. See
+  # docs/specifications/shaping/2026-10-07-undeploy-hosted-infrastructure-design.md.
   deploy:
     name: Deploy backend to Fly.io
     needs: [backend-tests, frontend-tests]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: vars.FLY_DEPLOY_ENABLED == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     concurrency: fly-deploy-group
     environment: production

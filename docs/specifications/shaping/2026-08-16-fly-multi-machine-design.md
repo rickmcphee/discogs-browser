@@ -1,5 +1,11 @@
 # Fly.io multi-machine scaling
 
+> **Status (2026-10-07):** this deployment has been torn down and the app
+> moved back to the self-hosted NAS stack; the deploy job is now gated on the
+> `FLY_DEPLOY_ENABLED` repository variable. See
+> [`2026-10-07-undeploy-hosted-infrastructure-design.md`](2026-10-07-undeploy-hosted-infrastructure-design.md).
+> Kept as the reference for re-hosting.
+
 ## Problem
 
 [`2026-08-08-fly-neon-deployment-design.md`](2026-08-08-fly-neon-deployment-design.md)
