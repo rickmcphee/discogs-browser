@@ -35,7 +35,15 @@ jobs:
         id: app
         env:
           CONFIRM: ${{ inputs.confirm_fly_app }}
+          NEON_PROJECT: ${{ inputs.neon_project_id }}
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
         run: |
+          # Every requested credential is checked here, before the first
+          # irreversible step, so a missing one cannot leave a half teardown.
+          if [ -n "$NEON_PROJECT" ] && [ -z "$NEON_API_KEY" ]; then
+            echo "::error::neon_project_id was given but the NEON_API_KEY secret is not set; nothing was destroyed"
+            exit 1
+          fi
           app="$(sed -n 's/^app *= *"\(.*\)"$/\1/p' backend/fly.toml)"
           if [ -z "$app" ] || [ "$CONFIRM" != "$app" ]; then
             echo "::error::confirm_fly_app must be exactly '$app' (from backend/fly.toml)"
@@ -54,10 +62,6 @@ jobs:
           NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
           PROJECT: ${{ inputs.neon_project_id }}
         run: |
-          if [ -z "$NEON_API_KEY" ]; then
-            echo "::error::NEON_API_KEY secret is not set; delete the project from the Neon console instead"
-            exit 1
-          fi
           curl --fail-with-body -sS -X DELETE \
             -H "Authorization: Bearer $NEON_API_KEY" \
             -H "Accept: application/json" \

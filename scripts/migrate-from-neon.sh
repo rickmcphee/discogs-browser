@@ -60,24 +60,26 @@ local_psql() {
   $COMPOSE exec -T postgres psql -U postgres -d "$db" -X -v ON_ERROR_STOP=1 "$@"
 }
 
-echo "==> Starting local Postgres and stopping the local backend..."
+check_local_db() {
+  EXISTING="$(local_psql postgres -tA -c "SELECT 1 FROM pg_database WHERE datname = '$LOCAL_DB'")"
+  if [ -n "$EXISTING" ]; then
+    TABLES="$(local_psql "$LOCAL_DB" -tA -c "SELECT count(*) FROM pg_tables WHERE schemaname = 'public'")"
+  else
+    TABLES=0
+  fi
+  if [ "$TABLES" != "0" ] && [ "$SET_ASIDE" != "1" ]; then
+    echo "Local database $LOCAL_DB already has tables. Re-run with --set-aside-existing" >&2
+    echo "to rename it to ${LOCAL_DB}_pre_neon_<timestamp> and restore into a fresh one." >&2
+    exit 1
+  fi
+}
+
+echo "==> Starting local Postgres..."
 $COMPOSE up -d postgres
 until $COMPOSE exec -T postgres pg_isready -U postgres >/dev/null 2>&1; do sleep 2; done
-# The backend creates the schema on boot; it must not race the restore or hold
-# a connection to the database being renamed.
-$COMPOSE stop backend >/dev/null 2>&1 || true
-
-EXISTING="$(local_psql postgres -tA -c "SELECT 1 FROM pg_database WHERE datname = '$LOCAL_DB'")"
-if [ -n "$EXISTING" ]; then
-  TABLES="$(local_psql "$LOCAL_DB" -tA -c "SELECT count(*) FROM pg_tables WHERE schemaname = 'public'")"
-else
-  TABLES=0
-fi
-if [ "$TABLES" != "0" ] && [ "$SET_ASIDE" != "1" ]; then
-  echo "Local database $LOCAL_DB already has tables. Re-run with --set-aside-existing" >&2
-  echo "to rename it to ${LOCAL_DB}_pre_neon_<timestamp> and restore into a fresh one." >&2
-  exit 1
-fi
+# Read-only, and before anything is stopped, so a refusal leaves the local app
+# running as it was.
+check_local_db
 
 echo "==> Reading Neon's server version..."
 NEON_MAJOR="$(neon_psql -c 'SHOW server_version_num' | tr -d '[:space:]')"
@@ -96,6 +98,13 @@ docker run --rm -e NEON_DATABASE_URL "postgres:$NEON_MAJOR" \
   | sed -e '/^SET transaction_timeout/d' -e '/^\\restrict /d' -e '/^\\unrestrict /d' \
   > "$DUMP"
 echo "    $(wc -c < "$DUMP") bytes"
+
+echo "==> Stopping the local backend..."
+# The backend creates the schema on boot; it must not race the restore or hold
+# a connection to the database being renamed. Checked again once it is down,
+# since a running backend may have changed the answer since the first check.
+$COMPOSE stop backend >/dev/null 2>&1 || true
+check_local_db
 
 if [ "$TABLES" != "0" ]; then
   echo "==> Renaming existing $LOCAL_DB to ${LOCAL_DB}_pre_neon_$STAMP ..."
@@ -124,7 +133,7 @@ cat "$OUT_DIR/counts-local-$STAMP.txt"
 
 cat <<EOF
 
-Done: every table matches Neon row for row. The dump stays at $DUMP --
+Done: every table has the same row count as on Neon. The dump stays at $DUMP --
 keep it until the NAS has run for a while, then delete it (it holds every
 user's encrypted Discogs tokens).
 
