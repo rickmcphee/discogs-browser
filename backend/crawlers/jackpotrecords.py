@@ -30,7 +30,7 @@ class Crawler:
     crawler_type: str = "catalog"
 
     async def crawl_catalog(self) -> AsyncIterator[dict]:
-        async for product in iter_products(self.base_url, _COLLECTION_SLUG):
+        async for product in iter_products(self.base_url, _COLLECTION_SLUG, refuse_cookies=True):
             if not self._is_vinyl(product):
                 continue
             for item in self._items(product):

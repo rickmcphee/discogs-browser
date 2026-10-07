@@ -153,3 +153,10 @@ crawler in crawlers:` loop:
 - Applying this pattern to the release-crawl worker pool (`worker-pool-pacing`,
   separate branch).
 - Configurable threshold/cap constants.
+
+**Amendment (2026-10-07):** every Shopify-backed catalog crawler now walks
+`iter_products()` with `refuse_cookies=True`, not only Revolver. The cookie jar
+that page 1 populates buys a stateless `products.json` walk nothing, and a
+429 on page 2 after a clean page 1 is the signature of the edge throttling the
+follow-up request that carries it. Behaviour is otherwise unchanged: a 429 is
+still never retried and still counts toward the two-consecutive-sites abort.
