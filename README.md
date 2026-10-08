@@ -166,7 +166,7 @@ flattens it), but routes through a second Cloudflare proxy hop and can
 surface a transient `522`. Either way, allow real time for a freshly-added
 apex record to propagate before concluding something's wrong.
 
-**Redeploys** (only while `FLY_DEPLOY_ENABLED` is `true`): every push to `main` triggers `.github/workflows/fly-deploy.yml`,
+**Redeploys** (only while `FLY_DEPLOY_ENABLED` is `true`): every push to `main` triggers `.github/workflows/ci.yml`,
 which redeploys the backend to Fly.io regardless of which files changed
 (no path filter — a docs-only or frontend-only push still re-deploys the
 unchanged backend), gated behind that same workflow's backend/frontend test
@@ -220,7 +220,7 @@ UPDATE users SET is_admin = true WHERE discogs_username = '<your-discogs-usernam
 Postgres-backed tests need `TEST_DATABASE_URL`, `IDENTITY_DB_PASSWORD`, and
 `APP_DB_PASSWORD` all set, or `init_tenant_schema()` raises `RuntimeError`
 and every DB test errors at setup. Example values, from
-`.github/workflows/fly-deploy.yml`:
+`.github/workflows/ci.yml`:
 
 ```bash
 cd backend
@@ -242,7 +242,7 @@ from a pull request head, so that no fork contributor's code runs from the hook
 (see
 [`docs/specifications/shaping/2026-08-29-session-start-hook-pr-safety-design.md`](docs/specifications/shaping/2026-08-29-session-start-hook-pr-safety-design.md)).
 Either way it no-ops outside a cloud session; pass `--force` to run it anyway. It
-mirrors `.github/workflows/fly-deploy.yml`, which stays the authoritative
+mirrors `.github/workflows/ci.yml`, which stays the authoritative
 statement of what a green run needs.
 
 The passwords are arbitrary local test values, not real secrets. The database
