@@ -17,11 +17,15 @@ down — while keeping the option of hosting it again later.
 ## Decisions
 
 - **Deploys stop by default; the machinery stays.** The `deploy` job in
-  `.github/workflows/fly-deploy.yml` now also requires the repository
+  `.github/workflows/ci.yml` now also requires the repository
   variable `FLY_DEPLOY_ENABLED` to equal `"true"`. Unset, every push to
   `main` still runs the backend and frontend test jobs (they are the
-  required checks, and the workflow keeps its name and file so nothing that
-  refers to it breaks) and the deploy job is skipped. `backend/fly.toml`,
+  required checks) and the deploy job is skipped. *Amended 2026-10-08:* the
+  workflow was since renamed from `fly-deploy.yml` / "CI / Fly Deploy" to
+  `ci.yml` / "CI", since it is the repository's CI first. The required checks
+  are matched by job name ("Backend tests", "Frontend tests"), which did not
+  change, and both test jobs gained `timeout-minutes` so a hung run fails fast
+  instead of holding a PR for GitHub's six-hour cap. `backend/fly.toml`,
   `config.py`'s Neon handling (`DIRECT_DATABASE_URL`, the pooler warning),
   `FLY_MACHINE_ID`, and `VITE_API_BASE_URL` all stay: each is inert outside
   a hosted deployment and is what a future one needs.

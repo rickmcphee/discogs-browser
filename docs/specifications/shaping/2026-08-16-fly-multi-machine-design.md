@@ -525,7 +525,7 @@ itself. Whoever operates this deployment runs, once, **in this order**:
    ```
 
 After that, every subsequent `flyctl deploy` (including the existing
-`fly-deploy.yml` CI job, unchanged) rolls out to both Machines automatically.
+`ci.yml` CI job, unchanged) rolls out to both Machines automatically.
 
 ## Open questions
 

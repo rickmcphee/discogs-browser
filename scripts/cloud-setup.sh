@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Provisions a Claude Code cloud session so `pytest` and `npm run test` can
-# actually run. Mirrors the two CI jobs in .github/workflows/fly-deploy.yml --
+# actually run. Mirrors the two CI jobs in .github/workflows/ci.yml --
 # that workflow is the authoritative statement of what a green run needs, and
 # this script is its sandbox equivalent.
 #

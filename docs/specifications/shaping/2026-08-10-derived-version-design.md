@@ -122,7 +122,7 @@ build cache for every layer below it, and the layers above include
 every deploy, since the value changes every time. At the end, a new version
 dirties one trivial layer.
 
-`.github/workflows/fly-deploy.yml`'s deploy job computes the string and passes
+`.github/workflows/ci.yml`'s deploy job computes the string and passes
 it through (that job has run only when the `FLY_DEPLOY_ENABLED` repository
 variable is `true` since 2026-10-07 — see
 [`2026-10-07-undeploy-hosted-infrastructure-design.md`](2026-10-07-undeploy-hosted-infrastructure-design.md);
