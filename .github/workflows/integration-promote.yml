@@ -69,7 +69,7 @@ jobs:
       - name: Open the integration -> main PR if there's anything to promote
         env:
           # A PR opened with the default GITHUB_TOKEN still triggers
-          # fly-deploy.yml's `pull_request` checks, but GitHub puts that run in
+          # ci.yml's `pull_request` checks, but GitHub puts that run in
           # an approval-required state (recursion guard on GITHUB_TOKEN-authored
           # events) -- see https://docs.github.com/en/actions/concepts/security/github_token.
           # So until the sync app is configured (Contents: read/write +
