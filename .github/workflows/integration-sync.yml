@@ -189,7 +189,7 @@ jobs:
           # Parked, not absent -- worth stating plainly because the opposite is
           # a natural reading of GitHub's recursion guard, and a reviewer has
           # already raised it once. On PR #182, opened by github-actions[bot]
-          # with this same fallback, the "CI" run was created at
+          # with this same fallback, the "CI / Fly Deploy" run (its name then) was created at
           # 06:26:44, three seconds after the PR at 06:26:41; it then sat until
           # run_attempt 2 started at 11:56:18 with triggering_actor=rickmcphee,
           # and the PR merged at 11:59:50. The run exists and is approvable,
