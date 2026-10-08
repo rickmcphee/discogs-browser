@@ -3,6 +3,12 @@
 Date: 2026-08-08
 Branch: `fly-neon-deployment`
 
+> **Status (2026-10-07):** this deployment has been torn down and the app
+> moved back to the self-hosted NAS stack; the deploy job is now gated on the
+> `FLY_DEPLOY_ENABLED` repository variable. See
+> [`2026-10-07-undeploy-hosted-infrastructure-design.md`](2026-10-07-undeploy-hosted-infrastructure-design.md).
+> Kept as the reference for re-hosting.
+
 ## Problem
 
 The multi-tenant architecture spec (`docs/superpowers/specs/2026-07-26-multi-tenant-architecture-design.md`)

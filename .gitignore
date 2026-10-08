@@ -16,6 +16,7 @@ dist/
 .superpowers/
 workspace/
 postgres-data/
+neon-export/
 .worktrees/
 .venv/
 .env

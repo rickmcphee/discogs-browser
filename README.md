@@ -127,10 +127,20 @@ bash bootstrap.sh
 docker-compose up -d
 ```
 
-## Deployment (Fly.io + Neon)
+## Deployment (Fly.io + Neon) — retired, kept for re-hosting
 
-The hosted multi-tenant deployment runs on Fly.io (backend, app `tracktempest-api`)
-+ Neon (Postgres) + Cloudflare (frontend), live at `tracktempest.com`. See
+**The hosted deployment is torn down; the app runs self-hosted on the NAS
+(see above), redeployed by hand with `bootstrap.sh`.** Nothing deploys from
+GitHub Actions unless the repository variable `FLY_DEPLOY_ENABLED` is set to
+`true`. The move back, the Neon → NAS data copy
+(`scripts/migrate-from-neon.sh`) and the teardown workflow
+(`.github/workflows/cloud-teardown.yml`) are described in
+[`docs/specifications/shaping/2026-10-07-undeploy-hosted-infrastructure-design.md`](docs/specifications/shaping/2026-10-07-undeploy-hosted-infrastructure-design.md).
+The rest of this section describes the hosted setup as it was, for whenever
+it is brought back.
+
+The hosted multi-tenant deployment ran on Fly.io (backend, app `tracktempest-api`)
++ Neon (Postgres) + Cloudflare (frontend), at `tracktempest.com`. See
 [`docs/specifications/shaping/2026-08-08-fly-neon-deployment-design.md`](docs/specifications/shaping/2026-08-08-fly-neon-deployment-design.md)
 for the architecture and
 [`docs/specifications/plans/2026-08-08-fly-neon-deployment.md`](docs/specifications/plans/2026-08-08-fly-neon-deployment.md)
@@ -156,7 +166,7 @@ flattens it), but routes through a second Cloudflare proxy hop and can
 surface a transient `522`. Either way, allow real time for a freshly-added
 apex record to propagate before concluding something's wrong.
 
-**Redeploys:** every push to `main` triggers `.github/workflows/fly-deploy.yml`,
+**Redeploys** (only while `FLY_DEPLOY_ENABLED` is `true`): every push to `main` triggers `.github/workflows/fly-deploy.yml`,
 which redeploys the backend to Fly.io regardless of which files changed
 (no path filter — a docs-only or frontend-only push still re-deploys the
 unchanged backend), gated behind that same workflow's backend/frontend test

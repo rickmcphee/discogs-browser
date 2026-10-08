@@ -371,7 +371,7 @@ Create the commit via `git commit -F <message-file>`, not `git commit -m` — tr
 
 `backend/version.py`'s `VERSION` is **derived, never edited**. A PR that changes a version number is wrong by definition; there is nothing to bump.
 
-The value is `YYYY.MM.DD+<short-sha>` (e.g. `2026.08.10+8fac644`), resolved at import from, in order: the `APP_VERSION` environment variable, then git, then `"dev"`. CI bakes the real value into the Fly image as a Docker build argument.
+The value is `YYYY.MM.DD+<short-sha>` (e.g. `2026.08.10+8fac644`), resolved at import from, in order: the `APP_VERSION` environment variable, then git, then `"dev"`. CI bakes the real value into the Fly image as a Docker build argument (while hosted deploys are enabled — see `FLY_DEPLOY_ENABLED` in `.github/workflows/fly-deploy.yml`), and `bootstrap.sh` does the same for the self-hosted image.
 
 The old scheme required each PR to bump a shared literal before merge, but whether the number was right could only be known at merge — so concurrent PRs collided routinely (see `docs/specifications/shaping/2026-08-10-derived-version-design.md`). There are no major/minor components any more, and no `3.x` successor.
 
