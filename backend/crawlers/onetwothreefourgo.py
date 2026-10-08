@@ -144,7 +144,7 @@ class Crawler:
         Shopify field this store has never restyled.
         """
         products_seen = vinyl_seen = title_parsed = 0
-        async for product in iter_products(self.base_url, _COLLECTION_SLUG):
+        async for product in iter_products(self.base_url, _COLLECTION_SLUG, refuse_cookies=True):
             products_seen += 1
             if not self._is_vinyl(product):
                 continue

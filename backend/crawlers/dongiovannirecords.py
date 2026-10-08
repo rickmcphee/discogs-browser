@@ -242,7 +242,7 @@ class Crawler:
         unreadable_stock = 0
         yielded = 0
         priced = 0
-        async for product in iter_products(self.base_url, _COLLECTION_SLUG):
+        async for product in iter_products(self.base_url, _COLLECTION_SLUG, refuse_cookies=True):
             products_seen += 1
             # The artist and album tallies are independent of each other and
             # of the format gate, because `vendor` and the title are
