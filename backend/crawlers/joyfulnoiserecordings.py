@@ -285,7 +285,7 @@ class Crawler:
         yielded = 0
         unreadable_prices = 0
         untitled_live = 0
-        async for product in iter_products(self.base_url, _COLLECTION_SLUG):
+        async for product in iter_products(self.base_url, _COLLECTION_SLUG, refuse_cookies=True):
             products_seen += 1
             # Counted outside the `pressings` branch below, which is the whole
             # point: a product whose variants cannot be read yields no
