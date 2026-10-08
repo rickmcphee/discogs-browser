@@ -184,7 +184,7 @@ class Crawler:
         unreadable_variants = 0
         yielded = 0
         priced = 0
-        async for product in iter_products(self.base_url, _COLLECTION_SLUG):
+        async for product in iter_products(self.base_url, _COLLECTION_SLUG, refuse_cookies=True):
             products_seen += 1
             # `iter_products()` type-checks the products CONTAINER but yields
             # each entry unchanged, so a null or scalar entry reaches the

@@ -941,8 +941,11 @@ async def test_the_sites_crawl_delay_is_passed_as_a_pacing_floor(monkeypatch):
     # honouring the store's robots.txt has to be enforced by the design.
     seen = {}
 
-    async def fake_iter_products(base_url, collection_slug, *, min_delay=0.0):
+    async def fake_iter_products(
+        base_url, collection_slug, *, min_delay=0.0, refuse_cookies=False,
+    ):
         seen["min_delay"] = min_delay
+        seen["refuse_cookies"] = refuse_cookies
         return
         yield  # pragma: no cover - makes this an async generator
 
@@ -950,3 +953,4 @@ async def test_the_sites_crawl_delay_is_passed_as_a_pacing_floor(monkeypatch):
     with pytest.raises(RuntimeError, match="returned no products"):
         [item async for item in Crawler().crawl_catalog()]
     assert seen["min_delay"] == 10.0
+    assert seen["refuse_cookies"] is True

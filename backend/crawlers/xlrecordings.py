@@ -198,7 +198,8 @@ class Crawler:
         yielded = 0
         priced = 0
         async for product in iter_products(
-            self.base_url, _COLLECTION_SLUG, min_delay=_SITE_CRAWL_DELAY
+            self.base_url, _COLLECTION_SLUG, min_delay=_SITE_CRAWL_DELAY,
+            refuse_cookies=True,
         ):
             products_seen += 1
             # Taken across every product, merch included, and before the
