@@ -309,7 +309,7 @@ Explicitly not touched:
 - `backend/db.py` — no change to `GLOBAL_SCHEMA`, `TENANT_SCHEMA`,
   `init_global_schema`, `init_tenant_schema` or `_ensure_role`. This is test
   infrastructure only.
-- `.github/workflows/fly-deploy.yml` — CI already provisions a fresh database
+- `.github/workflows/ci.yml` — CI already provisions a fresh database
   per job and needs no change. It gains the per-run database for free.
 - The existing test files that use `pg_test_db`.
 
