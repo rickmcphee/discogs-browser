@@ -94,7 +94,7 @@ class Crawler:
         unreadable_stock = 0
         yielded = 0
         priced = 0
-        async for product in iter_products(self.base_url, _COLLECTION_SLUG):
+        async for product in iter_products(self.base_url, _COLLECTION_SLUG, refuse_cookies=True):
             products_seen += 1
             # Nested, not sibling tallies: only a product with the Records
             # type, an artist in its title, a vinyl tag AND a variant the

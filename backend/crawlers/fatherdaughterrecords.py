@@ -18,7 +18,7 @@ class Crawler:
     crawler_type: str = "catalog"
 
     async def crawl_catalog(self) -> AsyncIterator[dict]:
-        async for product in iter_products(self.base_url, _COLLECTION_SLUG):
+        async for product in iter_products(self.base_url, _COLLECTION_SLUG, refuse_cookies=True):
             for item in self._items(product):
                 yield item
 

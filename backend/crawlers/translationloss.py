@@ -74,7 +74,7 @@ class Crawler:
         unreadable_stock = 0
         yielded = 0
         priced = 0
-        async for product in iter_products(self.base_url, _COLLECTION_SLUG):
+        async for product in iter_products(self.base_url, _COLLECTION_SLUG, refuse_cookies=True):
             products_seen += 1
             # The two gate layers are counted separately, not just as a pair:
             # a guard that cannot tell which layer rejected a product reports

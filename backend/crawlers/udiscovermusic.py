@@ -26,7 +26,7 @@ class Crawler:
     async def crawl_catalog(self) -> AsyncIterator[dict]:
         products_seen = 0
         vendor_ok = 0
-        async for product in iter_products(self.base_url, _COLLECTION_SLUG):
+        async for product in iter_products(self.base_url, _COLLECTION_SLUG, refuse_cookies=True):
             products_seen += 1
             if (product.get("vendor") or "").strip():
                 vendor_ok += 1
