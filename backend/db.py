@@ -2715,8 +2715,9 @@ def _lock_stock_queue_reconciliation(conn):
 # while nobody wanted it, so the "next claim picks it up" promise the setting
 # makes only held while the row was still pending. Both helpers close it.
 #
-# The save also expedites, which the library sync deliberately does not: one
-# is a click on one record, the other is a sync's worth of them.
+# The save also expedites, as does the Store row's re-crawl (through
+# enqueue_crawl_queue_for_recheck), which the library sync deliberately does
+# not: each is a click on one record, the other is a sync's worth of them.
 #
 # Both keep the enabled-store gate and neither asks library_only: with the
 # setting off every live item already has a row, so the *insert* is a no-op
@@ -2816,7 +2817,8 @@ QUEUE_PRIORITY_INTERACTIVE = 1
 # 'done' row with everything else. It does, and that wait is what this removes.
 #
 # The rowcount changed meaning with it: it was "a row was inserted", it is now
-# "the item is queued because of this call". Nothing in production reads it.
+# "the item is queued because of this call". Only enqueue_crawl_queue_for_recheck
+# reads it.
 def enqueue_crawl_queue_for_saved_stock_item(conn, item_key: str) -> int:
     _lock_stock_queue_reconciliation(conn)
     params = {"item_key": item_key, "priority": QUEUE_PRIORITY_INTERACTIVE}
@@ -2851,6 +2853,30 @@ def enqueue_crawl_queue_for_saved_stock_item(conn, item_key: str) -> int:
         """,
         params,
     ).rowcount
+
+
+# A re-check writes no interest, so unlike a save it cannot rely on
+# stock_item_saves to satisfy _stock_item_crawlable under crawl_library_only:
+# the claim would skip the row it just expedited and the sweep could delete
+# it. The gate is therefore evaluated here, under the lock the sweep also
+# takes, and a refusal writes nothing. library_only is required, not
+# defaulted, because the gate's own default is the unrestricted one.
+def enqueue_crawl_queue_for_recheck(conn, item_key: str, library_only: bool) -> dict:
+    _lock_stock_queue_reconciliation(conn)
+    params = {"item_key": item_key}
+    listed = conn.execute(
+        f"SELECT {_enabled_stock_source_exists('%(item_key)s')} AS ok", params
+    ).fetchone()["ok"]
+    if not listed:
+        return {"queued": False, "reason": "not_listed"}
+    crawlable = conn.execute(
+        f"SELECT {_stock_item_crawlable('%(item_key)s', library_only)} AS ok", params
+    ).fetchone()["ok"]
+    if not crawlable:
+        return {"queued": False, "reason": "library_only"}
+    if enqueue_crawl_queue_for_saved_stock_item(conn, item_key) == 0:
+        return {"queued": False, "reason": "not_listed"}
+    return {"queued": True, "reason": None}
 
 
 # Scoped to one user's library through _library_match_fragment, which under

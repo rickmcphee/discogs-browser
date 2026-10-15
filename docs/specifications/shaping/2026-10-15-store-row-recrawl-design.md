@@ -177,8 +177,12 @@ This one sits on rows that display exactly the listings it refreshes.
   belongs in its own design.
 - **Rows that came from a release crawler** never queue (see `not_listed`
   above), so the button shows its message on them rather than being hidden.
-  Whether to hide it client-side instead depends on the row carrying a field
-  that says where it came from; the plan's first task checks whether it does.
+  Settled: the Store row payload carries no field saying where a row came
+  from. `get_stock_items` returns `source` (the crawler's `site_name`) and
+  `saved`, and `StockItem` in `frontend/src/api/types.ts` mirrors them, with
+  no crawler id or type, so hiding the button client-side would need a new
+  payload field. Not added: the click is rare, the server's `not_listed`
+  answer is accurate, and the message is the cheaper cost.
 
 ## Spec drift
 

@@ -6,6 +6,7 @@ from datetime import datetime
 import psycopg
 import pytest
 
+import config
 import db
 from crawl_manager import crawl_manager
 from routers import stock as stock_router
@@ -1549,3 +1550,167 @@ def test_put_stock_saved_queues_an_expedited_marketplace_crawl(pg_test_db, authe
         (absent_key, "pending", db.QUEUE_PRIORITY_INTERACTIVE),
         (done_key, "pending", db.QUEUE_PRIORITY_INTERACTIVE),
     ])
+
+
+def _seed_recrawl_item(site_name="Nuclear Blast"):
+    crawler_id = _make_crawler(site_name)
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        db.replace_stock_items(conn, crawler_id, [
+            {"artist": "Artist A", "title": "Album A", "url": "https://x/1", "price": 10.0, "currency": "USD"},
+        ])
+        conn.commit()
+    return user, crawler_id, db.compute_item_key("Artist A", "Album A", "https://x/1")
+
+
+def _queue_row(item_key):
+    with db.get_admin_pool().connection() as conn:
+        return conn.execute(
+            "SELECT status, priority, requested_at FROM crawl_queue WHERE item_key = %s", [item_key]
+        ).fetchone()
+
+
+def _recrawl(client, item_key):
+    return client.post(f"/api/stock/{item_key}/recrawl", headers={"X-Requested-With": "fetch"})
+
+
+def test_recrawl_queues_a_listed_item_at_interactive_priority(pg_test_db, authed_client_factory):
+    user, _, item_key = _seed_recrawl_item()
+    client = authed_client_factory(user["id"])
+
+    r = _recrawl(client, item_key)
+
+    assert r.status_code == 200
+    assert r.json() == {"queued": True, "reason": None}
+    row = _queue_row(item_key)
+    assert row["status"] == "pending"
+    assert row["priority"] == db.QUEUE_PRIORITY_INTERACTIVE
+
+
+def test_recrawl_of_an_unknown_item_is_not_listed(pg_test_db, authed_client_factory):
+    user, _, _ = _seed_recrawl_item()
+    client = authed_client_factory(user["id"])
+
+    r = _recrawl(client, "no-such-key")
+
+    assert r.json() == {"queued": False, "reason": "not_listed"}
+    assert _queue_row("no-such-key") is None
+
+
+def test_recrawl_of_a_disabled_store_item_is_not_listed(pg_test_db, authed_client_factory):
+    user, crawler_id, item_key = _seed_recrawl_item()
+    with db.get_admin_pool().connection() as conn:
+        db.set_crawler_enabled(conn, crawler_id, False)
+        conn.commit()
+    client = authed_client_factory(user["id"])
+
+    r = _recrawl(client, item_key)
+
+    assert r.json() == {"queued": False, "reason": "not_listed"}
+    assert _queue_row(item_key) is None
+
+
+def test_recrawl_of_a_release_crawler_row_is_not_listed(pg_test_db, authed_client_factory):
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        db.register_crawler(conn, "Amazon", "/x.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        conn.execute(
+            "INSERT INTO stock_items (crawler_id, artist, title, url, item_key) "
+            "VALUES (%s, 'A', 'T', 'https://x/r', 'release-key')",
+            [crawler_id],
+        )
+        conn.commit()
+    client = authed_client_factory(user["id"])
+
+    assert _recrawl(client, "release-key").json() == {"queued": False, "reason": "not_listed"}
+    assert _queue_row("release-key") is None
+
+
+def test_recrawl_under_library_only_rejects_an_item_nobody_wants(pg_test_db, authed_client_factory):
+    user, _, item_key = _seed_recrawl_item()
+    config.save_config({"crawl_library_only": True})
+    client = authed_client_factory(user["id"])
+
+    r = _recrawl(client, item_key)
+
+    assert r.json() == {"queued": False, "reason": "library_only"}
+    assert _queue_row(item_key) is None
+
+
+def test_recrawl_under_library_only_leaves_an_existing_row_untouched(pg_test_db, authed_client_factory):
+    user, _, item_key = _seed_recrawl_item()
+    with db.get_admin_pool().connection() as conn:
+        db.enqueue_crawl_queue_for_stock_item(conn, item_key)
+        conn.commit()
+    before = _queue_row(item_key)
+    config.save_config({"crawl_library_only": True})
+    client = authed_client_factory(user["id"])
+
+    r = _recrawl(client, item_key)
+
+    assert r.json() == {"queued": False, "reason": "library_only"}
+    after = _queue_row(item_key)
+    assert after["priority"] == before["priority"] == 0
+    assert after["requested_at"] == before["requested_at"]
+
+
+def test_recrawl_of_a_saved_item_under_library_only_queues_and_is_claimable(pg_test_db, authed_client_factory):
+    user, _, item_key = _seed_recrawl_item()
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/x.py")
+        conn.commit()
+    config.save_config({"crawl_library_only": True})
+    client = authed_client_factory(user["id"])
+    client.put(f"/api/stock/saved/{item_key}", headers={"X-Requested-With": "fetch"})
+    with db.get_admin_pool().connection() as conn:
+        conn.execute("DELETE FROM crawl_queue WHERE item_key = %s", [item_key])
+        conn.commit()
+
+    r = _recrawl(client, item_key)
+
+    assert r.json() == {"queued": True, "reason": None}
+    with db.get_app_pool().connection() as conn:
+        claimed = db.claim_crawl_queue_batch(conn, "worker-1", limit=10, library_only=True)
+        conn.commit()
+    assert [row["item_key"] for row in claimed] == [item_key]
+
+
+def test_recrawl_with_library_only_off_queues_an_unowned_item(pg_test_db, authed_client_factory):
+    user, _, item_key = _seed_recrawl_item()
+    config.save_config({"crawl_library_only": False})
+    client = authed_client_factory(user["id"])
+
+    assert _recrawl(client, item_key).json() == {"queued": True, "reason": None}
+    assert _queue_row(item_key)["priority"] == db.QUEUE_PRIORITY_INTERACTIVE
+
+
+def test_recrawl_repeat_is_a_noop_on_an_expedited_row(pg_test_db, authed_client_factory):
+    user, _, item_key = _seed_recrawl_item()
+    client = authed_client_factory(user["id"])
+    _recrawl(client, item_key)
+    first = _queue_row(item_key)
+
+    r = _recrawl(client, item_key)
+
+    assert r.json() == {"queued": True, "reason": None}
+    assert _queue_row(item_key)["requested_at"] == first["requested_at"]
+
+
+def test_recrawl_writes_no_save(pg_test_db, authed_client_factory):
+    user, _, item_key = _seed_recrawl_item()
+    client = authed_client_factory(user["id"])
+
+    _recrawl(client, item_key)
+
+    with db.get_admin_pool().connection() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM stock_item_saves").fetchone()["count"] == 0
+
+
+def test_recrawl_requires_authentication(pg_test_db, authed_client_factory):
+    user, _, item_key = _seed_recrawl_item()
+    client = authed_client_factory(user["id"])
+    client.cookies.clear()
+
+    assert _recrawl(client, item_key).status_code == 401
+    assert _queue_row(item_key) is None

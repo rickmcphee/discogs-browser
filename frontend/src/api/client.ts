@@ -287,6 +287,17 @@ export async function unsaveStockItem(itemKey: string): Promise<{ saved: boolean
   return r.json()
 }
 
+export interface StockRecrawlResult {
+  queued: boolean
+  reason: 'not_listed' | 'library_only' | null
+}
+
+export async function recrawlStockItem(itemKey: string): Promise<StockRecrawlResult> {
+  const r = await apiFetch(`/stock/${encodeURIComponent(itemKey)}/recrawl`, { method: 'POST' })
+  if (!r.ok) throw new Error(await r.text())
+  return r.json()
+}
+
 export interface StockSyncStartResult {
   started: boolean
   running: boolean

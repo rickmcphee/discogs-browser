@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { render, screen, fireEvent, waitFor, act, cleanup } from '@testing-library/react'
 import StockBrowser from '../views/StockBrowser'
 import type { Crawler } from '../api/types'
 
@@ -12,6 +12,7 @@ const getStock = vi.fn()
 const getStockArtists = vi.fn()
 const saveStockItem = vi.fn()
 const unsaveStockItem = vi.fn()
+const recrawlStockItem = vi.fn()
 const getStockStats = vi.fn()
 
 vi.mock('../api/client', () => ({
@@ -19,6 +20,7 @@ vi.mock('../api/client', () => ({
   getStockArtists: (...args: unknown[]) => getStockArtists(...args),
   saveStockItem: (...args: unknown[]) => saveStockItem(...args),
   unsaveStockItem: (...args: unknown[]) => unsaveStockItem(...args),
+  recrawlStockItem: (...args: unknown[]) => recrawlStockItem(...args),
   getStockStats: (...args: unknown[]) => getStockStats(...args),
 }))
 
@@ -27,6 +29,7 @@ beforeEach(() => {
   getStockArtists.mockReset()
   saveStockItem.mockReset()
   unsaveStockItem.mockReset()
+  recrawlStockItem.mockReset()
   getStockStats.mockReset()
   getStockStats.mockResolvedValue({ total: 2, sources: [{ crawler_id: 4, site_name: 'Nuclear Blast', count: 2 }] })
   getStock.mockResolvedValue({ total: 2, row_total: 2, page: 1, per_page: 250, items })
@@ -1780,5 +1783,135 @@ describe('StockBrowser persisted selections', () => {
     rerender(<StockBrowser hasPriceField={true} />)
     await waitFor(() => expect(screen.getByText(/Price/)).toBeTruthy())
     expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ sort: 'discogs_price' }))
+  })
+})
+
+describe('StockBrowser row re-check', () => {
+  const defaultMatchMedia = window.matchMedia
+
+  afterEach(() => {
+    vi.useRealTimers()
+    window.matchMedia = defaultMatchMedia
+  })
+
+  const recheckButtons = () => screen.getAllByRole('button', { name: 'Re-check marketplace prices' })
+
+  async function renderTable(onStatus?: (message: string) => void) {
+    render(<StockBrowser onStatus={onStatus} />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+  }
+
+  it('posts one request per click and ignores a second click while it is pending', async () => {
+    let resolve!: (v: { queued: boolean; reason: null }) => void
+    recrawlStockItem.mockReturnValue(new Promise((r) => { resolve = r }))
+    await renderTable()
+    fireEvent.click(recheckButtons()[0])
+    fireEvent.click(recheckButtons()[0])
+    expect(recrawlStockItem).toHaveBeenCalledTimes(1)
+    expect(recrawlStockItem).toHaveBeenCalledWith('k1')
+    expect(recheckButtons()[0]).toBeDisabled()
+    expect(recheckButtons()[1]).not.toBeDisabled()
+    await act(async () => { resolve({ queued: true, reason: null }) })
+    await waitFor(() => expect(recheckButtons()[0]).not.toBeDisabled())
+  })
+
+  it('names the item in the status line when queued', async () => {
+    recrawlStockItem.mockResolvedValue({ queued: true, reason: null })
+    const onStatus = vi.fn()
+    await renderTable(onStatus)
+    fireEvent.click(recheckButtons()[0])
+    await waitFor(() => expect(onStatus).toHaveBeenCalledWith(
+      'Re-checking prices for The Great Satan — Ghostly Black Vinyl…',
+    ))
+  })
+
+  it('says why nothing was queued for not_listed and library_only', async () => {
+    const onStatus = vi.fn()
+    await renderTable(onStatus)
+    recrawlStockItem.mockResolvedValueOnce({ queued: false, reason: 'not_listed' })
+    fireEvent.click(recheckButtons()[0])
+    await waitFor(() => expect(onStatus).toHaveBeenCalledWith('Not re-checked — no enabled store lists this item.'))
+    recrawlStockItem.mockResolvedValueOnce({ queued: false, reason: 'library_only' })
+    fireEvent.click(recheckButtons()[0])
+    await waitFor(() => expect(onStatus).toHaveBeenCalledWith(
+      'Not re-checked — library-only crawling is on and nobody has saved or owns this item. Save it to have it priced.',
+    ))
+  })
+
+  it('refetches the list at each fallback delay after a queued re-check, with no event delivered', async () => {
+    recrawlStockItem.mockResolvedValue({ queued: true, reason: null })
+    await renderTable()
+    vi.useFakeTimers()
+    fireEvent.click(recheckButtons()[0])
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    const baseline = getStock.mock.calls.length
+    await act(async () => { await vi.advanceTimersByTimeAsync(14_000) })
+    expect(getStock.mock.calls.length).toBe(baseline)
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
+    expect(getStock.mock.calls.length).toBe(baseline + 1)
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+    expect(getStock.mock.calls.length).toBe(baseline + 2)
+    await act(async () => { await vi.advanceTimersByTimeAsync(75_000) })
+    expect(getStock.mock.calls.length).toBe(baseline + 3)
+    await act(async () => { await vi.advanceTimersByTimeAsync(10 * 60_000) })
+    expect(getStock.mock.calls.length).toBe(baseline + 3)
+  })
+
+  it('schedules no fallback refetch when nothing was queued', async () => {
+    recrawlStockItem.mockResolvedValue({ queued: false, reason: 'not_listed' })
+    await renderTable()
+    vi.useFakeTimers()
+    fireEvent.click(recheckButtons()[0])
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    const baseline = getStock.mock.calls.length
+    await act(async () => { await vi.advanceTimersByTimeAsync(10 * 60_000) })
+    expect(getStock.mock.calls.length).toBe(baseline)
+  })
+
+  it('cancels pending fallback refetches on unmount', async () => {
+    recrawlStockItem.mockResolvedValue({ queued: true, reason: null })
+    render(<StockBrowser />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    vi.useFakeTimers()
+    fireEvent.click(recheckButtons()[0])
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    const baseline = getStock.mock.calls.length
+    cleanup()
+    await act(async () => { await vi.advanceTimersByTimeAsync(10 * 60_000) })
+    expect(getStock.mock.calls.length).toBe(baseline)
+  })
+
+  it('releases the button and reports a failure when the request fails', async () => {
+    recrawlStockItem.mockRejectedValue(new Error('boom'))
+    const onStatus = vi.fn()
+    await renderTable(onStatus)
+    fireEvent.click(recheckButtons()[0])
+    await waitFor(() => expect(onStatus).toHaveBeenCalledWith('Could not re-check prices — try again.'))
+    expect(recheckButtons()[0]).not.toBeDisabled()
+    fireEvent.click(recheckButtons()[0])
+    expect(recrawlStockItem).toHaveBeenCalledTimes(2)
+  })
+
+  it('renders the button in the tile layout', async () => {
+    localStorage.setItem('collectionViewMode_store', 'tiles')
+    await renderTable()
+    expect(recheckButtons().length).toBe(2)
+  })
+
+  it('renders the button in the card layout', async () => {
+    window.matchMedia = ((query: string) => ({
+      matches: true, media: query, onchange: null,
+      addEventListener: () => {}, removeEventListener: () => {},
+      addListener: () => {}, removeListener: () => {}, dispatchEvent: () => false,
+    }) as unknown as MediaQueryList) as typeof window.matchMedia
+    await renderTable()
+    expect(screen.queryByRole('table')).toBeNull()
+    expect(recheckButtons().length).toBe(2)
+  })
+
+  it('renders the button in the table layout', async () => {
+    await renderTable()
+    expect(screen.getByRole('table')).toBeTruthy()
+    expect(recheckButtons().length).toBe(2)
   })
 })
