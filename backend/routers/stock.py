@@ -5,6 +5,7 @@ import psycopg
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
 from pydantic import BaseModel
 from typing import Optional
+import config
 import db
 import recommendations_import
 from admin import require_admin
@@ -117,9 +118,8 @@ def _write_save(user_id: int, item_key: str) -> None:
         conn.commit()
 
 
-@router.put("/stock/saved/{item_key}")
-def save_stock_item(item_key: str, request: Request):
-    """Retries once on a lock failure, because a lost save is a lost click.
+def _retry_once_on_queue_lock(write, item_key: str, what: str):
+    """Retries once on a lock failure, because a lost click is a lost click.
 
     Making the enqueue an upsert gave this transaction a queue-row lock to
     wait on while it holds STOCK_QUEUE_RECONCILE_LOCK_KEY. Every taker of that
@@ -133,14 +133,36 @@ def save_stock_item(item_key: str, request: Request):
     NOTHING, and the enqueue is a no-op on a row already expedited and widened
     -- and user_scope hands back a fresh connection with its own set_config.
     One retry, not a loop: a second failure is contention this endpoint should
-    surface rather than sit in."""
-    user_id = request.state.user_id
+    surface rather than sit in. Serves Save and re-crawl, which share the
+    enqueue."""
     try:
-        _write_save(user_id, item_key)
+        return write()
     except (psycopg.errors.DeadlockDetected, psycopg.errors.LockNotAvailable):
-        log.info("Save of %s hit a queue lock; retrying once", item_key)
-        _write_save(user_id, item_key)
+        log.info("%s of %s hit a queue lock; retrying once", what, item_key)
+        return write()
+
+
+@router.put("/stock/saved/{item_key}")
+def save_stock_item(item_key: str, request: Request):
+    user_id = request.state.user_id
+    _retry_once_on_queue_lock(lambda: _write_save(user_id, item_key), item_key, "Save")
     return {"saved": True}
+
+
+def _write_recrawl(user_id: int, item_key: str, library_only: bool) -> dict:
+    with db.user_scope(user_id) as conn:
+        result = db.enqueue_crawl_queue_for_recheck(conn, item_key, library_only)
+        conn.commit()
+    return result
+
+
+@router.post("/stock/{item_key}/recrawl")
+def recrawl_stock_item(item_key: str, request: Request):
+    user_id = request.state.user_id
+    library_only = config.crawl_library_only()
+    return _retry_once_on_queue_lock(
+        lambda: _write_recrawl(user_id, item_key, library_only), item_key, "Re-crawl"
+    )
 
 
 @router.delete("/stock/saved/{item_key}")
