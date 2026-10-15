@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useLayoutEffect, useRef, memo, type MouseEvent as ReactMouseEvent } from 'react'
-import { getStock, getStockArtists, saveStockItem, unsaveStockItem } from '../api/client'
+import { getStock, getStockArtists, saveStockItem, unsaveStockItem, recrawlStockItem } from '../api/client'
 import type { StockItem, StockSortField, SortOrder, LibraryScope, Crawler } from '../api/types'
 import { navButtonClass, dismissButtonClass } from '../styles/buttons'
 import { textInputClass } from '../styles/inputs'
@@ -36,7 +36,14 @@ interface Props {
    *  the Price column exactly as "no prices" does but does not reset a sort
    *  restored onto it. See the persisted-selections design doc. */
   hasPriceField?: boolean | null
+  /** Writes the shared status bar, which App owns. */
+  onStatus?: (message: string) => void
 }
+
+// A queued re-check normally repaints through listing_changed, which reaches
+// only the backend instance that ran the crawl. These refetches cover a stream
+// held by a different instance; they do not track the crawl's completion.
+const RECRAWL_REFETCH_DELAYS_MS = [15_000, 45_000, 120_000]
 
 const NO_HIDDEN_CRAWLER_IDS: number[] = []
 // Same as RecordBrowser's: the sidebar's list before one has arrived and with
@@ -119,6 +126,23 @@ function InfoIcon() {
       <path d="M8 7.25v4" strokeLinecap="round" />
       <path d="M8 4.75h.01" strokeLinecap="round" />
     </svg>
+  )
+}
+
+function RecheckButton({ busy, onClick, className, overlay = false }: { busy: boolean; onClick: () => void; className: string; overlay?: boolean }) {
+  const idle = overlay ? 'rounded-full bg-gray-950/70 text-white hover:bg-gray-950' : navButtonClass(false)
+  return (
+    <button
+      onClick={onClick}
+      disabled={busy}
+      title="Re-check marketplace prices"
+      aria-label="Re-check marketplace prices"
+      className={`${className} ${busy ? navButtonClass(true) : idle}`}
+    >
+      {busy
+        ? <span aria-hidden="true" className="block w-4 h-4 border-2 border-gray-950 border-t-transparent rounded-full animate-spin" />
+        : <span aria-hidden="true" className="block text-base leading-none">↻</span>}
+    </button>
   )
 }
 
@@ -375,7 +399,7 @@ function StockBrowser({
   recommendedAvailable = false, hiddenCrawlerIds = NO_HIDDEN_CRAWLER_IDS,
   crawlers = NO_CRAWLERS, onHiddenCrawlerIdsChange = NOOP_HIDDEN_CRAWLER_IDS_CHANGE,
   hiddenCrawlerIdsLoaded = true, syncGeneration, inventoryGeneration, judgmentGeneration,
-  libraryGeneration, isAdmin = false, hasPriceField = true,
+  libraryGeneration, isAdmin = false, hasPriceField = true, onStatus,
 }: Props) {
   const isMobile = useIsMobile()
   const [items, setItems] = useState<StockItem[]>([])
@@ -438,6 +462,17 @@ function StockBrowser({
   // and via the disabled button), so at most one request per item_key is ever
   // outstanding and there is nothing left to reconcile out of order.
   const [pendingSaves, setPendingSaves] = useState<Set<string>>(new Set())
+  const [pendingRecrawls, setPendingRecrawls] = useState<Set<string>>(new Set())
+  const recrawlTimers = useRef<ReturnType<typeof setTimeout>[]>([])
+  const mounted = useRef(true)
+  useEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+      recrawlTimers.current.forEach(clearTimeout)
+      recrawlTimers.current = []
+    }
+  }, [])
   // What the open popover shows and what it measures itself against: the item
   // whose justification is on screen, and the icon it is pinned to. Null when
   // nothing is open. The popover renders beside that icon, so a refetch that
@@ -662,6 +697,32 @@ function StockBrowser({
     }
   }
 
+  async function recrawlItem(item: StockItem) {
+    if (pendingRecrawls.has(item.item_key)) return
+    setPendingRecrawls((prev) => new Set(prev).add(item.item_key))
+    try {
+      const result = await recrawlStockItem(item.item_key)
+      if (result.queued) {
+        onStatus?.(`Re-checking prices for ${displayTitle(item)}…`)
+        for (const delay of mounted.current ? RECRAWL_REFETCH_DELAYS_MS : []) {
+          recrawlTimers.current.push(setTimeout(() => setRetryTick((t) => t + 1), delay))
+        }
+      } else if (result.reason === 'library_only') {
+        onStatus?.('Not re-checked — library-only crawling is on and nobody has saved or owns this item. Save it to have it priced.')
+      } else {
+        onStatus?.('Not re-checked — no enabled store lists this item.')
+      }
+    } catch {
+      onStatus?.('Could not re-check prices — try again.')
+    } finally {
+      setPendingRecrawls((prev) => {
+        const nextSet = new Set(prev)
+        nextSet.delete(item.item_key)
+        return nextSet
+      })
+    }
+  }
+
   // Sorting by artist is meaningless once the list is filtered down to a
   // single artist, so switching the artist filter resets to the sort that
   // makes sense for the new context: artist for "All", title for a specific
@@ -869,6 +930,12 @@ function StockBrowser({
                       >
                         <BookmarkIcon filled={item.saved} />
                       </button>
+                      <RecheckButton
+                        busy={pendingRecrawls.has(item.item_key)}
+                        onClick={() => recrawlItem(item)}
+                        className="flex h-11 w-11 items-center justify-center md:h-auto md:w-auto md:p-1"
+                        overlay
+                      />
                     </div>
                   </div>
                 ))}
@@ -941,6 +1008,11 @@ function StockBrowser({
                         >
                           <BookmarkIcon filled={item.saved} />
                         </button>
+                        <RecheckButton
+                          busy={pendingRecrawls.has(item.item_key)}
+                          onClick={() => recrawlItem(item)}
+                          className="w-11 h-11 flex items-center justify-center"
+                        />
                     </div>
                   </li>
                 )
@@ -1047,6 +1119,11 @@ function StockBrowser({
                         >
                           <BookmarkIcon filled={item.saved} />
                         </button>
+                        <RecheckButton
+                          busy={pendingRecrawls.has(item.item_key)}
+                          onClick={() => recrawlItem(item)}
+                          className="p-1 flex items-center justify-center"
+                        />
                       </div>
                     </td>
                 </tr>
