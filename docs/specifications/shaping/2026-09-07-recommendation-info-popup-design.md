@@ -260,7 +260,7 @@ icon.**
   else the popover is verdict and sentence, which is what a glance wants.
 - **The icon is the row's third action, in the actions group.** Immediately
   left of the bookmark in each view, so the row's controls stay in one
-  place: cost link, info, save. In tiles the bookmark is an overlay on the
+  place: cost link, info, save. (Amended 2026-10-15: a re-check button now follows the bookmark in each view -- see [`2026-10-15-store-row-recrawl-design.md`](2026-10-15-store-row-recrawl-design.md). The info icon is still immediately left of the bookmark.) In tiles the bookmark is an overlay on the
   cover, so both buttons share one absolutely-positioned flex row — and that
   row moved out of the tile's listing link, which had been wrapping it. A
   control inside a control is invalid whatever its click handler does, and
