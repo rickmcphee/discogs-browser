@@ -44,11 +44,13 @@ button's `title` says "Re-check marketplace prices", not "Refresh".
 Touches:
 
 - `backend/routers/stock.py` — `POST /stock/{item_key}/recrawl`.
-- `backend/db.py` — no new queue logic (see Design); the expedite helper's
-  docstring stops describing itself as save-only.
+- `backend/db.py` — a thin wrapper that applies the library-only gate under
+  the reconciliation lock before calling the existing expedite helper (see
+  Design); that helper's docstring stops describing itself as save-only.
 - `frontend/src/api/client.ts` — `recrawlStockItem`.
 - `frontend/src/views/StockBrowser.tsx` — the button on each layout the row
-  renders in, and per-`item_key` pending state.
+  renders in, per-`item_key` pending state, and the bounded fallback refetch.
+- `frontend/src/App.tsx` — passes `StockBrowser` a status callback.
 - Tests: `backend/tests/test_stock_router.py`,
   `frontend/src/test/` for the Store view.
 
@@ -86,13 +88,40 @@ the same single retry on `DeadlockDetected`/`LockNotAvailable` as the save, for
 the same rolling-deploy reason, so the retry is factored out rather than
 copied.
 
-Response: `{"queued": bool}`, true when the call left the item queued because of
-it (the helper's rowcount, which the save path already treats the same way).
-`false` means the enabled-store gate declined — no enabled store still lists the
-item — and the UI says so rather than spinning forever.
+Response: `{"queued": bool, "reason": str|null}`. `queued` is true when the call
+left the item queued because of it. When false, `reason` says why, so the UI
+can be accurate rather than generic:
 
-An unknown `item_key` is the same `false`; the gate asks `stock_items`, so no
-separate existence check exists to drift from it.
+- `"not_listed"` — no enabled catalog store lists the item. This also covers an
+  unknown `item_key`, and rows that came from a release crawler:
+  `_enabled_stock_source_exists` counts catalog-type crawlers only, so those
+  never queue. (This settles the plan's first open question about them.)
+- `"library_only"` — `crawl_library_only` is on and no user has saved the item
+  or holds a matching collection/wantlist record.
+
+#### The library-only gate is checked, not inherited
+
+The save helper reaches `claim_crawl_queue_batch` safely only because Save
+writes `stock_item_saves` first: that is the interest `_stock_item_crawlable`
+looks for when `crawl_library_only` is on. A re-check writes no interest, so
+reusing the helper alone would return `queued: true` for an item the claim then
+skips regardless of priority, and which the dead-row sweep can delete. The
+click would report success and do nothing.
+
+Re-check is not given an exception honoured by both the claim and the sweep.
+That would make a single click override a setting the admin chose, in two more
+places, to price an item nobody in the library wants. It is rejected with
+`reason: "library_only"` and the message says how to get it priced: save it.
+
+The check and the enqueue share one transaction and the stock queue
+reconciliation lock the sweep also takes, so the sweep cannot delete between
+them. Mechanically: a small wrapper takes `_lock_stock_queue_reconciliation`,
+evaluates `_stock_item_crawlable(item_key, library_only)`, and only then calls
+the expedite helper. `library_only` is read from `config.crawl_library_only()`
+before an app connection is borrowed and passed in, as every other call site
+does; the wrapper takes it as a required argument, because the helper's own
+default of `False` is the unrestricted gate and a caller that forgets it gets
+that silently.
 
 ### UI
 
@@ -108,12 +137,30 @@ request per row.
 "Busy" is the request only — until the server says queued. Showing busy until
 the crawl *completes* would need the page to correlate `listing_changed` events
 to a click, across multiple crawlers per item, and a crawl can sit behind
-cooldowns for far longer than any spinner should run. The result arrives the
-way every crawl result already does: `listing_changed` bumps the Store's
-refetch and the row repaints. The button's confirmation is a status line
-("Re-checking prices for *Title*…"), using the status bar the other refresh
-buttons already write to; a `queued: false` writes "Nothing to re-check — no
-enabled store lists this item."
+cooldowns for far longer than any spinner should run.
+
+The result normally arrives the way every crawl result already does:
+`listing_changed` bumps the Store's refetch and the row repaints. That event is
+broadcast in the worker's own process only, so on a deployment with more than
+one backend instance a crawl claimed by a different instance than the one
+holding this browser's stream never reaches it. That is true of every crawl
+result today; it matters more here because the click promises a repaint. So a
+queued re-check also schedules a **bounded fallback refetch** of the Store list
+at a few fixed delays after the click (the plan sets them), through the same
+guarded refetch path other triggers use. It is cheap, idempotent and
+independent of which instance crawled; it stops when the delays run out and
+does not track the crawl's real completion, which a row sitting behind a
+circuit-breaker cooldown may not reach in that time. The status line says
+"queued", not "done", for that reason. The single-instance NAS deployment
+never needs it; the multi-instance one the repo keeps the option of does.
+
+The button's confirmation is a status line written through the shared status
+bar, which `App.tsx` owns: `StockBrowser` gets an `onStatus` prop the way other
+views get their callbacks, wired to `setSyncStatus`. Messages: queued —
+"Re-checking prices for *Title*…"; `not_listed` — "Not re-checked — no enabled
+store lists this item."; `library_only` — "Not re-checked — library-only
+crawling is on and nobody has saved or owns this item. Save it to have it
+priced."
 
 ### Why this does not reverse the Collection/Wantlist decision
 
@@ -128,11 +175,10 @@ This one sits on rows that display exactly the listings it refreshes.
   queue row. If the queue's lack of fairness becomes a concern, a per-user
   rate limit is the first fairness mechanism this queue would get, and it
   belongs in its own design.
-- **Rows that came from a release crawler** (not a catalog store) have a
-  `discogs_id` target, not an `item_key`. Their `item_key` rows exist in
-  `stock_items`, and whether the item_key queue row for such an item prices
-  anything is not established here; the plan's first task checks it before the
-  button is shown on those rows.
+- **Rows that came from a release crawler** never queue (see `not_listed`
+  above), so the button shows its message on them rather than being hidden.
+  Whether to hide it client-side instead depends on the row carrying a field
+  that says where it came from; the plan's first task checks whether it does.
 
 ## Spec drift
 

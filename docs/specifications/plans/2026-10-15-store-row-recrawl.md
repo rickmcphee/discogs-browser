@@ -27,7 +27,7 @@ Full grounding: [`docs/specifications/shaping/2026-10-15-store-row-recrawl-desig
 **Files:** none changed; findings recorded in the design's Open questions.
 
 - [ ] **Step 1:** In `crawl_manager._drain_one_batch`, trace an `item_key` row end to end and confirm it runs the enabled release crawlers against the stock item (Amazon, eBay) and writes `listings` rows keyed by `item_key`.
-- [ ] **Step 2:** Find out whether stock rows that came from a release crawler (target `discogs_id`) have an `item_key` queue row that prices anything. If not, decide whether the button is hidden on those rows or routed elsewhere; write the decision into the design.
+- [ ] **Step 2:** Release-crawler-sourced stock rows never queue (`_enabled_stock_source_exists` counts catalog crawlers only) and get `reason: "not_listed"`. Check whether the row payload carries anything that says where it came from; if so, hide the button client-side on those rows, otherwise leave it showing its message. Record the outcome in the design.
 - [ ] **Step 3:** Reproduce the motivating case: an Amazon comparison row with null `listing_title`. Confirm a fresh crawl of that `item_key` fills it, using the existing crawler test fixtures rather than live Amazon.
 
 ### Task 2: The endpoint
@@ -35,28 +35,34 @@ Full grounding: [`docs/specifications/shaping/2026-10-15-store-row-recrawl-desig
 **Files:** `backend/routers/stock.py`, `backend/db.py` (docstring only), `backend/tests/test_stock_router.py`.
 
 - [ ] **Step 1: Failing tests first.**
-  - `POST /api/stock/{item_key}/recrawl` for an item whose store is enabled returns `{"queued": true}` and leaves a `crawl_queue` row at `QUEUE_PRIORITY_INTERACTIVE`.
-  - For an item no enabled store lists, returns `{"queued": false}` and creates no row.
+  - `POST /api/stock/{item_key}/recrawl` for an item whose store is enabled returns `{"queued": true, "reason": null}` and leaves a `crawl_queue` row at `QUEUE_PRIORITY_INTERACTIVE`.
+  - For an item no enabled catalog store lists (unknown key, disabled store, release-crawler-sourced row), returns `{"queued": false, "reason": "not_listed"}` and creates no row.
+  - With `crawl_library_only` on and no user interest in the item, returns `{"queued": false, "reason": "library_only"}`, creates no row, and leaves an already-existing row's priority untouched. The same item saved first queues normally. The test asserts the claim would actually take the row after a `true`, not only the response shape.
+  - With `crawl_library_only` off, an item nobody owns queues.
   - A repeat call on an already-expedited row is a no-op: `requested_at` unchanged.
   - Writes no `stock_item_saves` row.
   - Unauthenticated request is rejected by `AuthMiddleware`.
 - [ ] **Step 2:** Factor the save's one-retry-on-lock wrapper out of `save_stock_item` so both endpoints use it; keep its docstring's rolling-deploy reasoning on the shared helper.
-- [ ] **Step 3:** Add the route calling `enqueue_crawl_queue_for_saved_stock_item(conn, item_key)` inside `db.user_scope`, commit, return `{"queued": rowcount > 0}`.
-- [ ] **Step 4:** Update the helper's docstring: it serves Save and re-crawl. Do not rename it.
+- [ ] **Step 3:** In `db.py`, add the wrapper: it takes `_lock_stock_queue_reconciliation`, evaluates `_stock_item_crawlable(item_key, library_only)` with `library_only` a **required** argument, returns the reason when it declines, and otherwise calls `enqueue_crawl_queue_for_saved_stock_item`. The check and the enqueue run in one transaction under the lock the dead-row sweep also takes.
+- [ ] **Step 4:** Add the route: read `config.crawl_library_only()` *before* borrowing the app connection, call the wrapper inside `db.user_scope`, commit, return `{"queued": ..., "reason": ...}`.
+- [ ] **Step 5:** Update the expedite helper's docstring: it serves Save and re-crawl. Do not rename it.
 - [ ] **Step 5:** Run `cd backend && pytest tests/test_stock_router.py tests/test_crawl_queue.py` with the three env vars from `CLAUDE.md`. Existing save tests must pass unchanged.
 - [ ] **Step 6: Commit** via `git commit -F`, with trailers.
 
 ### Task 3: Client and button
 
-**Files:** `frontend/src/api/client.ts`, `frontend/src/views/StockBrowser.tsx`, a test under `frontend/src/test/`.
+**Files:** `frontend/src/api/client.ts`, `frontend/src/views/StockBrowser.tsx`, `frontend/src/App.tsx`, a test under `frontend/src/test/`.
 
 - [ ] **Step 1: Failing tests first.**
   - Clicking `↻` on a row calls `POST /stock/{item_key}/recrawl` once; a second click while the first is pending sends nothing.
-  - On `queued: true` the status line names the title; on `queued: false` it says nothing is listed.
+  - The status line is written through the `onStatus` callback `App.tsx` passes in: on `queued: true` it names the title; on `not_listed` and on `library_only` it says the matching message from the design.
+  - After `queued: true`, the Store list is refetched at each fallback delay (fake timers), through the guarded refetch path, with no `listing_changed` event delivered — the cross-instance case. Nothing refetches after the last delay, and a `queued: false` schedules none.
   - A failed request clears the pending state and does not leave the button disabled.
   - The button renders in each layout a Save bookmark renders in.
 - [ ] **Step 2:** `recrawlStockItem(itemKey)` beside `saveStockItem`.
 - [ ] **Step 3:** `pendingRecrawls: Set<string>` state mirroring `pendingSaves`; a `recrawlItem` handler in the same shape as `toggleSaved`, without the optimistic patch (nothing on the row changes until `listing_changed`).
+- [ ] **Step 3a:** Add an `onStatus?: (message: string) => void` prop to `StockBrowser` and pass `setSyncStatus` from `App.tsx` where `<StockBrowser … />` is rendered. Without it the component has no way to write to the shared status bar.
+- [ ] **Step 3b:** The bounded fallback refetch: on `queued: true`, bump the existing `retryTick` at a few fixed delays (start with 15 s, 45 s and 2 min; adjust if the Queue tab shows crawls routinely take longer), clearing the timers on unmount. Idempotent and independent of which backend instance crawled.
 - [ ] **Step 4:** The button, styled per the refresh-click-feedback design (spin and invert while busy, not dim), `title="Re-check marketplace prices"`, in all three row layouts beside the bookmark.
 - [ ] **Step 5:** `cd frontend && npm run test` and the typecheck/lint the repo's CI runs.
 - [ ] **Step 6: Commit.**
@@ -64,7 +70,7 @@ Full grounding: [`docs/specifications/shaping/2026-10-15-store-row-recrawl-desig
 ### Task 4: Spec drift sweep and PR
 
 - [ ] **Step 1:** `grep -rl` across **both** `docs/superpowers/specs/` and `docs/specifications/shaping/` for `per-row refresh`, `refresh button`, `/stock/saved`, `enqueue_crawl_queue_for_saved_stock_item`, and the button's strings. Confirm each match still describes what shipped.
-- [ ] **Step 2:** Add the short note to the main design spec's 2026-08-27 amendment: the Collection and Wantlist per-row refresh stays removed; the Store tab has its own, see the new design. Delete any inventory count met along the way rather than refreshing it.
+- [ ] **Step 2:** (Done on this branch in the docs PR.) Add the short note to the main design spec's 2026-08-27 amendment: the Collection and Wantlist per-row refresh stays removed; the Store tab has its own, see the new design. Delete any inventory count met along the way rather than refreshing it.
 - [ ] **Step 3:** Commit amendments as their own commit and push.
 - [ ] **Step 4:** Open the PR ready for review (not draft), noting the drift found and fixed. Do not enable auto-merge. Poll for Copilot's review on the final head SHA and close out its findings per `CLAUDE.md`.
 - [ ] **Step 5:** Remove the worktree once the PR is open.
