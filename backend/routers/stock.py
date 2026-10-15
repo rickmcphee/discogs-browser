@@ -119,7 +119,7 @@ def _write_save(user_id: int, item_key: str) -> None:
 
 
 def _retry_once_on_queue_lock(write, item_key: str, what: str):
-    """Retries once on a lock failure, because a lost click is a lost click.
+    """Retries once on a lock failure, because the user has no way to see that a click was dropped.
 
     Making the enqueue an upsert gave this transaction a queue-row lock to
     wait on while it holds STOCK_QUEUE_RECONCILE_LOCK_KEY. Every taker of that
