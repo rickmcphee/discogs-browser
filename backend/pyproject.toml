@@ -8,13 +8,13 @@ version = "0.1.0"
 license = "MIT"
 requires-python = ">=3.9"
 dependencies = [
-    "fastapi>=0.143.0",
+    "fastapi>=0.143.2",
     "uvicorn[standard]>=0.54.0",
     "httpx>=0.28.1",
     "rapidfuzz>=3.14.5",
     "sse-starlette>=3.5.0",
-    "anthropic>=1.13.0",
-    "playwright>=1.63.0",
+    "anthropic>=1.15.0",
+    "playwright>=1.64.0",
     "playwright-stealth>=2.0.3",
     "apscheduler>=3.11.3,<4.0",
     "python-multipart>=0.0.32",
@@ -28,7 +28,7 @@ dependencies = [
     # mirrors that same rule. 1.7.x always transports over httpx regardless,
     # which would put the bridge's httpx2 responses inside an httpx client --
     # the floor keeps both sides choosing identically.
-    "authlib>=1.8,<2.0",
+    "authlib>=1.9.1,<2.0",
 ]
 
 [project.optional-dependencies]
