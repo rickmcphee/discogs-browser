@@ -3303,28 +3303,36 @@ _QUEUE_LIVE_STOCK_KEYS_SQL = """
 # joined once for the whole report rather than probed per queue row. Off, the
 # join is not written at all -- the statement is exactly the one the plan
 # regression test pins, with nothing extra for the planner to weigh.
-def _queue_row_state_sql(library_only: bool = False) -> str:
-    eligible = "CASE WHEN cq.discogs_id IS NOT NULL THEN cs.release_ids ELSE cs.stock_ids END"
+def _queue_live_gate(library_only: bool = False) -> tuple:
+    """(joins, predicate) for _stock_item_crawlable, resolved once per
+    statement instead of once per queue row. `joins` belongs after
+    `FROM crawl_queue cq`; `predicate` is true for a release row or a stock row
+    that passes the gate."""
     live = "live.item_key IS NOT NULL"
-    wanted_join = ""
+    joins = f"LEFT JOIN ({_QUEUE_LIVE_STOCK_KEYS_SQL}) live ON live.item_key = cq.item_key"
     if library_only:
         live = f"({live} AND wanted.item_key IS NOT NULL)"
-        wanted_join = "LEFT JOIN library_stock_item_keys wanted ON wanted.item_key = cq.item_key"
+        joins += "\n        LEFT JOIN library_stock_item_keys wanted ON wanted.item_key = cq.item_key"
+    return joins, f"(cq.item_key IS NULL OR {live})"
+
+
+def _queue_row_state_sql(library_only: bool = False) -> str:
+    eligible = "CASE WHEN cq.discogs_id IS NOT NULL THEN cs.release_ids ELSE cs.stock_ids END"
+    live_joins, live = _queue_live_gate(library_only)
     return f"""
         SELECT cq.status,
                cq.discogs_id IS NOT NULL AS is_release,
                cq.priority > 0 AS expedited,
                cq.claimed_at,
                cq.available_at > CURRENT_TIMESTAMP AS held,
-               (cq.item_key IS NULL OR {live}) AS live,
+               {live} AS live,
                CASE WHEN cq.pending_crawler_ids IS NULL
                     THEN cardinality({eligible}) > 0
                     ELSE {eligible} && cq.pending_crawler_ids
                END AS actionable
         FROM crawl_queue cq
         CROSS JOIN ({_QUEUE_CRAWLER_SETS_SQL}) cs
-        LEFT JOIN ({_QUEUE_LIVE_STOCK_KEYS_SQL}) live ON live.item_key = cq.item_key
-        {wanted_join}
+        {live_joins}
         WHERE cq.status <> 'done'
     """
 
@@ -3398,16 +3406,23 @@ _QUEUE_FANOUT_COLUMNS = """
 # split is that only statistics which *compose* across the two halves can be
 # reported per crawler -- MIN and bucket counts do, a median does not, which is
 # why oldest-plus-buckets is what the tab shows.
+#
+# The stock-source gate is hoisted into a join for the same reason
+# _queue_row_state_sql hoists it: written as the claim's correlated EXISTS it
+# runs as a SubPlan once per pending row, and at ~170k pending rows that took
+# ~4s against the 1.6s per-statement budget -- the statement timeout then
+# turned the whole Queue tab into "Internal Server Error".
 def _queue_fanout(conn, library_only: bool = False) -> tuple:
-    gate = _stock_item_crawlable("cq.item_key", library_only)
+    live_joins, live = _queue_live_gate(library_only)
     broad = conn.execute(
         f"""
         SELECT cq.discogs_id IS NOT NULL AS is_release,
                cq.available_at > CURRENT_TIMESTAMP AS held,
                {_QUEUE_FANOUT_COLUMNS}
         FROM crawl_queue cq
+        {live_joins}
         WHERE cq.status = 'pending' AND cq.pending_crawler_ids IS NULL
-          AND (cq.item_key IS NULL OR {gate})
+          AND {live}
         GROUP BY 1, 2
         """
     ).fetchall()
@@ -3418,9 +3433,10 @@ def _queue_fanout(conn, library_only: bool = False) -> tuple:
                cq.available_at > CURRENT_TIMESTAMP AS held,
                {_QUEUE_FANOUT_COLUMNS}
         FROM crawl_queue cq
+        {live_joins}
         CROSS JOIN LATERAL unnest(cq.pending_crawler_ids) AS u(cid)
         WHERE cq.status = 'pending' AND cq.pending_crawler_ids IS NOT NULL
-          AND (cq.item_key IS NULL OR {gate})
+          AND {live}
         GROUP BY 1, 2, 3
         """
     ).fetchall()

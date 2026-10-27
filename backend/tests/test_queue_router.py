@@ -734,6 +734,42 @@ def test_totals_resolve_eligibility_once_not_per_queue_row(admin_conn):
     )
 
 
+@pytest.mark.parametrize("library_only", [False, True])
+def test_fanout_resolves_stock_gate_once_not_per_queue_row(admin_conn, library_only):
+    """_queue_fanout's gate began as the claim's correlated EXISTS, which runs
+    as a SubPlan per pending row: at ~170k pending rows it took ~4s against the
+    1.6s per-statement budget, the statement timeout fired, and the Queue tab
+    showed "Internal Server Error". Pinned on the plan, like the totals test."""
+    _crawler(admin_conn, "Amazon")
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    for i in range(40):
+        db.enqueue_crawl_queue_for_stock_item(admin_conn, _stock_identity(admin_conn, f"k{i}"))
+        if i % 2:
+            db.save_stock_item(admin_conn, alice["id"], f"k{i}")
+    admin_conn.commit()
+    admin_conn.execute(
+        "ANALYZE crawl_queue, crawlers, stock_items, stock_item_identities, "
+        "stock_item_saves, library_items, catalog"
+    )
+
+    joins, live = db._queue_live_gate(library_only)
+    row = admin_conn.execute(
+        f"EXPLAIN (ANALYZE, FORMAT JSON) SELECT count(*) FROM crawl_queue cq {joins} "
+        f"WHERE cq.status = 'pending' AND cq.pending_crawler_ids IS NULL AND {live}"
+    ).fetchone()
+    root = list(row.values())[0][0]["Plan"]
+    repeated = [
+        (n.get("Relation Name"), n["Actual Loops"])
+        for n in _plan_nodes(root)
+        if n.get("Relation Name") in ("crawlers", "stock_items", "stock_item_saves", "library_items", "catalog")
+        and n.get("Actual Loops", 1) > 1
+    ]
+    assert not repeated, f"re-scanned per queue row: {repeated}"
+
+    broad, _ = db._queue_fanout(admin_conn, library_only)
+    assert sum(a["units"] for a in broad) == (40 if not library_only else 20)
+
+
 def test_totals_survive_every_release_crawler_being_disabled(admin_conn):
     """ARRAY_AGG over no rows returns NULL, not '{}'. Without the COALESCE in
     _QUEUE_CRAWLER_SETS_SQL a narrowed row's `&&` would return NULL here rather
