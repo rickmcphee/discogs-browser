@@ -3303,7 +3303,7 @@ _QUEUE_LIVE_STOCK_KEYS_SQL = """
 # joined once for the whole report rather than probed per queue row. Off, the
 # join is not written at all -- the statement is exactly the one the plan
 # regression test pins, with nothing extra for the planner to weigh.
-def _queue_live_gate(library_only: bool = False) -> tuple:
+def _queue_live_gate(library_only: bool = False) -> tuple[str, str]:
     """(joins, predicate) for _stock_item_crawlable, resolved once per
     statement instead of once per queue row. `joins` belongs after
     `FROM crawl_queue cq`; `predicate` is true for a release row or a stock row

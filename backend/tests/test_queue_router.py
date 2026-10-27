@@ -757,7 +757,7 @@ def test_fanout_resolves_stock_gate_once_not_per_queue_row(admin_conn, library_o
         f"EXPLAIN (ANALYZE, FORMAT JSON) SELECT count(*) FROM crawl_queue cq {joins} "
         f"WHERE cq.status = 'pending' AND cq.pending_crawler_ids IS NULL AND {live}"
     ).fetchone()
-    root = list(row.values())[0][0]["Plan"]
+    root = row["QUERY PLAN"][0]["Plan"]
     repeated = [
         (n.get("Relation Name"), n["Actual Loops"])
         for n in _plan_nodes(root)
