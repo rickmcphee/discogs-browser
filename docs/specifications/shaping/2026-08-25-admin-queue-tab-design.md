@@ -255,9 +255,11 @@ to the wrong setting.
 setting is on — a stock row nobody has saved or holds a matching record for.
 `_queue_row_state_sql` folds it into `live` through a second hoisted `LEFT
 JOIN`, on the `library_stock_item_keys` view, written only when the setting is
-on so the off case is the statement the plan test below pins. `_queue_fanout`
-and `next` apply the same composed predicate (`_stock_item_crawlable`) the
-claim does. See
+on so the off case is the statement the plan test below pins. `next` applies
+the same composed predicate (`_stock_item_crawlable`) the claim does;
+`_queue_fanout` reaches the same answer through the same hoisted joins
+(`_queue_live_gate`) rather than the per-row EXISTS, which at a large backlog
+ran past the per-statement budget and turned the tab into a 500. See
 [`2026-09-05-library-only-marketplace-crawl-design.md`](2026-09-05-library-only-marketplace-crawl-design.md).*
 
 **Stranded is derived, not a constant.** A claimed row runs one sequential
