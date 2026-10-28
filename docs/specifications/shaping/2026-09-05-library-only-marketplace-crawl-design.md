@@ -176,9 +176,10 @@ wants. `_queue_row_state_sql` folds it into `live` through the same hoisted
 `LEFT JOIN` shape the enabled-store gate uses, joining the view once for the
 report rather than probing it per row; the view is already distinct per key,
 so the join cannot fan a row out. Off, the join is not written at all — the
-statement is the one the tab's plan regression test pins. `_queue_fanout` and
-`queue_next_for_crawler` take the composed predicate, so the per-crawler units
-and the "next up" list agree with what the claim will do.
+statement is the one the tab's plan regression test pins. `_queue_fanout`
+shares those hoisted joins (`_queue_live_gate`) and `queue_next_for_crawler`
+takes the composed predicate, so the per-crawler units and the "next up" list
+agree with what the claim will do.
 
 ### Switching it on, and off
 
