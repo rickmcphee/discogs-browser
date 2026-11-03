@@ -12,7 +12,7 @@ dependencies = [
     "uvicorn[standard]>=0.54.0",
     "httpx>=0.28.1",
     "rapidfuzz>=3.14.5",
-    "sse-starlette>=3.5.0",
+    "sse-starlette>=3.5.1",
     "anthropic>=2.3.0",
     "playwright>=1.64.1",
     "playwright-stealth>=2.0.3",
@@ -34,7 +34,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=9.1.1",
-    "pytest-asyncio>=1.4.0",
+    "pytest-asyncio>=1.4.1",
     "respx>=0.23.1",
     "pytest-dotenv>=0.5.2",
 ]
