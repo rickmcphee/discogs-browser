@@ -2,8 +2,11 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# libatomic1: Playwright's bundled node binary links it, and the slim base
+# image does not ship it, so `playwright install` dies with exit 127 without it.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
+    libatomic1 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml .
