@@ -5,6 +5,17 @@
 # never something this script does as a side effect of a normal re-run.
 set -e
 
+# A scheduled task (DSM Task Scheduler, cron) often runs as a different user
+# than the one that owns the checkout, and git refuses to touch a repo owned
+# by someone else ("detected dubious ownership"). Trust this checkout for the
+# git calls below via the environment rather than `git config --global`, so
+# the run leaves no persistent change to the caller's git config.
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$REPO_DIR"
+export GIT_CONFIG_COUNT=1
+export GIT_CONFIG_KEY_0=safe.directory
+export GIT_CONFIG_VALUE_0="$REPO_DIR"
+
 echo "==> Pulling latest changes..."
 git pull
 
